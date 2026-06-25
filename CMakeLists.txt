@@ -22,8 +22,8 @@ if(NOT FCITX5_FOUND)
     pkg_check_modules(FCITX5 REQUIRED Fcitx5Core)
 endif()
 
-# PipeWire audio capture
-find_package(PipeWire REQUIRED)
+# PipeWire audio capture (via pkg-config so spa include path is pulled in)
+pkg_check_modules(PIPEWIRE REQUIRED pipewire-0.3)
 
 # JSON parsing
 find_package(nlohmann_json REQUIRED)
