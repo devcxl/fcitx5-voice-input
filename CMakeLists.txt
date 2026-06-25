@@ -22,8 +22,12 @@ if(NOT FCITX5_FOUND)
     pkg_check_modules(FCITX5 REQUIRED Fcitx5Core)
 endif()
 
-# PipeWire audio capture (via pkg-config so spa include path is pulled in)
-pkg_check_modules(PIPEWIRE REQUIRED pipewire-0.3)
+# PipeWire audio capture
+# Module name differs: "pipewire-0.3" (Arch) vs "libpipewire-0.3" (Ubuntu/Debian)
+pkg_check_modules(PIPEWIRE QUIET pipewire-0.3)
+if(NOT PIPEWIRE_FOUND)
+    pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
+endif()
 
 # JSON parsing
 find_package(nlohmann_json REQUIRED)
