@@ -16,8 +16,11 @@ option(BUILD_TESTS "Build unit tests" OFF)
 # ─── Dependencies ─────────────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
 
-# Fcitx5 core
-pkg_check_modules(FCITX5 REQUIRED fcitx5)
+# Fcitx5 core — try "fcitx5" (Arch) then "Fcitx5Core" (Ubuntu/Debian)
+pkg_check_modules(FCITX5 QUIET fcitx5)
+if(NOT FCITX5_FOUND)
+    pkg_check_modules(FCITX5 REQUIRED Fcitx5Core)
+endif()
 
 # PipeWire audio capture
 find_package(PipeWire REQUIRED)
