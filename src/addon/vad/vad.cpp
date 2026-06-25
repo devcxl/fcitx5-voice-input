@@ -35,8 +35,6 @@ float VAD::ComputeEnergy(const float* frame, size_t len) const {
 }
 
 bool VAD::Process(const float* pcm, size_t frames) {
-    bool hasSpeech = false;
-
     // Process in frameSize chunks
     size_t offset = 0;
     while (offset + config_.frameSize <= frames) {
@@ -59,7 +57,6 @@ bool VAD::Process(const float* pcm, size_t frames) {
                 // Speech detected
                 speechActive_ = true;
                 silenceFrameCount_ = 0;
-                hasSpeech = true;
             } else {
                 silenceFrameCount_++;
             }

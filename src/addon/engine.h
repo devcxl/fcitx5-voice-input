@@ -5,6 +5,7 @@
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/event.h>
+#include <fcitx/instance.h>
 
 #include "config/config.h"
 #include "pipeline/pipeline.h"
@@ -35,7 +36,7 @@ public:
     void deactivate(const InputMethodEntry& entry,
                     InputContextEvent& event) override;
 
-    bool keyEvent(const InputMethodEntry& entry,
+    void keyEvent(const InputMethodEntry& entry,
                   KeyEvent& keyEvent) override;
 
 private:

@@ -2,7 +2,6 @@
 
 #include <cstring>
 #include <spa/param/audio/format-utils.h>
-#include <pipewire/extensions/metadata.h>
 
 namespace fcitx {
 
@@ -72,7 +71,6 @@ bool PipeWireCapture::Start() {
     pw_stream_add_listener(stream_, &streamListener_, &stream_events, this);
 
     uint8_t buffer[1024];
-    auto* info = spa_pod_builder_init_bt(&spa_pod_builder{buffer, sizeof(buffer)});
 
     spa_audio_info_raw audio_info{
         .format = SPA_AUDIO_FORMAT_F32,

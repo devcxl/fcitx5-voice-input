@@ -73,6 +73,7 @@ private:
 
     // Audio buffer for current recording session
     std::vector<float> sessionAudio_;
+    static constexpr size_t kSessionReserveSamples = 48000 * 10;  // ~10s at 16kHz
 
     // Components
     std::unique_ptr<PipeWireCapture> capture_;
@@ -83,6 +84,7 @@ private:
     // State
     std::atomic<State> state_{State::IDLE};
     std::unique_ptr<std::thread> captureThread_;
+    std::atomic<bool> asrCancelled_{false};
 
     // Callbacks
     StateCallback stateCb_;

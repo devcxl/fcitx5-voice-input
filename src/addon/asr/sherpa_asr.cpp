@@ -12,7 +12,18 @@ namespace fcitx {
 SherpaAsrEngine::SherpaAsrEngine() = default;
 
 SherpaAsrEngine::~SherpaAsrEngine() {
-    Stop();
+    // Signal shutdown and wait for the inference thread to exit
+    running_ = false;
+    sessionActive_ = false;
+    audioQueue_.Push(AudioChunk{});  // wake up the thread
+    if (inferenceThread_ && inferenceThread_->joinable()) {
+        inferenceThread_->join();
+        inferenceThread_.reset();
+    }
+    if (stream_) {
+        DestroyOnlineStream(stream_);
+        stream_ = nullptr;
+    }
     if (recognizer_) {
         DestroyOnlineRecognizer(recognizer_);
         recognizer_ = nullptr;
@@ -64,7 +75,13 @@ bool SherpaAsrEngine::Init(const Config& config) {
 void SherpaAsrEngine::Start() {
     if (!recognizer_) return;
 
-    // Clear any remaining audio
+    // Join any finished thread from previous session
+    if (inferenceThread_ && inferenceThread_->joinable()) {
+        inferenceThread_->join();
+        inferenceThread_.reset();
+    }
+
+    // Clear any remaining audio from previous sessions
     AudioChunk dummy;
     while (audioQueue_.TryPop(dummy)) {}
 
@@ -72,7 +89,9 @@ void SherpaAsrEngine::Start() {
     stream_ = CreateOnlineStream(recognizer_);
     sessionActive_ = true;
 
-    if (!inferenceThread_ && running_) {
+    // Start the inference thread if not already running
+    if (!inferenceThread_) {
+        running_ = true;  // ← FIX: was missing in original
         inferenceThread_ = std::make_unique<std::thread>(
             &SherpaAsrEngine::InferenceLoop, this);
     }
@@ -89,37 +108,19 @@ void SherpaAsrEngine::FeedAudio(const float* pcm, size_t frames) {
 
 void SherpaAsrEngine::Stop() {
     sessionActive_ = false;
-    audioQueue_.Push(AudioChunk{});  // wake up the inference thread
+    audioQueue_.Push(AudioChunk{});  // wake up the inference thread (EOF)
 
-    if (inferenceThread_ && inferenceThread_->joinable()) {
-        inferenceThread_->join();
-        inferenceThread_.reset();
-    }
-
-    // Get final result from the stream
-    if (stream_ && recognizer_) {
-        while (IsOnlineStreamReady(recognizer_, stream_)) {
-            DecodeOnlineStream(recognizer_, stream_);
-        }
-        const char* result = GetOnlineStreamResultAsString(recognizer_, stream_);
-        if (result && std::strlen(result) > 0) {
-            if (resultCb_) {
-                resultCb_(std::string(result), true);
-            }
-        }
-    }
-
-    if (stream_) {
-        DestroyOnlineStream(stream_);
-        stream_ = nullptr;
-    }
+    // NOTE: do NOT join the thread here — that would block the main
+    // Fcitx event loop. The inference thread will process the final
+    // result and fire the callback on its own; cleanup happens in
+    // the next Start() call (or the destructor).
 }
 
 void SherpaAsrEngine::InferenceLoop() {
     while (running_ && sessionActive_) {
         auto chunk = audioQueue_.Pop();
 
-        // Empty chunk signals stop
+        // Empty chunk signals end of session
         if (chunk.samples.empty()) break;
 
         if (!stream_ || !recognizer_) continue;
@@ -141,6 +142,24 @@ void SherpaAsrEngine::InferenceLoop() {
                 resultCb_(std::string(result), false);  // partial
             }
         }
+    }
+
+    // Thread is exiting — if this is a genuine session end (not a shutdown),
+    // process the final result from the stream.
+    if (!running_) return;  // engine is shutting down, skip callback
+
+    if (stream_ && recognizer_) {
+        while (IsOnlineStreamReady(recognizer_, stream_)) {
+            DecodeOnlineStream(recognizer_, stream_);
+        }
+        const char* result = GetOnlineStreamResultAsString(recognizer_, stream_);
+        if (result && std::strlen(result) > 0) {
+            if (resultCb_) {
+                resultCb_(std::string(result), true);  // final
+            }
+        }
+        DestroyOnlineStream(stream_);
+        stream_ = nullptr;
     }
 }
 

@@ -4,6 +4,9 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <memory>
+
+using namespace std::chrono_literals;
 
 namespace fcitx {
 
@@ -15,6 +18,7 @@ Pipeline::Pipeline()
 
 Pipeline::~Pipeline() {
     Abort();
+    capture_->Stop();
 }
 
 void Pipeline::Init(const VoiceInputConfig& config) {
@@ -37,9 +41,16 @@ void Pipeline::StartRecording() {
 
     // Clear previous session data
     sessionAudio_.clear();
-    sessionAudio_.reserve(48000 * 10);  // reserve ~10s at 16kHz
+    sessionAudio_.reserve(kSessionReserveSamples);
 
-    capture_->RingBuffer()->Clear();
+    // Drain any stale audio from the ring buffer instead of Clear().
+    // Clear() with the PipeWire callback writing concurrently is a
+    // data race — Read() is safe to call concurrently with Write().
+    float discard[320];
+    for (int i = 0; i < 1000; ++i) {
+        if (capture_->RingBuffer()->Read(discard, 320) == 0) break;
+    }
+
     vad_->Reset();
 
     SetState(State::RECORDING);
@@ -60,22 +71,26 @@ void Pipeline::StopRecording() {
         captureThread_.reset();
     }
 
-    // Dispatch accumulated audio to ASR
+    // Dispatch accumulated audio to the ASR engine (non-blocking).
+    // The engine processes on its own inference thread and fires
+    // the result callback asynchronously.
     DispatchToAsr();
 }
 
 void Pipeline::Abort() {
-    State previous = state_.exchange(State::IDLE);
-    if (previous == State::RECORDING) {
-        if (captureThread_ && captureThread_->joinable()) {
-            captureThread_->join();
-            captureThread_.reset();
-        }
+    asrCancelled_ = true;
+
+    if (captureThread_ && captureThread_->joinable()) {
+        captureThread_->join();
+        captureThread_.reset();
     }
 
+    // Signal the ASR engine to stop (non-blocking — just pushes EOF)
     if (asrEngine_) {
         asrEngine_->Stop();
     }
+
+    state_.store(State::IDLE);
 }
 
 void Pipeline::SetConfig(const VoiceInputConfig& config) {
@@ -118,7 +133,7 @@ void Pipeline::CaptureLoop() {
         size_t read = capture_->RingBuffer()->Read(chunk, chunkFrames);
         if (read == 0) {
             // No data available, yield
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(5ms);
             continue;
         }
 
@@ -131,15 +146,6 @@ void Pipeline::CaptureLoop() {
         } else if (!sessionAudio_.empty()) {
             // Keep a short tail after speech ends (for VAD margin)
             sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
-        }
-
-        // Check VAD silence timeout
-        if (vad_->IsSilenceTimeout() && !sessionAudio_.empty()) {
-            // VAD detected end of speech — auto-stop
-            // But don't auto-stop here; let the VAD timeout be consumed
-            // by StopRecording() which is triggered by user releasing key
-            // OR by a future auto-stop feature
-            continue;
         }
     }
 }
@@ -161,16 +167,20 @@ void Pipeline::DispatchToAsr() {
         return;
     }
 
-    // Feed all accumulated audio to ASR
+    // Start ASR session and feed all accumulated audio.
+    // The engine starts its own inference thread; Start/FeedAudio/Stop
+    // are all non-blocking (the thread processes audio asynchronously).
     asrEngine_->Start();
     asrEngine_->FeedAudio(sessionAudio_.data(), sessionAudio_.size());
-    asrEngine_->Stop();
+    sessionAudio_.clear();
+    asrEngine_->Stop();  // non-blocking — signals EOF, returns immediately
 }
 
 void Pipeline::OnAsrResult(const std::string& text, bool isFinal) {
-    // Called from ASR thread — this must be dispatched to main thread
-    // via Fcitx event loop for commitString().
-    // The engine.cpp layer is responsible for the dispatch.
+    // Called from ASR inference thread — check if pipeline is still alive
+    // (could have been cancelled by Abort/cleanup)
+    if (asrCancelled_) return;
+
     if (isFinal && !text.empty() && resultCb_) {
         resultCb_(text);
         SetState(State::IDLE);

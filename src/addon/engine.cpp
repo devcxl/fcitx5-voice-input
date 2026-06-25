@@ -7,13 +7,12 @@
 namespace fcitx {
 
 class VoiceInputAddonFactory : public AddonFactory {
-    std::unique_ptr<AddonInstance> create(AddonManager* manager) override {
-        return std::make_unique<VoiceInputEngine>(
-            manager->instance());
+public:
+    AddonInstance* create(AddonManager* manager) override {
+        return new VoiceInputEngine(manager->instance());
     }
 };
-
-FCITX_ADDON_FACTORY(voice_input_addon, VoiceInputAddonFactory);
+FCITX_ADDON_FACTORY(VoiceInputAddonFactory);
 
 VoiceInputEngine::VoiceInputEngine(Instance* instance)
     : instance_(instance)
@@ -40,10 +39,10 @@ void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
     activeIc_ = nullptr;
 }
 
-bool VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
+void VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
                                  KeyEvent& keyEvent) {
     auto* ic = keyEvent.inputContext();
-    if (!ic) return false;
+    if (!ic) return;
 
     Key triggerKey = config_.triggerKey;
 
@@ -53,9 +52,9 @@ bool VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
             pipeline_->StartRecording();
             activeIc_ = ic;
             keyEvent.filter();
-            return true;
+            return;
         }
-        return false;
+        return;
     }
 
     // Trigger key released → stop recording
@@ -63,12 +62,12 @@ bool VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
         if (pipeline_->GetState() == Pipeline::State::RECORDING) {
             pipeline_->StopRecording();
             keyEvent.filter();
-            return true;
+            return;
         }
-        return false;
+        return;
     }
 
-    return false;
+    return;
 }
 
 void VoiceInputEngine::OnPipelineStateChange(
@@ -80,14 +79,18 @@ void VoiceInputEngine::OnPipelineStateChange(
 void VoiceInputEngine::OnAsrResult(const std::string& text) {
     // This is called from the ASR thread.
     // Dispatch to main thread via Fcitx event loop to call commitString().
-    if (!activeIc_) return;
+
+    // Capture the active IC pointer, then verify it's still active
+    // when the deferred event fires. This prevents committing to a
+    // stale or destroyed InputContext after IM switching.
+    auto* ic = activeIc_;
+    if (!ic) return;
 
     std::string result = text;
-    auto* ic = activeIc_;
 
     instance_->eventLoop().addDeferredEvent(
         [this, ic, result]() {
-            if (ic) {
+            if (activeIc_ == ic) {
                 ic->commitString(result);
             }
         });

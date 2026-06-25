@@ -76,10 +76,10 @@ public:
 
     bool Empty() const { return Size() == 0; }
 
-    void Clear() {
-        head_.store(0, std::memory_order_relaxed);
-        tail_.store(0, std::memory_order_relaxed);
-    }
+    // NOTE: Clear() omitted intentionally. Clearing the buffer while the
+    // PipeWire callback may be writing concurrently causes a data race.
+    // Instead, drain stale audio via Read() until empty before starting
+    // a new recording session (see Pipeline::StartRecording).
 
     size_t Capacity() const { return capacity_; }
 
