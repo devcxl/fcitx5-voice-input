@@ -6,6 +6,7 @@
 #include <fcitx/inputcontext.h>
 #include <fcitx/event.h>
 #include <fcitx/instance.h>
+#include <fcitx-utils/eventdispatcher.h>
 
 #include "config/config.h"
 #include "pipeline/pipeline.h"
@@ -51,6 +52,7 @@ private:
 
     Instance* instance_;
     std::unique_ptr<Pipeline> pipeline_;
+    EventDispatcher eventDispatcher_;
     VoiceInputConfig config_;
 
     // Track active input context for result delivery

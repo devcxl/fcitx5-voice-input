@@ -1,7 +1,7 @@
 #include "engine.h"
 
 #include <fcitx-utils/log.h>
-#include <fcitx-utils/eventloop.h>
+#include <fcitx-utils/eventdispatcher.h>
 #include <fcitx/addonloader.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/instance.h>
@@ -20,6 +20,7 @@ VoiceInputEngine::VoiceInputEngine(Instance* instance)
     : instance_(instance)
     , pipeline_(std::make_unique<Pipeline>())
 {
+    eventDispatcher_.attach(&instance_->eventLoop());
 }
 
 VoiceInputEngine::~VoiceInputEngine() {
@@ -80,17 +81,16 @@ void VoiceInputEngine::OnPipelineStateChange(
 
 void VoiceInputEngine::OnAsrResult(const std::string& text) {
     // This is called from the ASR thread.
-    // Dispatch to main thread via Fcitx event loop to call commitString().
+    // Dispatch to main thread via EventDispatcher::schedule().
+    // The IC pointer is captured by value; when the deferred event fires
+    // we verify activeIc_ hasn't been reassigned.
 
-    // Capture the active IC pointer, then verify it's still active
-    // when the deferred event fires. This prevents committing to a
-    // stale or destroyed InputContext after IM switching.
     auto* ic = activeIc_;
     if (!ic) return;
 
     std::string result = text;
 
-    instance_->eventLoop().addDeferredEvent(
+    eventDispatcher_.schedule(
         [this, ic, result]() {
             if (activeIc_ == ic) {
                 ic->commitString(result);
