@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake g++ pkg-config \
+            libfcitx5core-dev fcitx5-modules-dev libfcitx5utils-dev \
+            libpipewire-0.3-dev libspa-0.2-dev \
+            nlohmann-json3-dev
+
+      - name: Cache sherpa-onnx C API
+        id: cache-sherpa
+        uses: actions/cache@v4
+        with:
+          path: sherpa-onnx-linux-x64
+          key: sherpa-onnx-v1.10.31
+
+      - name: Download sherpa-onnx C API
+        if: steps.cache-sherpa.outputs.cache-hit != 'true'
+        run: |
+          wget -qO- \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.10.31/sherpa-onnx-linux-x64.tar.bz2 \
+            | tar xj
+
+      - name: Setup pkg-config for sherpa-onnx
+        run: |
+          DIR="$PWD/sherpa-onnx-linux-x64"
+          mkdir -p "$DIR/lib/pkgconfig"
+          cat > "$DIR/lib/pkgconfig/sherpa-onnx.pc" <<EOF
+          prefix=$DIR
+          exec_prefix=\${prefix}
+          libdir=\${exec_prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: sherpa-onnx
+          Description: Sherpa ONNX speech recognition C API
+          Version: 1.10.31
+          Libs: -L\${libdir} -lsherpa-onnx-c-api
+          Cflags: -I\${includedir}
+          EOF
+          echo "PKG_CONFIG_PATH=$DIR/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
