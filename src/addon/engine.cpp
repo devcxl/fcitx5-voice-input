@@ -29,7 +29,7 @@ VoiceInputEngine::VoiceInputEngine(Instance *instance)
 VoiceInputEngine::~VoiceInputEngine() { pipeline_->Abort(); }
 
 void VoiceInputEngine::reloadConfig() {
-    readAsIni(config_, StandardPath::Type::Config, "conf/voiceinput.conf");
+    readAsIni(config_, "conf/voiceinput.conf");
 }
 
 void VoiceInputEngine::setConfig(const RawConfig &rawConfig) {
@@ -38,8 +38,7 @@ void VoiceInputEngine::setConfig(const RawConfig &rawConfig) {
     FCITX_INFO() << "[voice-input] setConfig called, TriggerKeys='"
                  << rawConfig.valueByPath("TriggerKeys") << "'";
 
-    bool saved = safeSaveAsIni(config_, StandardPath::Type::Config,
-                               "conf/voiceinput.conf");
+    bool saved = safeSaveAsIni(config_, "conf/voiceinput.conf");
     FCITX_INFO() << "[voice-input] setConfig saved=" << saved;
 
     // Re-apply config to pipeline if initialized
