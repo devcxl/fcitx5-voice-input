@@ -1,0 +1,31 @@
+# Maintainer: devcxl <64475363+devcxl@users.noreply.github.com>
+
+pkgname=fcitx5-voice-input
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Fcitx5 voice input addon with local ASR via sherpa-onnx"
+arch=('x86_64')
+url="https://github.com/devcxl/fcitx5-voice-input"
+license=('Apache')
+depends=(
+    'fcitx5'
+    'pipewire'
+    'nlohmann-json'
+    'sherpa-onnx'
+)
+makedepends=('cmake' 'pkg-config')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    cmake --build build
+}
+
+package() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    cmake --install build --prefix "${pkgdir}/usr"
+}

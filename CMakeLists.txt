@@ -118,3 +118,20 @@ if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# ─── Packaging ──────────────────────────────────────────────────────────────
+set(CPACK_PACKAGE_NAME "fcitx5-voice-input")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Fcitx5 voice input addon with local ASR")
+set(CPACK_PACKAGE_VENDOR "devcxl")
+set(CPACK_PACKAGE_CONTACT "64475363+devcxl@users.noreply.github.com")
+
+# DEB package
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "devcxl <64475363+devcxl@users.noreply.github.com>")
+set(CPACK_DEBIAN_PACKAGE_SECTION "libs")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_GENERATE_SHLIBS ON)
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${url}")
+
+include(CPack)

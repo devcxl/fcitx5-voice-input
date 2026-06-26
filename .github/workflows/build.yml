@@ -1,4 +1,4 @@
-name: Build
+name: build
 
 on:
   push:
@@ -6,37 +6,43 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  SHERPA_ONNX_VERSION: v1.12.39
+  SHERPA_ONNX_DIR: sherpa-onnx-v1.12.39-linux-x64-shared-no-tts
+
 jobs:
   build:
     runs-on: ubuntu-24.04
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
             libfcitx5core-dev \
             libpipewire-0.3-dev libspa-0.2-dev \
-            nlohmann-json3-dev
+            nlohmann-json3-dev \
+            dpkg-dev
 
       - name: Cache sherpa-onnx C API
         id: cache-sherpa
         uses: actions/cache@v4
         with:
-          path: sherpa-onnx-v1.12.39-linux-x64-shared-no-tts
-          key: sherpa-onnx-v1.12.39-shared-no-tts
+          path: ${{ env.SHERPA_ONNX_DIR }}
+          key: sherpa-${{ env.SHERPA_ONNX_VERSION }}-shared-no-tts
 
       - name: Download sherpa-onnx C API
         if: steps.cache-sherpa.outputs.cache-hit != 'true'
         run: |
           wget -qO- \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.39/sherpa-onnx-v1.12.39-linux-x64-shared-no-tts.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/${{ env.SHERPA_ONNX_VERSION }}/${{ env.SHERPA_ONNX_DIR }}.tar.bz2 \
             | tar -xj
 
       - name: Setup pkg-config for sherpa-onnx
         run: |
-          DIR="$PWD/sherpa-onnx-v1.12.39-linux-x64-shared-no-tts"
+          DIR="$PWD/${{ env.SHERPA_ONNX_DIR }}"
           mkdir -p "$DIR/lib/pkgconfig"
           cat > "$DIR/lib/pkgconfig/sherpa-onnx.pc" <<EOF
           prefix=$DIR
@@ -46,14 +52,83 @@ jobs:
 
           Name: sherpa-onnx
           Description: Sherpa ONNX speech recognition C API
-          Version: 1.12.39
+          Version: ${{ env.SHERPA_ONNX_VERSION }}
           Libs: -L\${libdir} -lsherpa-onnx-c-api
           Cflags: -I\${includedir}
           EOF
           echo "PKG_CONFIG_PATH=$DIR/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 
       - name: Build
         run: cmake --build build -j"$(nproc)"
+
+      # ─── DEB package ──────────────────────────────────────────────────────
+      - name: Build DEB package
+        run: |
+          cd build
+          cpack -G DEB
+          mv *.deb ../
+          cd ..
+          echo "::group::DEB info"
+          dpkg-deb --info *.deb
+          echo "::endgroup::"
+
+      # ─── Arch package ─────────────────────────────────────────────────────
+      - name: Build Arch package (Docker)
+        run: |
+          mkdir -p /tmp/archpkg
+
+          # Source tarball matching PKGBUILD naming
+          git archive --prefix=fcitx5-voice-input-0.1.0/ \
+            -o /tmp/archpkg/fcitx5-voice-input-0.1.0.tar.gz HEAD
+
+          cp aur/PKGBUILD /tmp/archpkg/
+          cp -r ${{ env.SHERPA_ONNX_DIR }} /tmp/archpkg/
+
+          # Build in Arch Linux container
+          docker run --rm -v /tmp/archpkg:/build archlinux:latest bash -c "
+            set -eux
+            pacman -Syu --noconfirm base-devel cmake pkg-config \
+              fcitx5 pipewire nlohmann-json
+
+            # Create .pc for sherpa-onnx
+            cd /build/${{ env.SHERPA_ONNX_DIR }}
+            mkdir -p lib/pkgconfig
+            cat > lib/pkgconfig/sherpa-onnx.pc << PCEOF
+            prefix=/build/${{ env.SHERPA_ONNX_DIR }}
+            exec_prefix=\\\${prefix}
+            libdir=\\\${exec_prefix}/lib
+            includedir=\\\${prefix}/include
+            Name: sherpa-onnx
+            Description: Sherpa ONNX speech recognition C API
+            Version: ${{ env.SHERPA_ONNX_VERSION }}
+            Libs: -L\\\${libdir} -lsherpa-onnx-c-api
+            Cflags: -I\\\${includedir}
+PCEOF
+
+            cd /build
+            useradd -m builder
+            chown -R builder:builder /build
+
+            su builder -c ' \
+              cd /build && \
+              PKG_CONFIG_PATH=/build/${{ env.SHERPA_ONNX_DIR }}/lib/pkgconfig \
+                makepkg -f --nodeps --noconfirm'
+          "
+
+          cp /tmp/archpkg/*.pkg.tar.zst . 2>/dev/null || true
+          echo "::group::Arch package"
+          ls -lh *.pkg.tar.zst 2>/dev/null || echo '(no Arch package)'
+          echo "::endgroup::"
+
+      # ─── Upload artifacts ────────────────────────────────────────────────
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: |
+            *.deb
+            *.pkg.tar.zst
+          if-no-files-found: warn
