@@ -102,8 +102,10 @@ target_compile_definitions(voice-input-addon PRIVATE
 
 # ─── Optional: sherpa-onnx local ASR ─────────────────────────────────────────
 if(ENABLE_SHERPA_ONNX AND SHERPA_ONNX_FOUND)
-    list(APPEND ADDON_SOURCES src/addon/asr/sherpa_asr.cpp)
-    list(APPEND ADDON_HEADERS src/addon/asr/sherpa_asr.h)
+    target_sources(voice-input-addon PRIVATE
+        src/addon/asr/sherpa_asr.cpp
+        src/addon/asr/sherpa_asr.h
+    )
     target_include_directories(voice-input-addon PRIVATE ${SHERPA_ONNX_INCLUDE_DIRS})
     target_link_libraries(voice-input-addon PRIVATE ${SHERPA_ONNX_LIBRARIES})
     target_compile_definitions(voice-input-addon PRIVATE ENABLE_SHERPA_ONNX)
