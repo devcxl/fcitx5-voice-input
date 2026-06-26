@@ -77,7 +77,7 @@ set(ADDON_HEADERS
 )
 
 # ─── Library ──────────────────────────────────────────────────────────────────
-add_library(voice-input-addon SHARED ${ADDON_SOURCES} ${ADDON_HEADERS})
+add_library(voice-input-addon MODULE ${ADDON_SOURCES} ${ADDON_HEADERS})
 
 target_include_directories(voice-input-addon PRIVATE
     ${FCITX5_INCLUDE_DIRS}
