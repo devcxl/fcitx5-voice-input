@@ -85,39 +85,44 @@ jobs:
             -o /tmp/archpkg/fcitx5-voice-input-0.1.0.tar.gz HEAD
 
           cp aur/PKGBUILD /tmp/archpkg/
-          cp -r ${{ env.SHERPA_ONNX_DIR }} /tmp/archpkg/
 
           # Build in Arch Linux container
           docker run --rm -v /tmp/archpkg:/build archlinux:latest bash -c "
             set -eux
+
+            # Install build dependencies
             pacman -Syu --noconfirm base-devel cmake pkg-config \
-              fcitx5 pipewire nlohmann-json
+              fcitx5 pipewire nlohmann-json wget
 
-            # Create .pc for sherpa-onnx
-            cd /build/${{ env.SHERPA_ONNX_DIR }}
+            # Download sherpa-onnx (no cache dependency in Arch)
+            wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/${{ env.SHERPA_ONNX_VERSION }}/${{ env.SHERPA_ONNX_DIR }}.tar.bz2
+            tar -xjf ${{ env.SHERPA_ONNX_DIR }}.tar.bz2
+
+            # Create pkg-config file for sherpa-onnx
+            cd ${{ env.SHERPA_ONNX_DIR }}
             mkdir -p lib/pkgconfig
-            cat > lib/pkgconfig/sherpa-onnx.pc << PCEOF
-            prefix=/build/${{ env.SHERPA_ONNX_DIR }}
-            exec_prefix=\\\${prefix}
-            libdir=\\\${exec_prefix}/lib
-            includedir=\\\${prefix}/include
-            Name: sherpa-onnx
-            Description: Sherpa ONNX speech recognition C API
-            Version: ${{ env.SHERPA_ONNX_VERSION }}
-            Libs: -L\\\${libdir} -lsherpa-onnx-c-api
-            Cflags: -I\\\${includedir}
-PCEOF
+            echo 'prefix=/build/${{ env.SHERPA_ONNX_DIR }}' > lib/pkgconfig/sherpa-onnx.pc
+            echo 'exec_prefix=\${prefix}' >> lib/pkgconfig/sherpa-onnx.pc
+            echo 'libdir=\${exec_prefix}/lib' >> lib/pkgconfig/sherpa-onnx.pc
+            echo 'includedir=\${prefix}/include' >> lib/pkgconfig/sherpa-onnx.pc
+            echo '' >> lib/pkgconfig/sherpa-onnx.pc
+            echo 'Name: sherpa-onnx' >> lib/pkgconfig/sherpa-onnx.pc
+            echo 'Description: Sherpa ONNX speech recognition C API' >> lib/pkgconfig/sherpa-onnx.pc
+            echo 'Version: ${{ env.SHERPA_ONNX_VERSION }}' >> lib/pkgconfig/sherpa-onnx.pc
+            echo 'Libs: -L\${libdir} -lsherpa-onnx-c-api' >> lib/pkgconfig/sherpa-onnx.pc
+            echo 'Cflags: -I\${includedir}' >> lib/pkgconfig/sherpa-onnx.pc
 
+            # Build the package as a non-root user
             cd /build
             useradd -m builder
             chown -R builder:builder /build
-
             su builder -c ' \
               cd /build && \
               PKG_CONFIG_PATH=/build/${{ env.SHERPA_ONNX_DIR }}/lib/pkgconfig \
                 makepkg -f --nodeps --noconfirm'
           "
 
+          # Collect the built package
           cp /tmp/archpkg/*.pkg.tar.zst . 2>/dev/null || true
           echo "::group::Arch package"
           ls -lh *.pkg.tar.zst 2>/dev/null || echo '(no Arch package)'
