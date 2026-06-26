@@ -7,6 +7,7 @@ pkgdesc="Fcitx5 voice input addon with local ASR via sherpa-onnx"
 arch=('x86_64')
 url="https://github.com/devcxl/fcitx5-voice-input"
 license=('Apache')
+options=('!debug')
 depends=(
     'fcitx5'
     'pipewire'
