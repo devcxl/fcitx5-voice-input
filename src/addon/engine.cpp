@@ -1,8 +1,11 @@
 #include <algorithm>
 
+#include <fcitx-config/iniparser.h>
 #include <fcitx-utils/eventdispatcher.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/standardpath.h>
+#include <fcitx/addonfactory.h>
+#include <fcitx/addoninstance.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/instance.h>
 
@@ -23,6 +26,21 @@ VoiceInputEngine::VoiceInputEngine(Instance *instance)
 }
 
 VoiceInputEngine::~VoiceInputEngine() { pipeline_->Abort(); }
+
+void VoiceInputEngine::reloadConfig() {
+    readAsIni(config_, StandardPath::Type::Config, "conf/voiceinput.conf");
+}
+
+void VoiceInputEngine::setConfig(const RawConfig &rawConfig) {
+    config_.load(rawConfig, true);
+    safeSaveAsIni(config_, StandardPath::Type::Config,
+                  "conf/voiceinput.conf");
+
+    // Re-apply config to pipeline if initialized
+    if (initialized_) {
+        pipeline_->SetConfig(config_);
+    }
+}
 
 void VoiceInputEngine::activate(const InputMethodEntry &entry,
                                 InputContextEvent &event) {
@@ -45,14 +63,10 @@ void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
 void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
                                 KeyEvent &keyEvent) {
     FCITX_UNUSED(entry);
-    auto *ic = keyEvent.inputContext();
-    if (!ic)
-        return;
 
     const auto &triggerKeys = config_.triggerKeys.value();
     const auto &key = keyEvent.key();
 
-    // Check if any trigger key matches
     bool matched = std::ranges::any_of(
         triggerKeys, [&key](const Key &tk) { return key == tk; });
 
@@ -65,7 +79,6 @@ void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
         // Key pressed → start recording
         if (pipeline_->GetState() == Pipeline::State::IDLE) {
             pipeline_->StartRecording();
-            activeIc_ = ic;
         }
     } else {
         // Key released → stop recording
@@ -78,7 +91,7 @@ void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
 void VoiceInputEngine::OnPipelineStateChange(Pipeline::State oldState,
                                              Pipeline::State newState) {
     FCITX_UNUSED(oldState);
-    FCITX_DEBUG() << "[voice-input] State: " << pipeline_->StateName();
+    FCITX_DEBUG() << "[voice-input] State change: " << pipeline_->StateName();
 }
 
 void VoiceInputEngine::OnAsrResult(const std::string &text) {
@@ -93,9 +106,11 @@ void VoiceInputEngine::OnAsrResult(const std::string &text) {
     });
 }
 
-void VoiceInputEngine::LoadConfig() {
-    // Load from fcitx5 standard path (~/.config/fcitx5/conf/voiceinput.conf)
-    config_.load();
+void VoiceInputEngine::CommitText(const std::string &text) {
+    auto *ic = activeIc_;
+    if (ic) {
+        ic->commitString(text);
+    }
 }
 
 void VoiceInputEngine::InitializeIfNeeded() {
@@ -158,7 +173,7 @@ void VoiceInputEngine::InitializeIfNeeded() {
 
 } // namespace fcitx
 
-// ── Fcitx5 addon factory ───────────────────────────────────────────────
+// Fcitx5 addon factory
 class VoiceInputAddonFactory : public AddonFactory {
 public:
     AddonInstance *create(AddonManager *manager) override {

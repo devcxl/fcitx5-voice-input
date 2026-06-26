@@ -28,7 +28,6 @@ public:
     VoiceInputEngine(Instance *instance);
     ~VoiceInputEngine() override;
 
-    // ── InputMethodEngineV2 interface ─────────────────────────────────
     void activate(const InputMethodEntry &entry,
                   InputContextEvent &event) override;
 
@@ -40,32 +39,21 @@ public:
 
     // ── Fcitx5 config tool support ───────────────────────────────────
     const Configuration *getConfig() const override { return &config_; }
-    void setConfig(const RawConfig &rawConfig) override {
-        config_.load(rawConfig, true);
-        safeSaveAsIni(config_, "conf/voiceinput.conf");
-    }
-    void reloadConfig() override {
-        config_.load();
-    }
+    void setConfig(const RawConfig &rawConfig) override;
+    void reloadConfig() override;
 
 private:
-    // ── Pipeline callbacks ────────────────────────────────────────────
     void OnPipelineStateChange(Pipeline::State oldState, Pipeline::State newState);
     void OnAsrResult(const std::string &text);
-
-    // ── Helpers ───────────────────────────────────────────────────────
     void CommitText(const std::string &text);
     void InitializeIfNeeded();
-    void LoadConfig();
 
     Instance *instance_;
     std::unique_ptr<Pipeline> pipeline_;
     EventDispatcher eventDispatcher_;
     VoiceInputConfig config_;
 
-    // Track active input context for result delivery
     InputContext *activeIc_ = nullptr;
-
     bool initialized_ = false;
 };
 
