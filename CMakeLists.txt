@@ -22,6 +22,18 @@ if(NOT FCITX5_FOUND)
     pkg_check_modules(FCITX5 REQUIRED Fcitx5Core)
 endif()
 
+# Determine fcitx5 addon directory (handles multiarch like Ubuntu's lib/x86_64-linux-gnu)
+# Use FCITX5_LIBRARY_DIRS from pkg-config, then make relative to install prefix
+# so packaging (CPack, PKGBUILD) works correctly.
+if(FCITX5_LIBRARY_DIRS)
+    list(GET FCITX5_LIBRARY_DIRS 0 _fcitx5_libdir)
+    file(RELATIVE_PATH _rel_fcitx5_libdir "${CMAKE_INSTALL_PREFIX}" "${_fcitx5_libdir}")
+    set(FCITX5_ADDON_DIR "${_rel_fcitx5_libdir}/fcitx5")
+    message(STATUS "Fcitx5 addon dir: ${FCITX5_ADDON_DIR}")
+else()
+    set(FCITX5_ADDON_DIR "lib/fcitx5")
+endif()
+
 # PipeWire audio capture
 pkg_check_modules(PIPEWIRE QUIET pipewire-0.3)
 if(NOT PIPEWIRE_FOUND)
@@ -108,7 +120,7 @@ configure_file(
 
 # ─── Install ──────────────────────────────────────────────────────────────────
 install(TARGETS voice-input-addon
-    LIBRARY DESTINATION lib/fcitx5
+    LIBRARY DESTINATION ${FCITX5_ADDON_DIR}
 )
 
 install(FILES ${CMAKE_BINARY_DIR}/share/fcitx5/addon/voiceinput.conf
