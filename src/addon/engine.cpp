@@ -8,7 +8,10 @@
 #include <fcitx/addonfactory.h>
 #include <fcitx/addoninstance.h>
 #include <fcitx/addonmanager.h>
+#include <fcitx/inputcontext.h>
+#include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
+#include <fcitx/userinterface.h>
 
 #include "engine.h"
 
@@ -169,7 +172,7 @@ void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
                 ic->inputPanel().setAuxUp(Text(text));
             }
             ic->updateUserInterface(
-                InputContext::UserInterfaceComponent::InputPanel);
+                UserInterfaceComponent::InputPanel);
         });
     } else {
         // Called from main thread already — update directly
@@ -179,7 +182,7 @@ void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
             ic->inputPanel().setAuxUp(Text(text));
         }
         ic->updateUserInterface(
-            InputContext::UserInterfaceComponent::InputPanel);
+            UserInterfaceComponent::InputPanel);
     }
 }
 
