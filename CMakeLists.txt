@@ -115,11 +115,6 @@ install(FILES ${CMAKE_BINARY_DIR}/share/fcitx5/addon/voiceinput.conf
     DESTINATION ${CMAKE_INSTALL_DATADIR}/fcitx5/addon
 )
 
-install(DIRECTORY models/
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/fcitx5-voice-input/models
-    OPTIONAL
-)
-
 # ─── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTS)
     enable_testing()
