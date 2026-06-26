@@ -1,10 +1,12 @@
 #include "openai_asr.h"
 
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <sstream>
 
 #include <curl/curl.h>
+#include <fcitx-utils/log.h>
 #include <nlohmann/json.hpp>
 
 namespace fcitx {
@@ -87,9 +89,16 @@ bool OpenaiCompatAsrEngine::Init(const Config& config) {
         language_ = "zh";
     }
 
+    // Log config (mask API key)
+    std::string maskedKey = apiKey_.empty() ? "(none)" :
+        apiKey_.substr(0, 8) + "..." + apiKey_.substr(apiKey_.size() - 4);
+    FCITX_INFO() << "[voice-input:openai] Init: endpoint=" << apiEndpoint_
+                 << " model=" << modelName_ << " language=" << language_
+                 << " apiKey=" << maskedKey;
+
     // Validate: we need at least an API key
     if (apiKey_.empty()) {
-        std::cerr << "[voice-input:openai] API key not configured" << std::endl;
+        FCITX_ERROR() << "[voice-input:openai] API key not configured";
         return false;
     }
 
@@ -98,23 +107,34 @@ bool OpenaiCompatAsrEngine::Init(const Config& config) {
 
 void OpenaiCompatAsrEngine::Start() {
     pcmBuffer_.clear();
+    FCITX_DEBUG() << "[voice-input:openai] Start (buffer cleared)";
 }
 
 void OpenaiCompatAsrEngine::FeedAudio(const float* pcm, size_t frames) {
     pcmBuffer_.insert(pcmBuffer_.end(), pcm, pcm + frames);
+    float durSec = pcmBuffer_.size() / 16000.0f;
+    if (static_cast<int>(pcmBuffer_.size()) % 16000 < static_cast<int>(frames)) {
+        FCITX_DEBUG() << "[voice-input:openai] FeedAudio: buffer=" << pcmBuffer_.size()
+                      << " frames (" << durSec << "s)";
+    }
 }
 
 void OpenaiCompatAsrEngine::Stop() {
     if (pcmBuffer_.empty()) {
-        // No audio to transcribe
+        FCITX_WARN() << "[voice-input:openai] Stop with empty buffer — no audio to transcribe";
         if (resultCb_) {
             resultCb_("", true);
         }
         return;
     }
 
+    float durSec = pcmBuffer_.size() / 16000.0f;
+    FCITX_INFO() << "[voice-input:openai] Stop: " << pcmBuffer_.size()
+                 << " frames (" << durSec << "s), starting transcription";
+
     // Wait for previous worker to finish, then start a new one
     if (workerThread_ && workerThread_->joinable()) {
+        FCITX_DEBUG() << "[voice-input:openai] Joining previous worker thread";
         workerThread_->join();
     }
     cancelled_ = false;
@@ -123,21 +143,52 @@ void OpenaiCompatAsrEngine::Stop() {
 }
 
 void OpenaiCompatAsrEngine::TranscribeWorker() {
+    auto finishEmpty = [this]() {
+        if (resultCb_) {
+            resultCb_("", true);
+        }
+    };
+
     // Take ownership of the buffer
     std::vector<float> audio;
     std::swap(audio, pcmBuffer_);
 
-    if (cancelled_) return;
+    size_t audioFrames = audio.size();
+    float audioDurSec = audioFrames / 16000.0f;
+    FCITX_INFO() << "[voice-input:openai] TranscribeWorker: processing "
+                 << audioFrames << " frames (" << audioDurSec << "s)";
+
+    if (cancelled_) {
+        FCITX_INFO() << "[voice-input:openai] Cancelled before WAV encoding";
+        return;
+    }
 
     // Encode to WAV
+    auto encodeStart = std::chrono::steady_clock::now();
     std::vector<uint8_t> wavData = FloatPcmToWav(audio.data(), audio.size());
+    auto encodeEnd = std::chrono::steady_clock::now();
+    auto encodeUs = std::chrono::duration_cast<std::chrono::microseconds>(encodeEnd - encodeStart).count();
+    FCITX_DEBUG() << "[voice-input:openai] WAV encoding: " << wavData.size()
+                  << " bytes in " << encodeUs << "us (" << (encodeUs / 1000) << "ms)";
 
-    if (cancelled_) return;
+    if (cancelled_) {
+        FCITX_INFO() << "[voice-input:openai] Cancelled before HTTP request";
+        return;
+    }
 
     // Make HTTP request
+    auto httpStart = std::chrono::steady_clock::now();
     std::string response = DoHttpRequest(wavData);
+    auto httpEnd = std::chrono::steady_clock::now();
+    auto httpMs = std::chrono::duration_cast<std::chrono::milliseconds>(httpEnd - httpStart).count();
 
-    if (cancelled_) return;
+    if (cancelled_) {
+        FCITX_INFO() << "[voice-input:openai] Cancelled after HTTP request";
+        return;
+    }
+
+    FCITX_INFO() << "[voice-input:openai] HTTP response: " << response.size()
+                 << " bytes in " << httpMs << "ms";
 
     // Parse JSON response
     try {
@@ -146,20 +197,27 @@ void OpenaiCompatAsrEngine::TranscribeWorker() {
         // Check for error
         if (json.contains("error")) {
             std::string errMsg = json["error"].value("message", "unknown error");
+            FCITX_ERROR() << "[voice-input:openai] API error: " << errMsg;
             if (errorCb_) {
                 errorCb_("API error: " + errMsg);
             }
+            finishEmpty();
             return;
         }
 
         std::string text = json.value("text", "");
-        if (!text.empty() && resultCb_) {
+        FCITX_INFO() << "[voice-input:openai] transcript: \""
+                     << text << "\" (" << text.size() << " chars)";
+        if (resultCb_) {
             resultCb_(text, true);
         }
     } catch (const std::exception& e) {
+        FCITX_ERROR() << "[voice-input:openai] JSON parse error: " << e.what()
+                      << " response=" << response.substr(0, 200);
         if (errorCb_) {
             errorCb_("JSON parse error: " + std::string(e.what()));
         }
+        finishEmpty();
     }
 }
 
@@ -170,6 +228,7 @@ std::vector<uint8_t> OpenaiCompatAsrEngine::EncodeToWav(const float* pcm, size_t
 std::string OpenaiCompatAsrEngine::DoHttpRequest(const std::vector<uint8_t>& wavData) {
     CURL* curl = curl_easy_init();
     if (!curl) {
+        FCITX_ERROR() << "[voice-input:openai] Failed to initialize libcurl";
         if (errorCb_) errorCb_("Failed to initialize libcurl");
         return "";
     }
@@ -183,6 +242,9 @@ std::string OpenaiCompatAsrEngine::DoHttpRequest(const std::vector<uint8_t>& wav
         url += '/';
     }
     url += "audio/transcriptions";
+
+    FCITX_INFO() << "[voice-input:openai] POST " << url
+                 << " (wav=" << wavData.size() << " bytes)";
 
     // Set up multipart form
     curl_mime* mime = curl_mime_init(curl);
@@ -252,9 +314,15 @@ std::string OpenaiCompatAsrEngine::DoHttpRequest(const std::vector<uint8_t>& wav
 
     if (res != CURLE_OK) {
         std::string err = curl_easy_strerror(res);
+        FCITX_ERROR() << "[voice-input:openai] HTTP request failed: " << err
+                      << " (url=" << url << ")";
         if (errorCb_) errorCb_("HTTP request failed: " + err);
         return "";
     }
+
+    FCITX_DEBUG() << "[voice-input:openai] HTTP " << httpCode
+                  << " response=" << response.size() << " bytes"
+                  << " contentType=" << contentType;
 
     if (httpCode != 200) {
         std::string errMsg = "HTTP " + std::to_string(httpCode);
@@ -271,6 +339,7 @@ std::string OpenaiCompatAsrEngine::DoHttpRequest(const std::vector<uint8_t>& wav
                 errMsg += ": " + response;
             }
         }
+        FCITX_ERROR() << "[voice-input:openai] API error: " << errMsg;
         if (errorCb_) errorCb_("API error: " + errMsg);
         return "";
     }
