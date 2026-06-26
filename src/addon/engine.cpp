@@ -181,4 +181,4 @@ public:
         return new fcitx::VoiceInputEngine(manager->instance());
     }
 };
-FCITX_ADDON_FACTORY_V2(voiceinput, VoiceInputAddonFactory);
+FCITX_ADDON_FACTORY(VoiceInputAddonFactory);
