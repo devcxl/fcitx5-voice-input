@@ -166,28 +166,22 @@ void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
         eventDispatcher_.schedule([this, ic, text]() {
             if (activeIc_ != ic)
                 return;
-            if (text.empty()) {
-                ic->inputPanel().reset();
-            } else {
-                ic->inputPanel().setAuxUp(Text(text));
-            }
-            ic->updateUserInterface(
-                UserInterfaceComponent::InputPanel);
+            ic->inputPanel().setClientPreedit(Text(text));
+            ic->updatePreedit();
         });
     } else {
         // Called from main thread already — update directly
-        if (text.empty()) {
-            ic->inputPanel().reset();
-        } else {
-            ic->inputPanel().setAuxUp(Text(text));
-        }
-        ic->updateUserInterface(
-            UserInterfaceComponent::InputPanel);
+        ic->inputPanel().setClientPreedit(Text(text));
+        ic->updatePreedit();
     }
 }
 
 void VoiceInputEngine::ClearUI() {
-    SetUIStatus("", true);
+    auto *ic = activeIc_;
+    if (!ic)
+        return;
+    ic->inputPanel().reset();
+    ic->updatePreedit();
 }
 
 void VoiceInputEngine::InitializeIfNeeded() {
