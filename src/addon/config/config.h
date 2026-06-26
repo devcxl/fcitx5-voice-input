@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include <fcitx/key.h>
+#include <fcitx-utils/key.h>
 #include <nlohmann/json.hpp>
 
 namespace fcitx {
