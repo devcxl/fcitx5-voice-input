@@ -1,10 +1,8 @@
-#include <algorithm>
-
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/eventdispatcher.h>
+#include <fcitx-utils/event.h>
 #include <fcitx-utils/i18n.h>
 #include <fcitx-utils/log.h>
-#include <fcitx-utils/standardpath.h>
 #include <fcitx/addonfactory.h>
 #include <fcitx/addoninstance.h>
 #include <fcitx/addonmanager.h>
@@ -38,9 +36,6 @@ void VoiceInputEngine::reloadConfig() {
 void VoiceInputEngine::setConfig(const RawConfig &rawConfig) {
     config_.load(rawConfig, true);
 
-    FCITX_INFO() << "[voice-input] setConfig called, TriggerKeys='"
-                 << rawConfig.valueByPath("TriggerKeys") << "'";
-
     bool saved = safeSaveAsIni(config_, "conf/voiceinput.conf");
     FCITX_INFO() << "[voice-input] setConfig saved=" << saved;
 
@@ -56,18 +51,39 @@ void VoiceInputEngine::activate(const InputMethodEntry &entry,
     FCITX_UNUSED(event);
     InitializeIfNeeded();
     activeIc_ = event.inputContext();
-    ClearUI();
+    uint64_t generation = activeGeneration_.fetch_add(1) + 1;
+    pendingStopGeneration_ = generation;
+    if (pipeline_->GetState() == Pipeline::State::IDLE) {
+        sessionGeneration_.store(generation);
+        pipeline_->StartListening();
+    }
+    SetUIStatus("🎙 语音模式...", true);
 }
 
 void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
                                   InputContextEvent &event) {
     FCITX_UNUSED(entry);
     FCITX_UNUSED(event);
-    if (pipeline_->GetState() == Pipeline::State::RECORDING) {
-        pipeline_->StopRecording();
-    }
+    uint64_t generation = activeGeneration_.fetch_add(1) + 1;
+    pendingStopGeneration_ = generation;
     ClearUI();
-    activeIc_ = nullptr;
+
+    delayedStopEvent_ = instance_->eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC,
+        now(CLOCK_MONOTONIC) + 200000,
+        0,
+        [this, generation](EventSourceTime *, uint64_t) {
+            if (pendingStopGeneration_ != generation) {
+                return true;
+            }
+            sessionGeneration_.store(0);
+            if (pipeline_->GetState() != Pipeline::State::IDLE) {
+                pipeline_->StopListening();
+            }
+            activeIc_ = nullptr;
+            return true;
+        });
+    delayedStopEvent_->setOneShot();
 }
 
 std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {
@@ -81,36 +97,7 @@ std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {
 void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
                                 KeyEvent &keyEvent) {
     FCITX_UNUSED(entry);
-
-    const auto &triggerKeys = config_.triggerKeys.value();
-    const auto &key = keyEvent.key();
-
-    bool matched = std::ranges::any_of(
-        triggerKeys, [&key](const Key &tk) { return key == tk; });
-
-    FCITX_INFO() << "[voice-input] keyEvent sym=" << key.sym()
-                 << " isRelease=" << keyEvent.isRelease()
-                 << " matched=" << matched
-                 << " triggerKeys.size=" << triggerKeys.size();
-
-    if (!matched)
-        return;
-
-    keyEvent.filter();
-
-    if (!keyEvent.isRelease()) {
-        if (pipeline_->GetState() == Pipeline::State::IDLE) {
-            FCITX_INFO() << "[voice-input] StartRecording";
-            pipeline_->StartRecording();
-            SetUIStatus("🎙 录音中...", true);
-        }
-    } else {
-        if (pipeline_->GetState() == Pipeline::State::RECORDING) {
-            FCITX_INFO() << "[voice-input] StopRecording";
-            pipeline_->StopRecording();
-            SetUIStatus("⏳ 转录中...", true);
-        }
-    }
+    FCITX_UNUSED(keyEvent);
 }
 
 void VoiceInputEngine::OnPipelineStateChange(Pipeline::State oldState,
@@ -118,33 +105,39 @@ void VoiceInputEngine::OnPipelineStateChange(Pipeline::State oldState,
     FCITX_UNUSED(oldState);
     FCITX_DEBUG() << "[voice-input] State change: " << pipeline_->StateName();
 
-    // State transitions from pipeline threads (e.g., ASR done → IDLE)
-    // need to dispatch to the main event loop for UI updates.
-    auto *ic = activeIc_;
-    if (!ic)
-        return;
+    uint64_t generation = sessionGeneration_.load();
 
-    if (newState == Pipeline::State::IDLE &&
-        oldState == Pipeline::State::PROCESSING_ASR) {
-        // ASR completed — UI will be updated by OnAsrResult when text comes in.
-        // But if ASR failed (no text), clear the status here.
-        eventDispatcher_.schedule([this, ic]() {
-            if (activeIc_ == ic) {
+    // State transitions from pipeline/capture threads → dispatch to main loop
+    if (newState == Pipeline::State::LISTENING) {
+        eventDispatcher_.schedule([this, generation]() {
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
+                SetUIStatus("🎙 语音模式...", true);
+        });
+    } else if (newState == Pipeline::State::RECORDING) {
+        eventDispatcher_.schedule([this, generation]() {
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
+                SetUIStatus("🎙 录音中...", true);
+        });
+    } else if (newState == Pipeline::State::PROCESSING_ASR) {
+        eventDispatcher_.schedule([this, generation]() {
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
+                SetUIStatus("⏳ 转录中...", true);
+        });
+    } else if (newState == Pipeline::State::IDLE) {
+        eventDispatcher_.schedule([this, generation]() {
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
                 ClearUI();
-            }
         });
     }
 }
 
 void VoiceInputEngine::OnAsrResult(const std::string &text) {
-    auto *ic = activeIc_;
-    if (!ic)
-        return;
+    uint64_t generation = sessionGeneration_.load();
 
-    eventDispatcher_.schedule([this, ic, text]() {
-        if (activeIc_ == ic) {
-            ClearUI();
-            ic->commitString(text);
+    eventDispatcher_.schedule([this, generation, text]() {
+        if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
+            if (!text.empty())
+                activeIc_->commitString(text);
         }
     });
 }

@@ -38,7 +38,7 @@
               ┌──────────────────┐
               │ 8. engine/       │
               │ VoiceInputEngine │
-              │ keyEvent + 上屏  │
+              │ activate + 上屏  │
               └────────┬─────────┘
                        │
                        ▼
@@ -59,5 +59,5 @@
 | 5 | vad | vad.h/cpp (webrtcvad-like) | 1, 2 |
 | 6 | asr | asr_engine.h, sherpa_asr.h/cpp | 1 |
 | 7 | pipeline | pipeline.h/cpp (state machine) | 3, 4, 5, 6 |
-| 8 | engine | engine.h/cpp (VoiceInputEngine) | 3, 7 |
+| 8 | engine | engine.h/cpp (VoiceInputEngine activate/deactivate + 上屏) | 3, 7 |
 | 9 | final | CMake compat, build verify | 8 |

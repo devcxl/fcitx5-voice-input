@@ -2,6 +2,7 @@
 
 #include <fcitx-utils/log.h>
 #include <cstring>
+#include <cmath>
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -30,74 +31,75 @@ void Pipeline::Init(const VoiceInputConfig& config) {
     vadConfig.silenceFrames = config_.silenceThresholdMs.value() / 20;
     vad_->SetConfig(vadConfig);
 
+    FCITX_INFO() << "[voice-input] Init: vadThreshold=" << config_.vadThreshold.value()
+                 << "% silenceThresholdMs=" << config_.silenceThresholdMs.value()
+                 << " silenceFrames=" << vadConfig.silenceFrames;
+
     if (!capture_->Start()) {
-        std::cerr << "[voice-input] Failed to start PipeWire capture" << std::endl;
+        FCITX_ERROR() << "[voice-input] Failed to start PipeWire capture";
     }
 
     SetState(State::IDLE);
 }
 
-void Pipeline::StartRecording() {
-    if (state_.load() != State::IDLE) return;
+void Pipeline::StartListening() {
+    if (state_.load() != State::IDLE) {
+        FCITX_DEBUG() << "[voice-input] StartListening ignored: state=" << StateName();
+        return;
+    }
 
-    FCITX_INFO() << "[voice-input] Pipeline::StartRecording";
+    FCITX_INFO() << "[voice-input] StartListening";
 
-    // Clear previous session data
+    asrCancelled_ = false;
+
     sessionAudio_.clear();
     sessionAudio_.reserve(kSessionReserveSamples);
 
     // Drain any stale audio from the ring buffer instead of Clear().
-    // Clear() with the PipeWire callback writing concurrently is a
-    // data race — Read() is safe to call concurrently with Write().
     float discard[320];
+    int drained = 0;
     for (int i = 0; i < 1000; ++i) {
         if (capture_->RingBuffer()->Read(discard, 320) == 0) break;
+        drained++;
+    }
+    if (drained > 0) {
+        FCITX_INFO() << "[voice-input] Drained " << (drained * 320) << " stale samples from ring buffer";
     }
 
     vad_->Reset();
 
-    SetState(State::RECORDING);
+    SetState(State::LISTENING);
 
-    // Start capture loop thread
     captureThread_ = std::make_unique<std::thread>(&Pipeline::CaptureLoop, this);
 }
 
-void Pipeline::StopRecording() {
-    State expected = State::RECORDING;
-    if (!state_.compare_exchange_strong(expected, State::PROCESSING_ASR)) {
-        FCITX_WARN() << "[voice-input] StopRecording: not recording (state="
-                     << static_cast<int>(state_.load()) << ")";
-        return;  // not recording
-    }
+void Pipeline::StopListening() {
+    if (state_.load() == State::IDLE) return;
 
-    FCITX_INFO() << "[voice-input] StopRecording";
+    FCITX_INFO() << "[voice-input] Pipeline::StopListening";
 
-    // Wait for capture thread to finish
+    asrCancelled_ = true;
+    SetState(State::IDLE);
+
     if (captureThread_ && captureThread_->joinable()) {
         captureThread_->join();
         captureThread_.reset();
     }
-
-    // Dispatch accumulated audio to the ASR engine (non-blocking).
-    // The engine processes on its own inference thread and fires
-    // the result callback asynchronously.
-    DispatchToAsr();
 }
 
 void Pipeline::Abort() {
     asrCancelled_ = true;
 
+    state_.store(State::IDLE);
+
     if (captureThread_ && captureThread_->joinable()) {
         captureThread_->join();
         captureThread_.reset();
     }
 
-    // Signal the ASR engine to stop (non-blocking — just pushes EOF)
     if (asrEngine_) {
         asrEngine_->Stop();
     }
-
-    state_.store(State::IDLE);
 }
 
 void Pipeline::SetConfig(const VoiceInputConfig& config) {
@@ -117,6 +119,7 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
 const char* Pipeline::StateName() const {
     switch (state_.load()) {
         case State::IDLE:            return "IDLE";
+        case State::LISTENING:       return "LISTENING";
         case State::RECORDING:       return "RECORDING";
         case State::PROCESSING_ASR:  return "PROCESSING_ASR";
         case State::PROCESSING_LLM:  return "PROCESSING_LLM";
@@ -132,65 +135,103 @@ void Pipeline::SetState(State newState) {
 }
 
 void Pipeline::CaptureLoop() {
-    // Read from ring buffer in a polling loop
     constexpr size_t chunkFrames = 320;  // 20ms at 16kHz
     float chunk[chunkFrames];
+    int emptyReadCount = 0;
 
-    while (state_.load() == State::RECORDING) {
+    while (state_.load() != State::IDLE) {
         size_t read = capture_->RingBuffer()->Read(chunk, chunkFrames);
         if (read == 0) {
-            // No data available, yield
+            ++emptyReadCount;
+            if (emptyReadCount % 400 == 0) {
+                FCITX_WARN() << "[voice-input] No audio samples read from PipeWire ring buffer for ~2s"
+                             << " (capture running=" << capture_->IsRunning() << ")";
+            }
             std::this_thread::sleep_for(5ms);
             continue;
         }
+        emptyReadCount = 0;
 
-        // Process VAD on the captured chunk
-        vad_->Process(chunk, read);
+        State curState = state_.load();
 
-        // Accumulate speech audio
-        if (vad_->IsSpeechActive()) {
+        if (curState == State::LISTENING) {
+            vad_->Process(chunk, read);
+            if (vad_->IsSpeechActive()) {
+                float energy = 0.0f;
+                for (size_t i = 0; i < read; ++i) energy += std::abs(chunk[i]);
+                FCITX_INFO() << "[voice-input] VAD speech onset, energy="
+                             << (energy / read);
+                sessionAudio_.clear();
+                sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
+                SetState(State::RECORDING);
+            }
+        } else if (curState == State::RECORDING) {
+            vad_->Process(chunk, read);
             sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
-        } else if (!sessionAudio_.empty()) {
-            // Keep a short tail after speech ends (for VAD margin)
-            sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
+            if (!vad_->IsSpeechActive() && vad_->IsSilenceTimeout()) {
+                float durSec = sessionAudio_.size() / 16000.0f;
+                FCITX_INFO() << "[voice-input] VAD silence timeout, audio="
+                             << sessionAudio_.size() << " frames ("
+                             << durSec << "s), submitting";
+                SetState(State::PROCESSING_ASR);
+                DispatchToAsr();
+            } else if (sessionAudio_.size() >= kMaxSessionSamples) {
+                FCITX_INFO() << "[voice-input] Max recording duration reached, audio="
+                             << sessionAudio_.size() << " frames, submitting";
+                SetState(State::PROCESSING_ASR);
+                DispatchToAsr();
+            }
+        }
+        // PROCESSING_ASR / PROCESSING_LLM: discard audio, wait for state change
+        if (curState == State::PROCESSING_ASR || curState == State::PROCESSING_LLM) {
+            static int discardCount = 0;
+            discardCount++;
+            if (discardCount % 100 == 0) {
+                FCITX_DEBUG() << "[voice-input] Discarding " << (discardCount * read)
+                              << " samples during " << StateName();
+            }
         }
     }
-}
-
-void Pipeline::ProcessVAD() {
-    // VAD processing is integrated into CaptureLoop
+    FCITX_INFO() << "[voice-input] CaptureLoop exited (state=" << StateName() << ")";
 }
 
 void Pipeline::DispatchToAsr() {
     if (!asrEngine_) {
-        std::cerr << "[voice-input] No ASR engine configured" << std::endl;
-        SetState(State::IDLE);
+        FCITX_ERROR() << "[voice-input] No ASR engine configured";
+        SetState(State::LISTENING);
         return;
     }
 
     if (sessionAudio_.empty()) {
-        std::cerr << "[voice-input] No audio to process" << std::endl;
-        SetState(State::IDLE);
+        FCITX_WARN() << "[voice-input] No audio to process";
+        SetState(State::LISTENING);
         return;
     }
 
-    // Start ASR session and feed all accumulated audio.
-    // The engine starts its own inference thread; Start/FeedAudio/Stop
-    // are all non-blocking (the thread processes audio asynchronously).
+    float durSec = sessionAudio_.size() / 16000.0f;
+    FCITX_INFO() << "[voice-input] Dispatching " << sessionAudio_.size()
+                 << " frames (" << durSec << "s) to ASR engine: "
+                 << (asrEngine_ ? asrEngine_->Name() : "none");
+
     asrEngine_->Start();
     asrEngine_->FeedAudio(sessionAudio_.data(), sessionAudio_.size());
     sessionAudio_.clear();
-    asrEngine_->Stop();  // non-blocking — signals EOF, returns immediately
+    asrEngine_->Stop();
 }
 
 void Pipeline::OnAsrResult(const std::string& text, bool isFinal) {
-    // Called from ASR inference thread — check if pipeline is still alive
-    // (could have been cancelled by Abort/cleanup)
     if (asrCancelled_) return;
 
-    if (isFinal && !text.empty() && resultCb_) {
-        resultCb_(text);
-        SetState(State::IDLE);
+    if (isFinal) {
+        if (!text.empty()) {
+            FCITX_INFO() << "[voice-input] ASR result: \"" << text << "\"";
+        } else {
+            FCITX_INFO() << "[voice-input] ASR result: (empty)";
+        }
+        if (!text.empty() && resultCb_) {
+            resultCb_(text);
+        }
+        SetState(State::LISTENING);
     }
 }
 

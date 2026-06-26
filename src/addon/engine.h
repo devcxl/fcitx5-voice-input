@@ -1,6 +1,9 @@
 #pragma once
 
+#include <atomic>
+
 #include <fcitx-utils/eventdispatcher.h>
+#include <fcitx-utils/eventloopinterface.h>
 #include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputmethodengine.h>
@@ -17,9 +20,9 @@ namespace fcitx {
  *
  * Lifecycle:
  *   1. Constructor: register event handlers
- *   2. activate(): create/config pipeline if not yet initialized
- *   3. keyEvent(): handle trigger key for record on/off
- *   4. deactivate(): stop any active recording
+ *   2. activate(): create/config pipeline and start VAD listening
+ *   3. keyEvent(): no-op; normal keys pass through
+ *   4. deactivate(): stop listening
  *
  * Thread safety: all Fcitx5 callbacks run on the main event loop thread.
  * ASR runs on a separate thread; results arrive via eventLoop().addDeferredEvent().
@@ -57,9 +60,13 @@ private:
     Instance *instance_;
     std::unique_ptr<Pipeline> pipeline_;
     EventDispatcher eventDispatcher_;
+    std::unique_ptr<EventSourceTime> delayedStopEvent_;
     VoiceInputConfig config_;
 
     InputContext *activeIc_ = nullptr;
+    std::atomic<uint64_t> activeGeneration_{0};
+    std::atomic<uint64_t> sessionGeneration_{0};
+    uint64_t pendingStopGeneration_ = 0;
     bool initialized_ = false;
 };
 

@@ -24,8 +24,9 @@ class Pipeline {
 public:
     enum class State {
         IDLE,
-        RECORDING,
-        PROCESSING_ASR,
+        LISTENING,      // waiting for VAD speech onset
+        RECORDING,      // speech active, accumulating audio
+        PROCESSING_ASR, // submitting to ASR engine
         PROCESSING_LLM,
     };
 
@@ -40,8 +41,8 @@ public:
 
     // ── Lifecycle ─────────────────────────────────────────────────────
     void Init(const VoiceInputConfig& config);
-    void StartRecording();
-    void StopRecording();
+    void StartListening();
+    void StopListening();
     void Abort();
 
     State GetState() const { return state_.load(); }
@@ -57,11 +58,8 @@ public:
     void SetResultCallback(ResultCallback cb) { resultCb_ = std::move(cb); }
 
 private:
-    // Main processing loop (runs on capture thread)
+    // Capture + VAD loop (runs on capture thread)
     void CaptureLoop();
-
-    // VAD processing step
-    void ProcessVAD();
 
     // Handle audio accumulation and dispatch to ASR
     void DispatchToAsr();
@@ -74,7 +72,9 @@ private:
 
     // Audio buffer for current recording session
     std::vector<float> sessionAudio_;
-    static constexpr size_t kSessionReserveSamples = 48000 * 10;  // ~10s at 16kHz
+    static constexpr size_t kSampleRate = 16000;
+    static constexpr size_t kMaxSessionSamples = kSampleRate * 30;
+    static constexpr size_t kSessionReserveSamples = kMaxSessionSamples;
 
     // Components
     std::unique_ptr<PipeWireCapture> capture_;
