@@ -173,11 +173,12 @@ void VoiceInputEngine::InitializeIfNeeded() {
 
 } // namespace fcitx
 
-// Fcitx5 addon factory
-class VoiceInputAddonFactory : public AddonFactory {
+// Fcitx5 addon factory — must be outside fcitx namespace for
+// FCITX_ADDON_FACTORY_V2 (which expands to extern "C").
+class VoiceInputAddonFactory : public fcitx::AddonFactory {
 public:
-    AddonInstance *create(AddonManager *manager) override {
-        return new VoiceInputEngine(manager->instance());
+    fcitx::AddonInstance *create(fcitx::AddonManager *manager) override {
+        return new fcitx::VoiceInputEngine(manager->instance());
     }
 };
 FCITX_ADDON_FACTORY_V2(voiceinput, VoiceInputAddonFactory);
