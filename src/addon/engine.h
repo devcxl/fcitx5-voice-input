@@ -4,6 +4,7 @@
 #include <fcitx/event.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputmethodengine.h>
+#include <fcitx/inputmethodentry.h>
 #include <fcitx/instance.h>
 
 #include "config/voiceinput-config.h"
@@ -36,6 +37,9 @@ public:
 
     void keyEvent(const InputMethodEntry &entry,
                   KeyEvent &keyEvent) override;
+
+    // ── Input method registration ─────────────────────────────────────
+    std::vector<InputMethodEntry> listInputMethods() override;
 
     // ── Fcitx5 config tool support ───────────────────────────────────
     const Configuration *getConfig() const override { return &config_; }

@@ -2,6 +2,7 @@
 
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/eventdispatcher.h>
+#include <fcitx-utils/i18n.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/standardpath.h>
 #include <fcitx/addonfactory.h>
@@ -58,6 +59,15 @@ void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
         pipeline_->StopRecording();
     }
     activeIc_ = nullptr;
+}
+
+std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {
+    return {
+        InputMethodEntry("voiceinput", _("Voice Input"), "zh_CN",
+                         "voiceinput")
+            .setLabel("🎙")
+            .setConfigurable(true),
+    };
 }
 
 void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
