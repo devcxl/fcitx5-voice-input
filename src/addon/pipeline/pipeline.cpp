@@ -35,10 +35,6 @@ void Pipeline::Init(const VoiceInputConfig& config) {
                  << "% silenceThresholdMs=" << config_.silenceThresholdMs.value()
                  << " silenceFrames=" << vadConfig.silenceFrames;
 
-    if (!capture_->Start()) {
-        FCITX_ERROR() << "[voice-input] Failed to start PipeWire capture";
-    }
-
     SetState(State::IDLE);
 }
 
@@ -49,6 +45,11 @@ void Pipeline::StartListening() {
     }
 
     FCITX_INFO() << "[voice-input] StartListening";
+
+    if (!capture_->IsRunning() && !capture_->Start()) {
+        FCITX_ERROR() << "[voice-input] Failed to start PipeWire capture";
+        return;
+    }
 
     asrCancelled_ = false;
 
@@ -85,6 +86,7 @@ void Pipeline::StopListening() {
         captureThread_->join();
         captureThread_.reset();
     }
+    capture_->Stop();
 }
 
 void Pipeline::Abort() {
@@ -96,6 +98,7 @@ void Pipeline::Abort() {
         captureThread_->join();
         captureThread_.reset();
     }
+    capture_->Stop();
 
     if (asrEngine_) {
         asrEngine_->Stop();

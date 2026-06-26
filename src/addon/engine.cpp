@@ -53,8 +53,8 @@ void VoiceInputEngine::activate(const InputMethodEntry &entry,
     activeIc_ = event.inputContext();
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
     pendingStopGeneration_ = generation;
+    sessionGeneration_.store(generation);
     if (pipeline_->GetState() == Pipeline::State::IDLE) {
-        sessionGeneration_.store(generation);
         pipeline_->StartListening();
     }
     SetUIStatus("🎙 语音模式...", true);
