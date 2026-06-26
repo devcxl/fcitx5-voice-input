@@ -7,10 +7,10 @@ Comment[zh_CN]=通过 OpenAI 兼容 API 实现的语音输入
 Category=InputMethod
 Type=SharedLibrary
 Library=voice-input-addon
-Version=@VERSION@
+Version=@PROJECT_VERSION@
 
 [Addon/Dependencies]
-0=core
+0=core:@PROJECT_VERSION@
 
 [Addon/SubConfig]
 VoiceInput=fcitx://config/addon/voiceinput
