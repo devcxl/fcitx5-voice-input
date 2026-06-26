@@ -159,7 +159,7 @@ void VoiceInputEngine::CommitText(const std::string &text) {
 void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
     auto *ic = activeIc_;
     FCITX_INFO() << "[voice-input] SetUIStatus text='" << text
-                 << "' instant=" << instant << " ic=" << (void*)ic;
+                 << "' instant=" << instant << " ic_nonnull=" << (ic != nullptr);
     if (!ic)
         return;
 
@@ -182,7 +182,7 @@ void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
 
 void VoiceInputEngine::ClearUI() {
     auto *ic = activeIc_;
-    FCITX_INFO() << "[voice-input] ClearUI ic=" << fmt::ptr(ic);
+    FCITX_INFO() << "[voice-input] ClearUI ic_nonnull=" << (ic != nullptr);
     if (!ic)
         return;
     ic->inputPanel().reset();
