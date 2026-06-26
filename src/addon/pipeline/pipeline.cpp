@@ -28,138 +28,162 @@ void Pipeline::Init(const VoiceInputConfig& config) {
     vadConfig.threshold = static_cast<float>(config_.vadThreshold.value()) / 100.0f;
     vadConfig.silenceFrames = config_.silenceThresholdMs.value() / 20;
     vad_->SetConfig(vadConfig);
+
+    if (!capture_->Start()) {
+        std::cerr << "[voice-input] Failed to start PipeWire capture" << std::endl;
+    }
+
+    SetState(State::IDLE);
 }
 
 void Pipeline::StartRecording() {
     if (state_.load() != State::IDLE) return;
 
-    // Reset session
+    // Clear previous session data
     sessionAudio_.clear();
     sessionAudio_.reserve(kSessionReserveSamples);
-    asrCancelled_.store(false);
 
-    // Transition to RECORDING
+    // Drain any stale audio from the ring buffer instead of Clear().
+    // Clear() with the PipeWire callback writing concurrently is a
+    // data race — Read() is safe to call concurrently with Write().
+    float discard[320];
+    for (int i = 0; i < 1000; ++i) {
+        if (capture_->RingBuffer()->Read(discard, 320) == 0) break;
+    }
+
+    vad_->Reset();
+
     SetState(State::RECORDING);
 
-    // Start capture thread
-    captureThread_ = std::make_unique<std::thread>([this]() {
-        capture_->Start();
-
-        // Allocate a fixed VAD buffer for real-time processing
-        VAD vad(*vad_);
-        int silenceFrames = 0;
-
-        while (true) {
-            auto buffer = capture_->Read();
-            if (!buffer || buffer->empty()) {
-                if (state_.load() != State::RECORDING) break;
-                std::this_thread::sleep_for(5ms);
-                continue;
-            }
-
-            // Process VAD
-            bool hasVoice = vad.Process(*buffer);
-
-            // Accumulate audio (always, for ASR)
-            sessionAudio_.insert(sessionAudio_.end(),
-                                 buffer->begin(), buffer->end());
-
-            // State transitions based on VAD
-            if (hasVoice) {
-                // Reset silence counter
-                silenceFrames = 0;
-            } else {
-                silenceFrames += buffer->size() / vad_.GetConfig().frameSize;
-                if (silenceFrames >= vad_.GetConfig().silenceFrames) {
-                    // Silence detected → stop recording
-                    capture_->Stop();
-                    break;
-                }
-            }
-        }
-
-        // Stop recording and dispatch to ASR
-        capture_->Stop();
-        if (!asrCancelled_.load()) {
-            SetState(State::PROCESSING_ASR);
-            DispatchToAsr();
-        }
-    });
+    // Start capture loop thread
+    captureThread_ = std::make_unique<std::thread>(&Pipeline::CaptureLoop, this);
 }
 
 void Pipeline::StopRecording() {
-    auto expected = State::RECORDING;
-    if (state_.compare_exchange_strong(expected, State::IDLE)) {
-        asrCancelled_.store(true);
-        capture_->Stop();
-        if (captureThread_ && captureThread_->joinable()) {
-            captureThread_->join();
-        }
-        SetState(State::IDLE);
+    State expected = State::RECORDING;
+    if (!state_.compare_exchange_strong(expected, State::PROCESSING_ASR)) {
+        return;  // not recording
     }
+
+    // Wait for capture thread to finish
+    if (captureThread_ && captureThread_->joinable()) {
+        captureThread_->join();
+        captureThread_.reset();
+    }
+
+    // Dispatch accumulated audio to the ASR engine (non-blocking).
+    // The engine processes on its own inference thread and fires
+    // the result callback asynchronously.
+    DispatchToAsr();
 }
 
 void Pipeline::Abort() {
-    asrCancelled_.store(true);
-    capture_->Stop();
+    asrCancelled_ = true;
+
     if (captureThread_ && captureThread_->joinable()) {
         captureThread_->join();
+        captureThread_.reset();
     }
-    SetState(State::IDLE);
+
+    // Signal the ASR engine to stop (non-blocking — just pushes EOF)
+    if (asrEngine_) {
+        asrEngine_->Stop();
+    }
+
+    state_.store(State::IDLE);
 }
 
 void Pipeline::SetConfig(const VoiceInputConfig& config) {
     config_ = config;
-
-    VAD::Config vadConfig;
-    vadConfig.threshold = static_cast<float>(config_.vadThreshold.value()) / 100.0f;
-    vadConfig.silenceFrames = config_.silenceThresholdMs.value() / 20;
-    vad_->SetConfig(vadConfig);
 }
 
 void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
     asrEngine_ = std::move(engine);
+    if (asrEngine_) {
+        asrEngine_->SetResultCallback(
+            [this](const std::string& text, bool isFinal) {
+                OnAsrResult(text, isFinal);
+            });
+    }
 }
 
 const char* Pipeline::StateName() const {
     switch (state_.load()) {
-        case State::IDLE: return "IDLE";
-        case State::RECORDING: return "RECORDING";
-        case State::PROCESSING_ASR: return "PROCESSING_ASR";
-        case State::PROCESSING_LLM: return "PROCESSING_LLM";
+        case State::IDLE:            return "IDLE";
+        case State::RECORDING:       return "RECORDING";
+        case State::PROCESSING_ASR:  return "PROCESSING_ASR";
+        case State::PROCESSING_LLM:  return "PROCESSING_LLM";
     }
     return "UNKNOWN";
 }
 
+void Pipeline::SetState(State newState) {
+    State oldState = state_.exchange(newState);
+    if (oldState != newState && stateCb_) {
+        stateCb_(oldState, newState);
+    }
+}
+
+void Pipeline::CaptureLoop() {
+    // Read from ring buffer in a polling loop
+    constexpr size_t chunkFrames = 320;  // 20ms at 16kHz
+    float chunk[chunkFrames];
+
+    while (state_.load() == State::RECORDING) {
+        size_t read = capture_->RingBuffer()->Read(chunk, chunkFrames);
+        if (read == 0) {
+            // No data available, yield
+            std::this_thread::sleep_for(5ms);
+            continue;
+        }
+
+        // Process VAD on the captured chunk
+        vad_->Process(chunk, read);
+
+        // Accumulate speech audio
+        if (vad_->IsSpeechActive()) {
+            sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
+        } else if (!sessionAudio_.empty()) {
+            // Keep a short tail after speech ends (for VAD margin)
+            sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
+        }
+    }
+}
+
+void Pipeline::ProcessVAD() {
+    // VAD processing is integrated into CaptureLoop
+}
+
 void Pipeline::DispatchToAsr() {
     if (!asrEngine_) {
-        FCITX_WARN() << "[voice-input] No ASR engine set";
+        std::cerr << "[voice-input] No ASR engine configured" << std::endl;
         SetState(State::IDLE);
         return;
     }
 
-    auto audio = std::make_shared<std::vector<float>>(std::move(sessionAudio_));
-    sessionAudio_.clear();
+    if (sessionAudio_.empty()) {
+        std::cerr << "[voice-input] No audio to process" << std::endl;
+        SetState(State::IDLE);
+        return;
+    }
 
-    asrEngine_->Transcribe(audio, 16000,
-        [this](const std::string& text, bool isFinal) {
-            if (isFinal) {
-                if (!text.empty() && resultCb_) {
-                    resultCb_(text);
-                }
-                SetState(State::IDLE);
-            } else {
-                if (!text.empty() && resultCb_) {
-                    resultCb_(text);
-                }
-            }
-        });
+    // Start ASR session and feed all accumulated audio.
+    // The engine starts its own inference thread; Start/FeedAudio/Stop
+    // are all non-blocking (the thread processes audio asynchronously).
+    asrEngine_->Start();
+    asrEngine_->FeedAudio(sessionAudio_.data(), sessionAudio_.size());
+    sessionAudio_.clear();
+    asrEngine_->Stop();  // non-blocking — signals EOF, returns immediately
 }
 
-void Pipeline::SetState(State newState) {
-    State old = state_.exchange(newState);
-    if (old != newState && stateCb_) {
-        stateCb_(old, newState);
+void Pipeline::OnAsrResult(const std::string& text, bool isFinal) {
+    // Called from ASR inference thread — check if pipeline is still alive
+    // (could have been cancelled by Abort/cleanup)
+    if (asrCancelled_) return;
+
+    if (isFinal && !text.empty() && resultCb_) {
+        resultCb_(text);
+        SetState(State::IDLE);
     }
 }
 
