@@ -62,12 +62,11 @@ void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
 }
 
 std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {
-    return {
-        InputMethodEntry("voiceinput", _("Voice Input"), "zh_CN",
-                         "voiceinput")
-            .setLabel("🎙")
-            .setConfigurable(true),
-    };
+    std::vector<InputMethodEntry> entries;
+    entries.emplace_back("voiceinput", _("Voice Input"), "zh_CN",
+                         "voiceinput");
+    entries.back().setLabel("🎙").setConfigurable(true);
+    return entries;
 }
 
 void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
