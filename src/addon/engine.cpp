@@ -53,6 +53,7 @@ void VoiceInputEngine::activate(const InputMethodEntry &entry,
     FCITX_UNUSED(event);
     InitializeIfNeeded();
     activeIc_ = event.inputContext();
+    ClearUI();
 }
 
 void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
@@ -62,6 +63,7 @@ void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
     if (pipeline_->GetState() == Pipeline::State::RECORDING) {
         pipeline_->StopRecording();
     }
+    ClearUI();
     activeIc_ = nullptr;
 }
 
@@ -97,19 +99,38 @@ void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
         if (pipeline_->GetState() == Pipeline::State::IDLE) {
             FCITX_INFO() << "[voice-input] StartRecording";
             pipeline_->StartRecording();
+            SetUIStatus("🎙 录音中...", true);
         }
     } else {
         if (pipeline_->GetState() == Pipeline::State::RECORDING) {
             FCITX_INFO() << "[voice-input] StopRecording";
             pipeline_->StopRecording();
+            SetUIStatus("⏳ 转录中...", true);
         }
     }
 }
 
 void VoiceInputEngine::OnPipelineStateChange(Pipeline::State oldState,
-                                             Pipeline::State newState) {
+                                              Pipeline::State newState) {
     FCITX_UNUSED(oldState);
     FCITX_DEBUG() << "[voice-input] State change: " << pipeline_->StateName();
+
+    // State transitions from pipeline threads (e.g., ASR done → IDLE)
+    // need to dispatch to the main event loop for UI updates.
+    auto *ic = activeIc_;
+    if (!ic)
+        return;
+
+    if (newState == Pipeline::State::IDLE &&
+        oldState == Pipeline::State::PROCESSING_ASR) {
+        // ASR completed — UI will be updated by OnAsrResult when text comes in.
+        // But if ASR failed (no text), clear the status here.
+        eventDispatcher_.schedule([this, ic]() {
+            if (activeIc_ == ic) {
+                ClearUI();
+            }
+        });
+    }
 }
 
 void VoiceInputEngine::OnAsrResult(const std::string &text) {
@@ -119,6 +140,7 @@ void VoiceInputEngine::OnAsrResult(const std::string &text) {
 
     eventDispatcher_.schedule([this, ic, text]() {
         if (activeIc_ == ic) {
+            ClearUI();
             ic->commitString(text);
         }
     });
@@ -129,6 +151,40 @@ void VoiceInputEngine::CommitText(const std::string &text) {
     if (ic) {
         ic->commitString(text);
     }
+}
+
+void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
+    auto *ic = activeIc_;
+    if (!ic)
+        return;
+
+    if (!instant) {
+        // Dispatch to main thread (for calls from pipeline/worker threads)
+        eventDispatcher_.schedule([this, ic, text]() {
+            if (activeIc_ != ic)
+                return;
+            if (text.empty()) {
+                ic->inputPanel().reset();
+            } else {
+                ic->inputPanel().setAuxUp(Text(text));
+            }
+            ic->updateUserInterface(
+                InputContext::UserInterfaceComponent::InputPanel);
+        });
+    } else {
+        // Called from main thread already — update directly
+        if (text.empty()) {
+            ic->inputPanel().reset();
+        } else {
+            ic->inputPanel().setAuxUp(Text(text));
+        }
+        ic->updateUserInterface(
+            InputContext::UserInterfaceComponent::InputPanel);
+    }
+}
+
+void VoiceInputEngine::ClearUI() {
+    SetUIStatus("", true);
 }
 
 void VoiceInputEngine::InitializeIfNeeded() {

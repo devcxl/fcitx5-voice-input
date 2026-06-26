@@ -51,6 +51,8 @@ private:
     void OnAsrResult(const std::string &text);
     void CommitText(const std::string &text);
     void InitializeIfNeeded();
+    void SetUIStatus(const std::string &text, bool instant = false);
+    void ClearUI();
 
     Instance *instance_;
     std::unique_ptr<Pipeline> pipeline_;
