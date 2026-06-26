@@ -51,6 +51,7 @@ private:
     Config config_;
     bool speechActive_ = false;
     int silenceFrameCount_ = 0;
+    uint64_t frameCount_ = 0;
     bool initialized_ = false;
 };
 
