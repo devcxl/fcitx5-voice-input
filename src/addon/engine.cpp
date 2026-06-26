@@ -34,8 +34,13 @@ void VoiceInputEngine::reloadConfig() {
 
 void VoiceInputEngine::setConfig(const RawConfig &rawConfig) {
     config_.load(rawConfig, true);
-    safeSaveAsIni(config_, StandardPath::Type::Config,
-                  "conf/voiceinput.conf");
+
+    FCITX_INFO() << "[voice-input] setConfig called, TriggerKeys='"
+                 << rawConfig.valueByPath("TriggerKeys") << "'";
+
+    bool saved = safeSaveAsIni(config_, StandardPath::Type::Config,
+                               "conf/voiceinput.conf");
+    FCITX_INFO() << "[voice-input] setConfig saved=" << saved;
 
     // Re-apply config to pipeline if initialized
     if (initialized_) {
