@@ -40,6 +40,9 @@ if(NOT PIPEWIRE_FOUND)
     pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
 endif()
 
+# PulseAudio fallback capture
+pkg_check_modules(PULSE REQUIRED libpulse-simple libpulse)
+
 # JSON parsing
 find_package(nlohmann_json REQUIRED)
 
@@ -58,6 +61,7 @@ endif()
 set(ADDON_SOURCES
     src/addon/engine.cpp
     src/addon/capture/pipewire_capture.cpp
+    src/addon/capture/pulse_audio_capture.cpp
     src/addon/vad/vad.cpp
     src/addon/pipeline/pipeline.cpp
     src/addon/asr/openai_asr.cpp
@@ -67,7 +71,9 @@ set(ADDON_HEADERS
     src/addon/engine.h
     src/addon/config/config.h
     src/addon/config/voiceinput-config.h
+    src/addon/capture/audio_capture.h
     src/addon/capture/pipewire_capture.h
+    src/addon/capture/pulse_audio_capture.h
     src/addon/vad/vad.h
     src/addon/asr/asr_engine.h
     src/addon/asr/openai_asr.h
@@ -85,6 +91,7 @@ set_target_properties(voice-input-addon PROPERTIES PREFIX "")
 target_include_directories(voice-input-addon PRIVATE
     ${FCITX5_INCLUDE_DIRS}
     ${PIPEWIRE_INCLUDE_DIRS}
+    ${PULSE_INCLUDE_DIRS}
     ${nlohmann_json_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIRS}
     src/addon
@@ -93,6 +100,7 @@ target_include_directories(voice-input-addon PRIVATE
 target_link_libraries(voice-input-addon PRIVATE
     ${FCITX5_LIBRARIES}
     ${PIPEWIRE_LIBRARIES}
+    ${PULSE_LIBRARIES}
     CURL::libcurl
 )
 

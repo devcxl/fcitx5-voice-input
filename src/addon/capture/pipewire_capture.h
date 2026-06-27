@@ -3,7 +3,7 @@
 #include <memory>
 #include <functional>
 #include <pipewire/pipewire.h>
-#include "utils/audio_buffer.h"
+#include "capture/audio_capture.h"
 
 namespace fcitx {
 
@@ -19,7 +19,7 @@ namespace fcitx {
  * - OnAudioData callback runs on the PipeWire thread (locked).
  * - Ring buffer is SPSC: producer = PipeWire callback, consumer = VAD thread.
  */
-class PipeWireCapture {
+class PipeWireCapture : public AudioCapture {
 public:
     using AudioDataCallback = std::function<void(const float* pcm, size_t frames)>;
 
@@ -29,16 +29,17 @@ public:
     PipeWireCapture(const PipeWireCapture&) = delete;
     PipeWireCapture& operator=(const PipeWireCapture&) = delete;
 
-    bool Start();
-    void Stop();
-    bool IsRunning() const { return running_; }
+    bool Start() override;
+    void Stop() override;
+    bool IsRunning() const override { return running_; }
+    const char* Name() const override { return "pipewire"; }
 
     // Register a callback for raw PCM data (optional, for testing).
     // If set, called from the PipeWire thread — keep it minimal!
     void SetRawCallback(AudioDataCallback cb) { rawCallback_ = std::move(cb); }
 
-    const AudioRingBuffer* RingBuffer() const { return ringBuffer_.get(); }
-    AudioRingBuffer* RingBuffer() { return ringBuffer_.get(); }
+    const AudioRingBuffer* RingBuffer() const override { return ringBuffer_.get(); }
+    AudioRingBuffer* RingBuffer() override { return ringBuffer_.get(); }
 
 private:
     static void OnProcess(void* userdata);

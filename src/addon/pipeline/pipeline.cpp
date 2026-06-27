@@ -8,19 +8,23 @@
 #include <thread>
 #include <memory>
 
+#include "capture/pipewire_capture.h"
+#include "capture/pulse_audio_capture.h"
+
 using namespace std::chrono_literals;
 
 namespace fcitx {
 
 Pipeline::Pipeline()
-    : capture_(std::make_unique<PipeWireCapture>())
-    , vad_(std::make_unique<VAD>())
+    : vad_(std::make_unique<VAD>())
 {
 }
 
 Pipeline::~Pipeline() {
     Abort();
-    capture_->Stop();
+    if (capture_) {
+        capture_->Stop();
+    }
 }
 
 void Pipeline::Init(const VoiceInputConfig& config) {
@@ -46,8 +50,7 @@ void Pipeline::StartListening() {
 
     FCITX_INFO() << "[voice-input] StartListening";
 
-    if (!capture_->IsRunning() && !capture_->Start()) {
-        FCITX_ERROR() << "[voice-input] Failed to start PipeWire capture";
+    if (!StartCapture()) {
         return;
     }
 
@@ -60,7 +63,7 @@ void Pipeline::StartListening() {
     float discard[320];
     int drained = 0;
     for (int i = 0; i < 1000; ++i) {
-        if (capture_->RingBuffer()->Read(discard, 320) == 0) break;
+        if (!capture_ || capture_->RingBuffer()->Read(discard, 320) == 0) break;
         drained++;
     }
     if (drained > 0) {
@@ -86,7 +89,9 @@ void Pipeline::StopListening() {
         captureThread_->join();
         captureThread_.reset();
     }
-    capture_->Stop();
+    if (capture_) {
+        capture_->Stop();
+    }
 }
 
 void Pipeline::Abort() {
@@ -98,7 +103,9 @@ void Pipeline::Abort() {
         captureThread_->join();
         captureThread_.reset();
     }
-    capture_->Stop();
+    if (capture_) {
+        capture_->Stop();
+    }
 
     if (asrEngine_) {
         asrEngine_->Stop();
@@ -107,6 +114,34 @@ void Pipeline::Abort() {
 
 void Pipeline::SetConfig(const VoiceInputConfig& config) {
     config_ = config;
+}
+
+bool Pipeline::StartCapture() {
+    if (capture_ && capture_->IsRunning()) {
+        return true;
+    }
+
+    if (!capture_) {
+        capture_ = std::make_unique<PulseAudioCapture>();
+    }
+
+    if (capture_->Start()) {
+        FCITX_INFO() << "[voice-input] Using audio capture backend: " << capture_->Name();
+        return true;
+    }
+
+    if (std::string(capture_->Name()) != "pipewire") {
+        FCITX_WARN() << "[voice-input] Audio capture backend " << capture_->Name()
+                     << " failed, falling back to pipewire";
+        capture_ = std::make_unique<PipeWireCapture>();
+        if (capture_->Start()) {
+            FCITX_INFO() << "[voice-input] Using audio capture backend: " << capture_->Name();
+            return true;
+        }
+    }
+
+    FCITX_ERROR() << "[voice-input] Failed to start any audio capture backend";
+    return false;
 }
 
 void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
@@ -143,12 +178,13 @@ void Pipeline::CaptureLoop() {
     int emptyReadCount = 0;
 
     while (state_.load() != State::IDLE) {
-        size_t read = capture_->RingBuffer()->Read(chunk, chunkFrames);
+        size_t read = capture_ ? capture_->RingBuffer()->Read(chunk, chunkFrames) : 0;
         if (read == 0) {
             ++emptyReadCount;
             if (emptyReadCount % 400 == 0) {
                 FCITX_WARN() << "[voice-input] No audio samples read from PipeWire ring buffer for ~2s"
-                             << " (capture running=" << capture_->IsRunning() << ")";
+                             << " (backend=" << (capture_ ? capture_->Name() : "none")
+                             << " running=" << (capture_ && capture_->IsRunning()) << ")";
             }
             std::this_thread::sleep_for(5ms);
             continue;

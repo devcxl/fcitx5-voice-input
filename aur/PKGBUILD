@@ -11,6 +11,7 @@ options=('!debug')
 depends=(
     'fcitx5'
     'pipewire'
+    'libpulse'
     'nlohmann-json'
     'curl'
 )

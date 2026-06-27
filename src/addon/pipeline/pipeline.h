@@ -6,7 +6,7 @@
 #include <thread>
 
 #include "config/config.h"
-#include "capture/pipewire_capture.h"
+#include "capture/audio_capture.h"
 #include "vad/vad.h"
 #include "asr/asr_engine.h"
 
@@ -60,6 +60,7 @@ public:
 private:
     // Capture + VAD loop (runs on capture thread)
     void CaptureLoop();
+    bool StartCapture();
 
     // Handle audio accumulation and dispatch to ASR
     void DispatchToAsr();
@@ -77,7 +78,7 @@ private:
     static constexpr size_t kSessionReserveSamples = kMaxSessionSamples;
 
     // Components
-    std::unique_ptr<PipeWireCapture> capture_;
+    std::unique_ptr<AudioCapture> capture_;
     std::unique_ptr<VAD> vad_;
     std::unique_ptr<AsrEngine> asrEngine_;
     VoiceInputConfig config_;
