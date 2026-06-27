@@ -24,6 +24,12 @@ FCITX_CONFIGURATION(VoiceInputConfig,
     Option<std::string> openaiLanguage{this, "OpenAILanguage",
                                         _("Output Language"), ""};
 
+    // LLM post-processing settings
+    Option<std::string> llmModel{this, "LLMModel",
+                                  _("LLM Model"), ""};
+    Option<std::string> llmSystemPrompt{this, "LLMSystemPrompt",
+                                         _("LLM System Prompt"), ""};
+
     // VAD (Voice Activity Detection)
     // Stored as 0-100 percentage internally; divide by 100 for 0.0-1.0
     Option<int, IntConstrain> vadThreshold{this, "VADThreshold",

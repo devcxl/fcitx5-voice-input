@@ -68,6 +68,11 @@ private:
     // ASR result callback (called from ASR thread)
     void OnAsrResult(const std::string& text, bool isFinal);
 
+    // LLM post-processing
+    void PostProcessWithLLM(const std::string& text);
+    std::string DoLlmHttpRequest(const std::string& userText,
+                                   const std::string& systemPrompt);
+
     // State transition helper
     void SetState(State newState);
 
@@ -86,6 +91,7 @@ private:
     // State
     std::atomic<State> state_{State::IDLE};
     std::unique_ptr<std::thread> captureThread_;
+    std::unique_ptr<std::thread> llmThread_;
     std::atomic<bool> asrCancelled_{false};
 
     // Callbacks

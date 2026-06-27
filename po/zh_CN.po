@@ -26,3 +26,9 @@ msgstr "语音检测阈值 (%)"
 
 msgid "Silence Threshold (ms)"
 msgstr "静音检测阈值 (毫秒)"
+
+msgid "LLM Model"
+msgstr "LLM 模型"
+
+msgid "LLM System Prompt"
+msgstr "LLM 系统提示词"
