@@ -10,9 +10,9 @@ Fcitx5 addon（共享库），三个线程（主线程/Capture/ASR），无 daem
 ## 构建命令
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release \
+cmake -B dist -DCMAKE_BUILD_TYPE=Release \
   -DENABLE_SHERPA_ONNX=OFF -DENABLE_LLM_SUPPORT=OFF -DBUILD_TESTS=OFF
-cmake --build build -j"$(nproc)"
+cmake --build dist -j"$(nproc)"
 ```
 
 选项：`ENABLE_SHERPA_ONNX`（pkg-config sherpa-onnx），`ENABLE_LLM_SUPPORT`（编译宏），`BUILD_TESTS`（目前无测试文件）。
