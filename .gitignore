@@ -1,6 +1,6 @@
 *.swp
-build/
-build-*/
+/build/
+/build-*/
 dist/
 .nanobot/
 .codegraph/

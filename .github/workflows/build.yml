@@ -15,70 +15,10 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libfcitx5core-dev \
-            libpipewire-0.3-dev libspa-0.2-dev \
-            libpulse-dev \
-            gettext \
-            libjsoncpp-dev \
-            libcurl4-openssl-dev \
-            libonnxruntime-dev \
-            dpkg-dev
+      - uses: ./.github/actions/build
 
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-
-      - name: Build
-        run: cmake --build build -j"$(nproc)"
-
-      # ─── DEB package ──────────────────────────────────────────────────────
-      - name: Build DEB package
-        run: |
-          cd build
-          cpack -G DEB
-          mv *.deb ../
-          cd ..
-          echo "::group::DEB info"
-          dpkg-deb --info *.deb
-          echo "::endgroup::"
-
-      # ─── Arch package ─────────────────────────────────────────────────────
-      - name: Build Arch package (Docker)
-        run: |
-          mkdir -p /tmp/archpkg
-
-          mkdir -p /tmp/archpkg/fcitx5-voice-input-0.1.0
-          git archive HEAD | tar -x -C /tmp/archpkg/fcitx5-voice-input-0.1.0
-          cp -a third_party /tmp/archpkg/fcitx5-voice-input-0.1.0/
-          tar -C /tmp/archpkg -czf /tmp/archpkg/fcitx5-voice-input-0.1.0.tar.gz fcitx5-voice-input-0.1.0
-
-          cp aur/PKGBUILD /tmp/archpkg/
-
-          docker run --rm -v /tmp/archpkg:/build archlinux:latest bash -c "
-            set -eux
-            pacman -Syu --noconfirm base-devel cmake pkg-config \
-              fcitx5 pipewire libpulse jsoncpp curl gettext onnxruntime-cpu
-
-            cd /build
-            useradd -m builder
-            chown -R builder:builder /build
-            su builder -c 'cd /build && makepkg -f --noconfirm'
-          "
-
-          cp /tmp/archpkg/*.pkg.tar.zst . 2>/dev/null || true
-          echo "::group::Arch package"
-          ls -lh *.pkg.tar.zst 2>/dev/null || echo '(no Arch package)'
-          echo "::endgroup::"
-
-      # ─── Upload artifacts ────────────────────────────────────────────────
-      - name: Upload packages
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: packages
-          path: |
-            *.deb
-            *.pkg.tar.zst
+          path: "*.deb"
           if-no-files-found: warn

@@ -1,0 +1,52 @@
+name: Build fcitx5-voice-input
+description: Install deps, configure, compile, and package DEB
+
+inputs:
+  build_type:
+    description: CMake build type
+    required: false
+    default: Release
+
+outputs:
+  deb_path:
+    description: Path to the built DEB package
+    value: ${{ steps.deb.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          libfcitx5core-dev \
+          libpipewire-0.3-dev libspa-0.2-dev \
+          libpulse-dev \
+          gettext \
+          libjsoncpp-dev \
+          libcurl4-openssl-dev \
+          libonnxruntime-dev \
+          dpkg-dev
+
+    - name: Configure
+      shell: bash
+      run: cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} -DCMAKE_INSTALL_PREFIX=/usr
+
+    - name: Compile
+      shell: bash
+      run: cmake --build build -j"$(nproc)"
+
+    - name: Package DEB
+      id: deb
+      shell: bash
+      run: |
+        cd build
+        cpack -G DEB
+        mv *.deb ../
+        cd ..
+        echo "::group::DEB info"
+        dpkg-deb --info *.deb
+        echo "::endgroup::"
+        DEB_FILE=$(ls *.deb | head -1)
+        echo "path=${DEB_FILE}" >> $GITHUB_OUTPUT
