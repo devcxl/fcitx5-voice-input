@@ -251,5 +251,7 @@ set(CPACK_DEBIAN_PACKAGE_SECTION "libs")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_GENERATE_SHLIBS ON)
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/devcxl/fcitx5-voice-input")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS
+    "libfcitx5core7, libpipewire-0.3-0, libpulse0, libjsoncpp26, libcurl4, libonnxruntime")
 
 include(CPack)
