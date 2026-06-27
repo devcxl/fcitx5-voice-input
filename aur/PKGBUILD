@@ -15,10 +15,8 @@ depends=(
     'nlohmann-json'
     'curl'
 )
-optdepends=(
-    'sherpa-onnx: local ASR without network dependency'
-)
-makedepends=('cmake' 'pkg-config')
+optdepends=()
+makedepends=('cmake' 'pkg-config' 'gettext')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 

@@ -185,6 +185,6 @@ set(CPACK_DEBIAN_PACKAGE_MAINTAINER "devcxl <64475363+devcxl@users.noreply.githu
 set(CPACK_DEBIAN_PACKAGE_SECTION "libs")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_GENERATE_SHLIBS ON)
-set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${url}")
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/devcxl/fcitx5-voice-input")
 
 include(CPack)
