@@ -19,7 +19,7 @@ cmake --build build -j"$(nproc)"
 
 ## 依赖（全部必需）
 
-`fcitx5`（pkg-config 名 fcitx5 或 Fcitx5Core）、`pipewire-0.3`（libpipewire-0.3）、`nlohmann-json`、`libcurl`。
+`fcitx5`（pkg-config 名 fcitx5 或 Fcitx5Core）、`pipewire-0.3`（libpipewire-0.3）、`libpulse-simple`、`nlohmann-json`、`libcurl`。
 
 ## 代码结构
 
@@ -29,7 +29,9 @@ src/addon/
 ├── voiceinput.conf.in     # addon 配置模板（@PROJECT_VERSION@ 替换）
 ├── config/
 │   └── voiceinput-config.h   # FCITX_CONFIGURATION 宏定义配置键
-├── capture/pipewire_capture.cpp/.h  # PipeWire 音频捕获
+├── capture/audio_capture.h      # 音频捕获抽象接口
+├── capture/pulse_audio_capture.cpp/.h  # PulseAudio 音频捕获（优先）
+├── capture/pipewire_capture.cpp/.h  # PipeWire 音频捕获（fallback）
 ├── vad/vad.cpp/.h         # 能量阈值 VAD（非 WebRTC）
 ├── pipeline/pipeline.cpp/.h   # 状态机 IDLE→LISTENING→RECORDING→PROCESSING_ASR→LISTENING
 ├── asr/
@@ -47,7 +49,8 @@ src/addon/
 - **构建产物**: `voice-input-addon.so`（无 `lib` 前缀，`PREFIX ""`）
 - **Addon 注册**: `FCITX_ADDON_FACTORY(VoiceInputAddonFactory)` — 必须在 `namespace fcitx` 外部
 - **PipeWire 回调**: `on_process` 内 ≤100μs，只写 ring buffer，禁止阻塞/VAD/分配
-- **PipeWire 生命周期**: `StartListening()` 启动捕获，`StopListening()` 停止捕获；输入上下文切换通过短延迟停机避免反复重启
+- **音频捕获后端**: 优先 PulseAudio（兼容 PulseAudio 和 pipewire-pulse），失败后 fallback 到 PipeWire 直连
+- **音频捕获生命周期**: `StartListening()` 启动捕获，`StopListening()` 停止捕获；输入上下文切换通过短延迟停机避免反复重启
 - **Ring buffer**: `Clear()` 被故意省略（与 PipeWire 回调 data race），清空用 `Read()` drain 模式
 - **Config 热加载**: `setConfig()` → `voiceinput.conf` 保存 + `pipeline_->SetConfig()`
 - **交互方式**: 切换到 Voice Input 即进入 `LISTENING`；VAD 检测到人声显示录音，静音后提交 ASR 并回到监听；无快捷键触发录音
