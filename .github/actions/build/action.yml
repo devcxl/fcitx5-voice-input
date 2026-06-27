@@ -26,12 +26,20 @@ runs:
           gettext \
           libjsoncpp-dev \
           libcurl4-openssl-dev \
-          libonnxruntime-dev \
           dpkg-dev
+
+    - name: Install ONNX Runtime
+      shell: bash
+      run: |
+        ONNX_VER=1.20.1
+        ONNX_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VER}/onnxruntime-linux-x64-${ONNX_VER}.tgz"
+        curl -fsSL "$ONNX_URL" -o /tmp/onnxruntime.tgz
+        tar -xzf /tmp/onnxruntime.tgz -C /tmp
+        echo "ONNXRUNTIME_ROOT=/tmp/onnxruntime-linux-x64-${ONNX_VER}" >> $GITHUB_ENV
 
     - name: Configure
       shell: bash
-      run: cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} -DCMAKE_INSTALL_PREFIX=/usr
+      run: cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} -DCMAKE_INSTALL_PREFIX=/usr -DONNXRUNTIME_ROOT="${ONNXRUNTIME_ROOT}"
 
     - name: Compile
       shell: bash
