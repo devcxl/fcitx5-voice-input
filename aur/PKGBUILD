@@ -12,7 +12,7 @@ depends=(
     'fcitx5'
     'pipewire'
     'libpulse'
-    'nlohmann-json'
+    'jsoncpp'
     'curl'
 )
 optdepends=()
