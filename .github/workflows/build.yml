@@ -21,7 +21,7 @@ jobs:
             libpipewire-0.3-dev libspa-0.2-dev \
             libpulse-dev \
             gettext \
-            nlohmann-json3-dev \
+            libjsoncpp-dev \
             libcurl4-openssl-dev \
             dpkg-dev
 
@@ -55,7 +55,7 @@ jobs:
           docker run --rm -v /tmp/archpkg:/build archlinux:latest bash -c "
             set -eux
             pacman -Syu --noconfirm base-devel cmake pkg-config \
-              fcitx5 pipewire libpulse nlohmann-json curl gettext
+              fcitx5 pipewire libpulse jsoncpp curl gettext
 
             cd /build
             useradd -m builder
