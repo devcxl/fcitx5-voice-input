@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <cstring>
-#include <iostream>
 #include <sstream>
 
 #include <curl/curl.h>
@@ -222,10 +221,6 @@ void OpenaiCompatAsrEngine::TranscribeWorker() {
     }
 }
 
-std::vector<uint8_t> OpenaiCompatAsrEngine::EncodeToWav(const float* pcm, size_t frames) {
-    return FloatPcmToWav(pcm, frames);
-}
-
 std::string OpenaiCompatAsrEngine::DoHttpRequest(const std::vector<uint8_t>& wavData) {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -363,9 +358,9 @@ std::string OpenaiCompatAsrEngine::NormalizeChinese(const std::string& text) {
         {"裏", "里"}, {"現", "现"}, {"聲", "声"}, {"應", "应"},
         {"開", "开"}, {"關", "关"}, {"點", "点"}, {"樣", "样"},
         {"實", "实"}, {"認", "认"}, {"識", "识"}, {"輸", "输"},
-        {"嗎", "吗"}, {"後", "后"}, {"發", "发"}, {"語", "语"},
+        {"後", "后"}, {"發", "发"}, {"語", "语"},
         {"錄", "录"}, {"轉", "转"}, {"請", "请"}, {"誰", "谁"},
-        {"哪裡", "哪里"}, {"什麼", "什么"}, {"知道", "知道"},
+        {"哪裡", "哪里"}, {"什麼", "什么"},
     };
 
     std::string result = text;

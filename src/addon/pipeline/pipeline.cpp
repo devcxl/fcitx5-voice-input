@@ -3,7 +3,6 @@
 #include <fcitx-utils/log.h>
 #include <cstring>
 #include <cmath>
-#include <iostream>
 #include <chrono>
 #include <thread>
 #include <memory>
@@ -176,6 +175,7 @@ void Pipeline::CaptureLoop() {
     constexpr size_t chunkFrames = 320;  // 20ms at 16kHz
     float chunk[chunkFrames];
     int emptyReadCount = 0;
+    int discardCount = 0;
 
     while (state_.load() != State::IDLE) {
         size_t read = capture_ ? capture_->RingBuffer()->Read(chunk, chunkFrames) : 0;
@@ -223,7 +223,6 @@ void Pipeline::CaptureLoop() {
         }
         // PROCESSING_ASR / PROCESSING_LLM: discard audio, wait for state change
         if (curState == State::PROCESSING_ASR || curState == State::PROCESSING_LLM) {
-            static int discardCount = 0;
             discardCount++;
             if (discardCount % 100 == 0) {
                 FCITX_DEBUG() << "[voice-input] Discarding " << (discardCount * read)

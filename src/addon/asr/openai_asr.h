@@ -34,9 +34,6 @@ public:
 private:
     void TranscribeWorker();
 
-    // Convert float PCM (16kHz mono) to 16-bit WAV bytes
-    static std::vector<uint8_t> EncodeToWav(const float* pcm, size_t frames);
-
     // HTTP POST multipart/form-data to the API endpoint
     std::string DoHttpRequest(const std::vector<uint8_t>& wavData);
     static std::string NormalizeChinese(const std::string& text);

@@ -212,45 +212,22 @@ void VoiceInputEngine::InitializeIfNeeded() {
 
     pipeline_->Init(config_);
 
-    // Create ASR engine based on backend selection
+    // Create ASR engine
     auto asrConfig = AsrEngine::Config{};
+    asrConfig.apiEndpoint = config_.openaiEndpoint.value();
+    asrConfig.apiKey = config_.openaiApiKey.value();
+    asrConfig.modelName = config_.openaiModel.value();
+    asrConfig.language = config_.openaiLanguage.value();
 
-    if (config_.asrBackend.value() == "sherpa-onnx") {
-#ifdef ENABLE_SHERPA_ONNX
-        asrConfig.modelPath = config_.modelPath.value();
-        asrConfig.modelName = config_.modelName.value();
-        asrConfig.numThreads = config_.numThreads.value();
-
-        auto asr = std::make_unique<SherpaAsrEngine>();
-        if (asr->Init(asrConfig)) {
-            pipeline_->SetAsrEngine(std::move(asr));
-        } else {
-            FCITX_WARN() << "[voice-input] Sherpa-onnx init failed, "
-                            "falling back to OpenAI-compatible";
-        }
-#else
-        FCITX_WARN() << "[voice-input] asrBackend=sherpa-onnx but "
-                        "ENABLE_SHERPA_ONNX not set, using OpenAI";
-#endif
-    }
-
-    // Default: OpenAI-compatible (also serves as fallback)
-    if (!pipeline_->HasAsrEngine()) {
-        asrConfig.apiEndpoint = config_.openaiEndpoint.value();
-        asrConfig.apiKey = config_.openaiApiKey.value();
-        asrConfig.modelName = config_.openaiModel.value();
-        asrConfig.language = config_.openaiLanguage.value();
-
-        auto asr = std::make_unique<OpenaiCompatAsrEngine>();
-        if (asr->Init(asrConfig)) {
-            pipeline_->SetAsrEngine(std::move(asr));
-            FCITX_INFO() << "[voice-input] Using OpenAI-compatible ASR: "
-                         << config_.openaiEndpoint.value()
-                         << " model=" << config_.openaiModel.value();
-        } else {
-            FCITX_WARN() << "[voice-input] OpenAI ASR init failed "
-                            "(no API key?), running capture-only";
-        }
+    auto asr = std::make_unique<OpenaiCompatAsrEngine>();
+    if (asr->Init(asrConfig)) {
+        pipeline_->SetAsrEngine(std::move(asr));
+        FCITX_INFO() << "[voice-input] Using OpenAI-compatible ASR: "
+                     << config_.openaiEndpoint.value()
+                     << " model=" << config_.openaiModel.value();
+    } else {
+        FCITX_WARN() << "[voice-input] OpenAI ASR init failed "
+                        "(no API key?), running capture-only";
     }
 }
 
