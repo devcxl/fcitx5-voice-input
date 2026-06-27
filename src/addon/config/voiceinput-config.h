@@ -69,10 +69,18 @@ FCITX_CONFIGURATION(VoiceInputConfig,
         audioSource{this, "AudioSource", _("Audio Source"), ""};
 
     // LLM post-processing settings
+    Option<bool> llmEnabled{this, "LLMEnabled",
+                             _("LLM Post-processing"), false};
     Option<std::string> llmModel{this, "LLMModel",
                                   _("LLM Model"), ""};
     Option<std::string> llmSystemPrompt{this, "LLMSystemPrompt",
                                          _("LLM System Prompt"), ""};
+    Option<bool> llmStream{this, "LLMStream",
+                            _("LLM Streaming"), true};
+
+    // Output behavior
+    Option<bool> autoCommit{this, "AutoCommit",
+                             _("Auto-Commit when no LLM"), true};
 
     // VAD (Voice Activity Detection)
     // Stored as 0-100 percentage internally; divide by 100 for 0.0-1.0

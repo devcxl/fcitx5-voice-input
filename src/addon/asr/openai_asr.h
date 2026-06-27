@@ -36,7 +36,6 @@ private:
 
     // HTTP POST multipart/form-data to the API endpoint
     std::string DoHttpRequest(const std::vector<uint8_t>& wavData);
-    static std::string NormalizeChinese(const std::string& text);
 
     // Config
     std::string apiEndpoint_;

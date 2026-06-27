@@ -60,7 +60,8 @@ private:
     bool initialized_ = false;
 
     std::string statusText_;
-    std::string lastCommittedText_;
+    std::string pendingPreeditText_;
+    uint64_t pendingPreeditUtteranceId_ = 0;
 };
 
 } // namespace fcitx

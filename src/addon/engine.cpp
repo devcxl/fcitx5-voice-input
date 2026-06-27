@@ -10,6 +10,7 @@
 #include <fcitx/addonmanager.h>
 #include <fcitx/inputcontext.h>
 #include <fcitx/inputpanel.h>
+#include <fcitx/text.h>
 #include <fcitx/instance.h>
 #include <fcitx/userinterface.h>
 
@@ -29,6 +30,7 @@ VoiceInputEngine::VoiceInputEngine(Instance* instance)
 
 VoiceInputEngine::~VoiceInputEngine() {
     pipeline_->Abort();
+    eventDispatcher_.detach();
 }
 
 void VoiceInputEngine::reloadConfig() {
@@ -66,7 +68,7 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
                  << " ic=" << (activeIc_ != nullptr);
 
     statusText_.clear();
-    SetStatus("\xF0\x9F\x8E\x99 \xe5\xbd\x95\xe9\x9f\xb3\xe4\xb8\xad...");  // "🎙 录音中..."
+    SetStatus(_("语音输入就绪"));
 }
 
 void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
@@ -104,13 +106,23 @@ std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {
     std::vector<InputMethodEntry> entries;
     entries.emplace_back("voiceinput", _("Voice Input"), "zh_CN",
                          "voiceinput");
-    entries.back().setLabel("\xF0\x9F\x8E\x99").setConfigurable(true);
+    entries.back().setConfigurable(true);
     return entries;
 }
 
 void VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
                                 KeyEvent& keyEvent) {
     FCITX_UNUSED(entry);
+    // Commit pending preedit on any key press
+    if (!pendingPreeditText_.empty() && activeIc_) {
+        activeIc_->commitString(pendingPreeditText_);
+        activeIc_->inputPanel().reset();
+        activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+        SetStatus(_("语音输入就绪"));
+        pendingPreeditText_.clear();
+        pendingPreeditUtteranceId_ = 0;
+        FCITX_DEBUG() << "[voice-input] Preedit committed on keyEvent";
+    }
     FCITX_UNUSED(keyEvent);
 }
 
@@ -130,44 +142,76 @@ void VoiceInputEngine::OnAsrResult(const std::string& text) {
     });
 }
 
-namespace {
-
-size_t Utf8CharCount(const std::string& s) {
-    size_t count = 0;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if ((s[i] & 0xC0) != 0x80) count++;
-    }
-    return count;
-}
-
-} // namespace
-
 void VoiceInputEngine::PollResults() {
     auto& queue = pipeline_->ResultQueue();
     AsrResult result;
     while (queue.TryPop(result)) {
-        FCITX_INFO() << "[voice-input] PollResult: text='"
-                     << result.text.substr(0, 50) << "'"
+        bool valid = !result.text.empty()
+                  && result.generation != 0
+                  && activeGeneration_.load() == result.generation
+                  && activeIc_ != nullptr;
+
+        FCITX_DEBUG() << "[voice-input] PollResult:"
+                     << " text=\"" << result.text << "\""
                      << " gen=" << result.generation
                      << " activeGen=" << activeGeneration_.load()
-                     << " ic=" << (activeIc_ != nullptr)
-                     << " match=" << (activeGeneration_.load() == result.generation)
-                     << " refined=" << result.isLLMRefined;
-        if (!result.text.empty()
-            && result.generation != 0
-            && activeGeneration_.load() == result.generation
-            && activeIc_) {
+                     << " uid=" << result.utteranceId
+                     << " pendingUid=" << pendingPreeditUtteranceId_
+                     << " refined=" << result.isLLMRefined
+                     << " valid=" << valid;
+
+        if (valid) {
             if (result.isLLMRefined) {
-                // Replace previous commit with LLM-refined text
-                size_t oldLen = Utf8CharCount(lastCommittedText_);
-                if (oldLen > 0) {
-                    activeIc_->deleteSurroundingText(-static_cast<int>(oldLen), 0);
+                if (result.isPartial) {
+                    // Streaming partial: update preedit in-place
+                    if (result.utteranceId == pendingPreeditUtteranceId_) {
+                        activeIc_->inputPanel().setPreedit(Text(result.text));
+                        activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+                        statusText_ = result.text;
+                        activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+                    }
+                } else if (result.utteranceId == pendingPreeditUtteranceId_) {
+                    FCITX_INFO() << "[voice-input] LLM commit: uid=" << result.utteranceId
+                                 << " text=\"" << result.text << "\"";
+                    activeIc_->commitString(result.text);
+                    activeIc_->inputPanel().reset();
+                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+                    SetStatus(_("语音输入就绪"));
+                    pendingPreeditText_.clear();
+                    pendingPreeditUtteranceId_ = 0;
+                } else {
+                    FCITX_DEBUG() << "[voice-input] LLM stale skip: uid="
+                                  << result.utteranceId
+                                  << " pendingUid=" << pendingPreeditUtteranceId_;
                 }
-                activeIc_->commitString(result.text);
             } else {
-                activeIc_->commitString(result.text);
+                bool llmActive = config_.llmEnabled.value()
+                              && !config_.llmModel.value().empty();
+                FCITX_INFO() << "[voice-input] Preedit: uid=" << result.utteranceId
+                             << " text=\"" << result.text << "\""
+                             << " llmActive=" << llmActive;
+                if (llmActive) {
+                    activeIc_->inputPanel().setPreedit(Text(result.text));
+                    activeIc_->inputPanel().setAuxDown(Text(_("修正中...")));
+                    statusText_ = result.text;
+                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+                    activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+                    pendingPreeditText_ = result.text;
+                    pendingPreeditUtteranceId_ = result.utteranceId;
+                } else if (config_.autoCommit.value()) {
+                    activeIc_->commitString(result.text);
+                    SetStatus(_("语音输入就绪"));
+                    pendingPreeditText_.clear();
+                    pendingPreeditUtteranceId_ = 0;
+                } else {
+                    activeIc_->inputPanel().setPreedit(Text(result.text));
+                    statusText_ = result.text;
+                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+                    activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+                    pendingPreeditText_ = result.text;
+                    pendingPreeditUtteranceId_ = result.utteranceId;
+                }
             }
-            lastCommittedText_ = result.text;
         }
     }
 }
@@ -176,15 +220,25 @@ void VoiceInputEngine::SetStatus(const std::string& text) {
     eventDispatcher_.schedule([this, text]() {
         statusText_ = text;
         if (activeIc_) {
+            activeIc_->inputPanel().setAuxDown(Text(text));
+            activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
             activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
         }
     });
 }
 
 void VoiceInputEngine::ClearUI() {
-    eventDispatcher_.schedule([this]() {
+    uint64_t gen = activeGeneration_.load();
+    eventDispatcher_.schedule([this, gen]() {
+        if (activeGeneration_.load() != gen) return;
         statusText_.clear();
         if (activeIc_) {
+            // Commit pending preedit before clearing
+            if (!pendingPreeditText_.empty()) {
+                activeIc_->commitString(pendingPreeditText_);
+                pendingPreeditText_.clear();
+                pendingPreeditUtteranceId_ = 0;
+            }
             activeIc_->inputPanel().reset();
             activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
             activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
@@ -229,8 +283,10 @@ void VoiceInputEngine::InitializeIfNeeded() {
     }
 
     // LLM post-processing
+    bool llmEnabled = config_.llmEnabled.value();
     std::string llmModel = config_.llmModel.value();
-    if (!llmModel.empty()) {
+    pipeline_->SetLLMStream(config_.llmStream.value());
+    if (llmEnabled && !llmModel.empty()) {
         auto llmConfig = LLMClient::Config{};
         llmConfig.endpoint = config_.openaiEndpoint.value();
         llmConfig.apiKey = config_.openaiApiKey.value();

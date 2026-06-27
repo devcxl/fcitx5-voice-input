@@ -32,3 +32,18 @@ msgstr "LLM 模型"
 
 msgid "LLM System Prompt"
 msgstr "LLM 系统提示词"
+
+msgid "语音输入就绪"
+msgstr "语音输入就绪"
+
+msgid "修正中..."
+msgstr "修正中..."
+
+msgid "LLM Post-processing"
+msgstr "LLM 后处理"
+
+msgid "LLM Streaming"
+msgstr "LLM 流式输出"
+
+msgid "Auto-Commit when no LLM"
+msgstr "无 LLM 时自动上屏"

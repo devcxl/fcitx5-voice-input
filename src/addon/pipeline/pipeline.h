@@ -29,6 +29,7 @@ public:
     void Init(const VoiceInputConfig& config);
     void SetAsrEngine(std::unique_ptr<AsrEngine> engine);
     void SetLLMClient(std::unique_ptr<LLMClient> client);
+    void SetLLMStream(bool stream) { llmStream_ = stream; }
     void SetResultCallback(ResultCallback cb);
     void SetGeneration(uint64_t gen) { generation_.store(gen); }
 
@@ -64,10 +65,12 @@ private:
 
     // LLM
     std::unique_ptr<LLMClient> llmClient_;
+    bool llmStream_ = true;
 
     // State
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> generation_{0};
+    uint64_t utteranceCounter_{0};
 
     // Config
     VoiceInputConfig config_;
