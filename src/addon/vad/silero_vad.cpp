@@ -39,27 +39,37 @@ bool SileroVad::Init(const std::string& modelPath) {
     }
 
     try {
-        auto* env = new Ort::Env(OrtLoggingLevel::ORT_LOGGING_LEVEL_WARNING,
-                                 "fcitx5-voice-input-silero-vad");
-        auto* options = new Ort::SessionOptions();
+        std::unique_ptr<Ort::Env> env(
+            new Ort::Env(OrtLoggingLevel::ORT_LOGGING_LEVEL_WARNING,
+                         "fcitx5-voice-input-silero-vad"));
+        std::unique_ptr<Ort::SessionOptions> options(
+            new Ort::SessionOptions());
         options->SetIntraOpNumThreads(1);
         options->SetInterOpNumThreads(1);
         options->SetGraphOptimizationLevel(
             GraphOptimizationLevel::ORT_ENABLE_ALL);
 
-        auto* session = new Ort::Session(*env, modelPath.c_str(), *options);
+        std::unique_ptr<Ort::Session> session(
+            new Ort::Session(*env, modelPath.c_str(), *options));
 
-        // Clean up old
+        std::unique_ptr<Ort::MemoryInfo> memoryInfo(
+            new Ort::MemoryInfo(
+                Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeCPU)));
+
+        // 全部成功后才清理旧对象并转移所有权
         delete static_cast<Ort::Session*>(session_);
+        session_ = nullptr;
         delete static_cast<Ort::SessionOptions*>(options_);
+        options_ = nullptr;
         delete static_cast<Ort::Env*>(env_);
+        env_ = nullptr;
         delete static_cast<Ort::MemoryInfo*>(memoryInfo_);
+        memoryInfo_ = nullptr;
 
-        env_ = env;
-        options_ = options;
-        session_ = session;
-        memoryInfo_ = new Ort::MemoryInfo(
-            Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeCPU));
+        env_ = env.release();
+        options_ = options.release();
+        session_ = session.release();
+        memoryInfo_ = memoryInfo.release();
 
         modelPath_ = modelPath;
         Reset();
