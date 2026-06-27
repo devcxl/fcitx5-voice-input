@@ -49,6 +49,10 @@ public:
     void setConfig(const RawConfig &rawConfig) override;
     void reloadConfig() override;
 
+    // ── Dynamic status in input method indicator bar ─────────────────
+    std::string subModeLabelImpl(const InputMethodEntry &entry,
+                                 InputContext &ic) override;
+
 private:
     void OnPipelineStateChange(Pipeline::State oldState, Pipeline::State newState);
     void OnAsrResult(const std::string &text);
@@ -68,6 +72,8 @@ private:
     std::atomic<uint64_t> sessionGeneration_{0};
     uint64_t pendingStopGeneration_ = 0;
     bool initialized_ = false;
+
+    std::string statusText_;
 };
 
 } // namespace fcitx

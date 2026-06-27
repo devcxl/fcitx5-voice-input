@@ -1,3 +1,5 @@
+#include <string>
+
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/eventdispatcher.h>
 #include <fcitx-utils/event.h>
@@ -57,7 +59,10 @@ void VoiceInputEngine::activate(const InputMethodEntry &entry,
     if (pipeline_->GetState() == Pipeline::State::IDLE) {
         pipeline_->StartListening();
     }
-    ClearUI();
+    statusText_.clear();
+    if (activeIc_) {
+        activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+    }
 }
 
 void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
@@ -110,23 +115,31 @@ void VoiceInputEngine::OnPipelineStateChange(Pipeline::State oldState,
     // State transitions from pipeline/capture threads → dispatch to main loop
     if (newState == Pipeline::State::LISTENING) {
         eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
-                ClearUI();
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
+                statusText_.clear();
+                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+            }
         });
     } else if (newState == Pipeline::State::RECORDING) {
         eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
-                SetUIStatus("🎙 录音中...", true);
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
+                statusText_ = "🎙 录音中...";
+                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+            }
         });
     } else if (newState == Pipeline::State::PROCESSING_ASR) {
         eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
-                SetUIStatus("⏳ 转录中...", true);
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
+                statusText_ = "⏳ 转录中...";
+                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+            }
         });
     } else if (newState == Pipeline::State::IDLE) {
         eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_)
-                ClearUI();
+            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
+                statusText_.clear();
+                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+            }
         });
     }
 }
@@ -150,34 +163,37 @@ void VoiceInputEngine::CommitText(const std::string &text) {
 }
 
 void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
-    auto *ic = activeIc_;
-    FCITX_INFO() << "[voice-input] SetUIStatus text='" << text
-                 << "' instant=" << instant << " ic_nonnull=" << (ic != nullptr);
-    if (!ic)
-        return;
+    FCITX_UNUSED(instant);
+    FCITX_INFO() << "[voice-input] SetUIStatus text='" << text << "'";
 
-    if (!instant) {
-        // Dispatch to main thread (for calls from pipeline/worker threads)
-        eventDispatcher_.schedule([this, ic, text]() {
-            if (activeIc_ != ic)
-                return;
-            ic->inputPanel().setAuxUp(Text(text));
-            ic->updateUserInterface(UserInterfaceComponent::InputPanel);
-        });
-    } else {
-        // Called from main thread already — update directly
-        ic->inputPanel().setAuxUp(Text(text));
-        ic->updateUserInterface(UserInterfaceComponent::InputPanel);
-    }
+    eventDispatcher_.schedule([this, text]() {
+        statusText_ = text;
+        if (activeIc_) {
+            activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+        }
+    });
 }
 
 void VoiceInputEngine::ClearUI() {
-    auto *ic = activeIc_;
-    FCITX_INFO() << "[voice-input] ClearUI ic_nonnull=" << (ic != nullptr);
-    if (!ic)
-        return;
-    ic->inputPanel().reset();
-    ic->updateUserInterface(UserInterfaceComponent::InputPanel);
+    FCITX_INFO() << "[voice-input] ClearUI ic_nonnull=" << (activeIc_ != nullptr);
+
+    eventDispatcher_.schedule([this]() {
+        statusText_.clear();
+        if (activeIc_) {
+            activeIc_->inputPanel().reset();
+            activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+            activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+        }
+    });
+}
+
+std::string VoiceInputEngine::subModeLabelImpl(const InputMethodEntry &entry,
+                                                InputContext &ic) {
+    FCITX_UNUSED(entry);
+    if (&ic == activeIc_ && !statusText_.empty()) {
+        return statusText_;
+    }
+    return {};
 }
 
 void VoiceInputEngine::InitializeIfNeeded() {
