@@ -1,31 +1,27 @@
 #include "pipewire_capture.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <thread>
+
 #include <spa/param/audio/format-utils.h>
 #include <fcitx-utils/log.h>
 
 namespace fcitx {
 
 PipeWireCapture::PipeWireCapture()
-    : ringBuffer_(std::make_unique<AudioRingBuffer>(65536))
-{
-}
+    : ringBuffer_(std::make_unique<AudioRingBuffer>(65536)) {}
 
 PipeWireCapture::~PipeWireCapture() {
     Stop();
 }
 
 bool PipeWireCapture::Start() {
-    if (running_) {
-        FCITX_INFO() << "[voice-input:pw] Start() called but already running";
-        return true;
-    }
-
-    FCITX_INFO() << "[voice-input:pw] Initializing PipeWire capture...";
+    if (running_) return true;
 
     pw_init(nullptr, nullptr);
 
-    // ── Create main loop ──────────────────────────────────────────────
     loop_ = pw_thread_loop_new("voice-input-capture", nullptr);
     if (!loop_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to create pw_thread_loop";
@@ -45,11 +41,7 @@ bool PipeWireCapture::Start() {
         Cleanup(false);
         return false;
     }
-    FCITX_DEBUG() << "[voice-input:pw] PipeWire core connected";
 
-    // ── Create stream ──────────────────────────────────────────────────
-    // Note: pw_properties_new returns non-const in PipeWire 1.0.5.
-    // PW_KEY_ADAPTIVE_API was added in 1.2.x; omit on older versions.
     struct pw_properties* props =
         pw_properties_new(
             PW_KEY_MEDIA_TYPE, "Audio",
@@ -57,8 +49,7 @@ bool PipeWireCapture::Start() {
             PW_KEY_MEDIA_ROLE, "Communication",
             PW_KEY_NODE_NAME, "voice-input-capture",
             PW_KEY_NODE_DESCRIPTION, "Voice Input Audio Capture",
-            nullptr
-        );
+            nullptr);
 
     stream_ = pw_stream_new(core_, "voice-input-capture", props);
     if (!stream_) {
@@ -67,7 +58,6 @@ bool PipeWireCapture::Start() {
         return false;
     }
 
-    // ── Configure audio format ────────────────────────────────────────
     static const struct pw_stream_events stream_events = [] {
         struct pw_stream_events events{};
         events.version = PW_VERSION_STREAM_EVENTS;
@@ -79,7 +69,6 @@ bool PipeWireCapture::Start() {
     pw_stream_add_listener(stream_, &streamListener_, &stream_events, this);
 
     uint8_t buffer[1024];
-
     spa_audio_info_raw audio_info = {};
     audio_info.format = SPA_AUDIO_FORMAT_F32;
     audio_info.channels = 1;
@@ -87,11 +76,7 @@ bool PipeWireCapture::Start() {
 
     struct spa_pod_builder podBuilder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
     const spa_pod* params[1];
-    params[0] = spa_format_audio_raw_build(&podBuilder,
-                                           SPA_PARAM_EnumFormat,
-                                           &audio_info);
-
-    FCITX_INFO() << "[voice-input:pw] Connecting stream: format=F32, channels=1, rate=16000";
+    params[0] = spa_format_audio_raw_build(&podBuilder, SPA_PARAM_EnumFormat, &audio_info);
 
     int connectResult = pw_stream_connect(stream_,
                                           PW_DIRECTION_INPUT,
@@ -107,27 +92,34 @@ bool PipeWireCapture::Start() {
         return false;
     }
 
-    // ── Start loop ────────────────────────────────────────────────────
     if (pw_thread_loop_start(loop_) < 0) {
         FCITX_ERROR() << "[voice-input:pw] Failed to start pw_thread_loop";
         Cleanup(false);
         return false;
     }
+
+    // Start drain thread: ring buffer → AudioFrame → frameQueue_
+    drainRunning_ = true;
+    drainThread_ = std::make_unique<std::thread>(&PipeWireCapture::DrainLoop, this);
+
     running_ = true;
-    FCITX_INFO() << "[voice-input:pw] PipeWire capture started successfully";
+    FCITX_INFO() << "[voice-input:pw] Capture started (with drain thread)";
     return true;
 }
 
 void PipeWireCapture::Stop() {
-    if (!running_) {
-        FCITX_DEBUG() << "[voice-input:pw] Stop() called but not running";
-        return;
+    if (!running_) return;
+
+    // Stop drain thread first
+    drainRunning_ = false;
+    if (drainThread_ && drainThread_->joinable()) {
+        drainThread_->join();
+        drainThread_.reset();
     }
 
-    FCITX_INFO() << "[voice-input:pw] Stopping PipeWire capture...";
     Cleanup(true);
     running_ = false;
-    FCITX_INFO() << "[voice-input:pw] PipeWire capture stopped";
+    FCITX_INFO() << "[voice-input:pw] Capture stopped";
 }
 
 void PipeWireCapture::Cleanup(bool stopLoop) {
@@ -159,30 +151,21 @@ void PipeWireCapture::OnProcess(void* userdata) {
 
 void PipeWireCapture::OnStateChanged(void*, pw_stream_state oldState,
                                      pw_stream_state state, const char* error) {
-    FCITX_INFO() << "[voice-input:pw] Stream state changed: "
+    FCITX_INFO() << "[voice-input:pw] Stream state: "
                  << pw_stream_state_as_string(oldState) << " -> "
                  << pw_stream_state_as_string(state)
                  << (error ? " error=" : "") << (error ? error : "");
 }
 
 void PipeWireCapture::OnProcessImpl() {
-    // ══════════════════════════════════════════════════════════════════
-    // THIS RUNS INSIDE PW_THREAD_LOOP LOCK
-    //   - Do NOT allocate large objects
-    //   - Do NOT run ASR / VAD / JSON serialization
-    //   - Do NOT hold std::mutex
-    //   - Do NOT call Fcitx UI functions
-    // ══════════════════════════════════════════════════════════════════
-
     pw_buffer* buf = pw_stream_dequeue_buffer(stream_);
     if (!buf) {
-        FCITX_DEBUG() << "[voice-input:pw] pw_stream_dequeue_buffer returned null";
+        FCITX_DEBUG() << "[voice-input:pw] dequeue_buffer returned null";
         return;
     }
 
     struct spa_buffer* spa_buf = buf->buffer;
     if (spa_buf->n_datas == 0) {
-        FCITX_DEBUG() << "[voice-input:pw] spa_buffer has no data chunks";
         pw_stream_queue_buffer(stream_, buf);
         return;
     }
@@ -190,30 +173,53 @@ void PipeWireCapture::OnProcessImpl() {
     void* src = spa_buf->datas[0].data;
     auto* chunk = spa_buf->datas[0].chunk;
     if (!chunk) {
-        FCITX_DEBUG() << "[voice-input:pw] spa_buffer chunk is null";
         pw_stream_queue_buffer(stream_, buf);
         return;
     }
     uint32_t size = chunk->size;
 
     if (!src || size == 0) {
-        FCITX_DEBUG() << "[voice-input:pw] Empty audio buffer";
         pw_stream_queue_buffer(stream_, buf);
         return;
     }
 
     size_t frames = size / sizeof(float);
     const float* pcm = static_cast<const float*>(src);
-
-    // Only operation: PCM frame → ring buffer
     ringBuffer_->Write(pcm, frames);
 
-    // Optional raw callback (for testing/monitoring only)
     if (rawCallback_) {
         rawCallback_(pcm, frames);
     }
 
     pw_stream_queue_buffer(stream_, buf);
+}
+
+void PipeWireCapture::DrainLoop() {
+    constexpr size_t kDrainChunk = 512;
+    float floatBuf[kDrainChunk];
+
+    while (drainRunning_) {
+        size_t read = ringBuffer_->Read(floatBuf, kDrainChunk);
+        if (read < kDrainChunk) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        if (!frameQueue_) continue;
+
+        AudioFrame frame;
+        frame.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+
+        static constexpr float kFloatToInt16 = 32767.0f;
+        for (size_t i = 0; i < kDrainChunk; ++i) {
+            float s = std::clamp(floatBuf[i], -1.0f, 1.0f);
+            frame.pcm[i] = static_cast<int16_t>(s * kFloatToInt16);
+        }
+
+        frameQueue_->Push(frame);
+    }
 }
 
 } // namespace fcitx

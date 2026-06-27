@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include <pulse/simple.h>
@@ -22,17 +24,15 @@ public:
     void Stop() override;
     bool IsRunning() const override { return running_; }
     const char* Name() const override { return "pulseaudio"; }
-
-    const AudioRingBuffer* RingBuffer() const override { return ringBuffer_.get(); }
-    AudioRingBuffer* RingBuffer() override { return ringBuffer_.get(); }
+    void SetSourceName(const std::string& name) override { configuredSource_ = name; }
 
 private:
     void CaptureLoop();
 
-    std::unique_ptr<AudioRingBuffer> ringBuffer_;
     pa_simple* stream_ = nullptr;
     std::unique_ptr<std::thread> captureThread_;
     std::atomic<bool> running_{false};
+    std::string configuredSource_;
 };
 
 } // namespace fcitx

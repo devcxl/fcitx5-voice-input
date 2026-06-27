@@ -14,6 +14,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 option(ENABLE_SHERPA_ONNX "Enable local ASR via sherpa-onnx" OFF)
 option(ENABLE_LLM_SUPPORT "Enable LLM post-processing (libcurl)" OFF)
 option(BUILD_TESTS "Build unit tests" OFF)
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to an ONNX Runtime installation")
 
 # ─── Dependencies ─────────────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
@@ -51,6 +52,48 @@ pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 # HTTP client (for OpenAI-compatible ASR)
 find_package(CURL REQUIRED)
 
+# Silero VAD via ONNX Runtime (the only VAD backend)
+set(ENABLE_SILERO_VAD ON)
+pkg_check_modules(ONNXRUNTIME QUIET onnxruntime)
+if(NOT ONNXRUNTIME_FOUND)
+    pkg_check_modules(ONNXRUNTIME QUIET libonnxruntime)
+endif()
+
+if(NOT ONNXRUNTIME_FOUND)
+    find_path(ONNXRUNTIME_INCLUDE_DIR
+        NAMES onnxruntime_cxx_api.h
+        HINTS
+            "${ONNXRUNTIME_ROOT}/include"
+            "${ONNXRUNTIME_ROOT}/include/onnxruntime"
+            /usr/include/onnxruntime
+            /usr/local/include/onnxruntime
+    )
+    find_library(ONNXRUNTIME_LIBRARY
+        NAMES onnxruntime
+        HINTS
+            "${ONNXRUNTIME_ROOT}/lib"
+            "${ONNXRUNTIME_ROOT}/lib64"
+            /usr/lib
+            /usr/local/lib
+    )
+    if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+        set(ONNXRUNTIME_FOUND TRUE)
+        set(ONNXRUNTIME_INCLUDE_DIRS "${ONNXRUNTIME_INCLUDE_DIR}")
+        set(ONNXRUNTIME_LIBRARIES "${ONNXRUNTIME_LIBRARY}")
+    endif()
+endif()
+
+if(NOT ONNXRUNTIME_FOUND)
+    message(FATAL_ERROR "Silero VAD requires ONNX Runtime; install onnxruntime (Arch: onnxruntime, Debian: libonnxruntime-dev)")
+endif()
+
+set(SILERO_VAD_MODEL_SOURCE "${CMAKE_SOURCE_DIR}/third_party/silero-vad/src/silero_vad/data/silero_vad.onnx")
+if(NOT EXISTS "${SILERO_VAD_MODEL_SOURCE}")
+    message(FATAL_ERROR "Silero VAD model not found at ${SILERO_VAD_MODEL_SOURCE}. Run: git submodule update --init --recursive")
+endif()
+set(VOICE_INPUT_MODEL_DIR "${CMAKE_INSTALL_FULL_DATADIR}/fcitx5/voice-input/models")
+message(STATUS "Silero VAD enabled with model: ${SILERO_VAD_MODEL_SOURCE}")
+
 # sherpa-onnx local ASR (optional)
 if(ENABLE_SHERPA_ONNX)
     pkg_check_modules(SHERPA_ONNX sherpa-onnx)
@@ -65,18 +108,21 @@ set(ADDON_SOURCES
     src/addon/capture/pipewire_capture.cpp
     src/addon/capture/pulse_audio_capture.cpp
     src/addon/vad/vad.cpp
+    src/addon/vad/silero_vad.cpp
     src/addon/pipeline/pipeline.cpp
     src/addon/asr/openai_asr.cpp
 )
 
 set(ADDON_HEADERS
     src/addon/engine.h
+    src/addon/types.h
     src/addon/config/config.h
     src/addon/config/voiceinput-config.h
     src/addon/capture/audio_capture.h
     src/addon/capture/pipewire_capture.h
     src/addon/capture/pulse_audio_capture.h
     src/addon/vad/vad.h
+    src/addon/vad/silero_vad.h
     src/addon/asr/asr_engine.h
     src/addon/asr/openai_asr.h
     src/addon/pipeline/pipeline.h
@@ -96,6 +142,7 @@ target_include_directories(voice-input-addon PRIVATE
     ${PULSE_INCLUDE_DIRS}
     ${JSONCPP_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIRS}
+    ${ONNXRUNTIME_INCLUDE_DIRS}
     src/addon
 )
 
@@ -104,6 +151,7 @@ target_link_libraries(voice-input-addon PRIVATE
     ${PIPEWIRE_LIBRARIES}
     ${PULSE_LIBRARIES}
     ${JSONCPP_LIBRARIES}
+    ${ONNXRUNTIME_LIBRARIES}
     CURL::libcurl
 )
 
@@ -150,6 +198,17 @@ if(ENABLE_LLM_SUPPORT)
     target_compile_definitions(voice-input-addon PRIVATE ENABLE_LLM_SUPPORT)
 endif()
 
+target_compile_definitions(voice-input-addon PRIVATE
+    ENABLE_SILERO_VAD
+    VOICE_INPUT_MODEL_DIR="${VOICE_INPUT_MODEL_DIR}"
+)
+if(ONNXRUNTIME_CFLAGS_OTHER)
+    target_compile_options(voice-input-addon PRIVATE ${ONNXRUNTIME_CFLAGS_OTHER})
+endif()
+if(ONNXRUNTIME_LIBRARY_DIRS)
+    target_link_directories(voice-input-addon PRIVATE ${ONNXRUNTIME_LIBRARY_DIRS})
+endif()
+
 # ─── Addon Config ──────────────────────────────────────────────────────────────
 # Generate addon .conf from .conf.in template (substitutes @PROJECT_VERSION@)
 configure_file(
@@ -165,6 +224,11 @@ install(TARGETS voice-input-addon
 
 install(FILES ${CMAKE_BINARY_DIR}/share/fcitx5/addon/voiceinput.conf
     DESTINATION share/fcitx5/addon
+)
+
+install(FILES ${SILERO_VAD_MODEL_SOURCE}
+    DESTINATION share/fcitx5/voice-input/models
+    RENAME silero_vad.onnx
 )
 
 # ─── Tests ────────────────────────────────────────────────────────────────────

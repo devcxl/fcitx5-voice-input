@@ -1,58 +1,77 @@
 #pragma once
 
-#include <cstddef>
+#include <atomic>
 #include <cstdint>
-#include <functional>
+#include <deque>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "types.h"
+#include "utils/thread_safe_queue.h"
 
 namespace fcitx {
 
-/**
- * Voice Activity Detector (VAD).
- *
- * Designed for simple VAD on captured audio.
- * Operates on data read from the ring buffer (NOT inside PipeWire callback).
- *
- * Uses energy-based VAD as baseline. Future: replace with webrtcvad or
- * sherpa-onnx built-in VAD.
- */
-class VAD {
+class SileroVad;
+
+class VADWorker {
 public:
+    // VAD tuning parameters
     struct Config {
-        float threshold = 0.5f;        // Energy threshold (0.0–1.0)
-        int sampleRate = 16000;        // Expected sample rate (Hz)
-        int frameSize = 320;           // Samples per VAD frame (20ms at 16kHz)
-        int silenceFrames = 25;        // 25 frames of silence ≈ 500ms
+        float speechThreshold = 0.5f;
+        float silenceThreshold = 0.35f;
+        int startFrames = 2;           // consecutive speech frames to trigger onset
+        int preRollMs = 300;           // audio before onset to include
+        int endSilenceMs = 700;        // silence before ending utterance
+        int minSpeechMs = 300;         // minimum utterance duration
+        int maxSpeechMs = 30000;       // maximum utterance duration
+        std::string sileroModelPath;   // empty = installed default
     };
 
-    VAD();
-    explicit VAD(const Config& config);
+    VADWorker();
+    ~VADWorker();
 
-    // Set config (thread-safe, called from main thread before start)
+    VADWorker(const VADWorker&) = delete;
+    VADWorker& operator=(const VADWorker&) = delete;
+
     void SetConfig(const Config& config);
-    const Config& GetConfig() const { return config_; }
+    void SetFrameQueue(ThreadSafeQueue<AudioFrame>* queue);
+    void SetUtteranceQueue(ThreadSafeQueue<Utterance>* queue);
 
-    // Process a chunk of PCM data. Returns true if speech is detected.
-    // Called from capture thread (outside PipeWire callback).
-    bool Process(const float* pcm, size_t frames);
+    void Start();
+    void Stop();
 
-    // Reset VAD state (call on new recording start).
-    void Reset();
-
-    // Returns true if silence has persisted beyond the threshold.
-    bool IsSilenceTimeout() const;
-
-    // Current speech activity state.
-    bool IsSpeechActive() const { return speechActive_; }
+    bool IsRunning() const { return running_.load(); }
 
 private:
-    // Compute RMS energy of a frame
-    float ComputeEnergy(const float* frame, size_t len) const;
+    void WorkerLoop();
+    void ProcessFrame(const AudioFrame& frame, float probability);
+    void FlushUtterance(int64_t endMs);
+    void AppendPreRoll(const std::array<int16_t, kWindowSize>& pcm);
+    void ResetSession();
 
     Config config_;
-    bool speechActive_ = false;
-    int silenceFrameCount_ = 0;
-    uint64_t frameCount_ = 0;
-    bool initialized_ = false;
+
+    std::unique_ptr<SileroVad> silero_;
+
+    ThreadSafeQueue<AudioFrame>* frameQueue_ = nullptr;
+    ThreadSafeQueue<Utterance>* utteranceQueue_ = nullptr;
+
+    std::unique_ptr<std::thread> thread_;
+    std::atomic<bool> running_{false};
+
+    // Session state
+    enum class State { Idle, Speaking };
+    State state_ = State::Idle;
+
+    std::deque<int16_t> preRoll_;
+    std::vector<int16_t> currentAudio_;
+
+    int speechFrames_ = 0;
+    int silenceFrames_ = 0;
+    int64_t startMs_ = 0;
+    int64_t lastSpeechMs_ = 0;
 };
 
 } // namespace fcitx

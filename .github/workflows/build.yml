@@ -12,6 +12,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install system dependencies
         run: |
@@ -23,6 +25,7 @@ jobs:
             gettext \
             libjsoncpp-dev \
             libcurl4-openssl-dev \
+            libonnxruntime-dev \
             dpkg-dev
 
       - name: Configure
@@ -47,15 +50,17 @@ jobs:
         run: |
           mkdir -p /tmp/archpkg
 
-          git archive --prefix=fcitx5-voice-input-0.1.0/ \
-            -o /tmp/archpkg/fcitx5-voice-input-0.1.0.tar.gz HEAD
+          mkdir -p /tmp/archpkg/fcitx5-voice-input-0.1.0
+          git archive HEAD | tar -x -C /tmp/archpkg/fcitx5-voice-input-0.1.0
+          cp -a third_party /tmp/archpkg/fcitx5-voice-input-0.1.0/
+          tar -C /tmp/archpkg -czf /tmp/archpkg/fcitx5-voice-input-0.1.0.tar.gz fcitx5-voice-input-0.1.0
 
           cp aur/PKGBUILD /tmp/archpkg/
 
           docker run --rm -v /tmp/archpkg:/build archlinux:latest bash -c "
             set -eux
             pacman -Syu --noconfirm base-devel cmake pkg-config \
-              fcitx5 pipewire libpulse jsoncpp curl gettext
+              fcitx5 pipewire libpulse jsoncpp curl gettext onnxruntime-cpu
 
             cd /build
             useradd -m builder

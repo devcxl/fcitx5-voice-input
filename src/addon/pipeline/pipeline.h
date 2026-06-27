@@ -1,36 +1,22 @@
 #pragma once
 
-#include <memory>
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <string>
 #include <thread>
 
 #include "config/config.h"
 #include "capture/audio_capture.h"
 #include "vad/vad.h"
 #include "asr/asr_engine.h"
+#include "types.h"
+#include "utils/thread_safe_queue.h"
 
 namespace fcitx {
 
-/**
- * Voice input pipeline — state machine orchestrating the full flow:
- *
- *   IDLE → RECORDING → PROCESSING_ASR → [PROCESSING_LLM] → IDLE
- *
- * Pipeline state changes are instantaneous and non-blocking on the
- * main thread. ASR runs on a separate thread; results arrive via callback.
- */
 class Pipeline {
 public:
-    enum class State {
-        IDLE,
-        LISTENING,      // waiting for VAD speech onset
-        RECORDING,      // speech active, accumulating audio
-        PROCESSING_ASR, // submitting to ASR engine
-        PROCESSING_LLM,
-    };
-
-    using StateCallback = std::function<void(State oldState, State newState)>;
     using ResultCallback = std::function<void(const std::string& text)>;
 
     Pipeline();
@@ -39,63 +25,49 @@ public:
     Pipeline(const Pipeline&) = delete;
     Pipeline& operator=(const Pipeline&) = delete;
 
-    // ── Lifecycle ─────────────────────────────────────────────────────
     void Init(const VoiceInputConfig& config);
-    void StartListening();
-    void StopListening();
-    void Abort();
-
-    State GetState() const { return state_.load(); }
-    const char* StateName() const;
-
-    // ── Configuration (thread-safe) ────────────────────────────────────
-    void SetConfig(const VoiceInputConfig& config);
     void SetAsrEngine(std::unique_ptr<AsrEngine> engine);
-    bool HasAsrEngine() const { return asrEngine_ != nullptr; }
+    void SetResultCallback(ResultCallback cb);
+    void SetGeneration(uint64_t gen) { generation_.store(gen); }
 
-    // ── Callbacks ──────────────────────────────────────────────────────
-    void SetStateCallback(StateCallback cb) { stateCb_ = std::move(cb); }
-    void SetResultCallback(ResultCallback cb) { resultCb_ = std::move(cb); }
+    // Lifecycle
+    void Start();
+    void Stop();
+    void Abort();
+    bool IsRunning() const { return running_.load(); }
+
+    // Main thread polls this
+    ThreadSafeQueue<AsrResult>& ResultQueue() { return resultQueue_; }
+
+    void SetConfig(const VoiceInputConfig& config);
 
 private:
-    // Capture + VAD loop (runs on capture thread)
-    void CaptureLoop();
     bool StartCapture();
+    void AsrWorkerLoop();
 
-    // Handle audio accumulation and dispatch to ASR
-    void DispatchToAsr();
+    // Queues
+    ThreadSafeQueue<AudioFrame> frameQueue_;
+    ThreadSafeQueue<Utterance> utteranceQueue_;
+    ThreadSafeQueue<AsrResult> resultQueue_;
 
-    // ASR result callback (called from ASR thread)
-    void OnAsrResult(const std::string& text, bool isFinal);
+    // Workers
+    std::unique_ptr<VADWorker> vadWorker_;
+    std::unique_ptr<std::thread> asrThread_;
 
-    // LLM post-processing
-    void PostProcessWithLLM(const std::string& text);
-    std::string DoLlmHttpRequest(const std::string& userText,
-                                   const std::string& systemPrompt);
-
-    // State transition helper
-    void SetState(State newState);
-
-    // Audio buffer for current recording session
-    std::vector<float> sessionAudio_;
-    static constexpr size_t kSampleRate = 16000;
-    static constexpr size_t kMaxSessionSamples = kSampleRate * 30;
-    static constexpr size_t kSessionReserveSamples = kMaxSessionSamples;
-
-    // Components
+    // Capture
     std::unique_ptr<AudioCapture> capture_;
-    std::unique_ptr<VAD> vad_;
+
+    // ASR
     std::unique_ptr<AsrEngine> asrEngine_;
-    VoiceInputConfig config_;
 
     // State
-    std::atomic<State> state_{State::IDLE};
-    std::unique_ptr<std::thread> captureThread_;
-    std::unique_ptr<std::thread> llmThread_;
-    std::atomic<bool> asrCancelled_{false};
+    std::atomic<bool> running_{false};
+    std::atomic<uint64_t> generation_{0};
 
-    // Callbacks
-    StateCallback stateCb_;
+    // Config
+    VoiceInputConfig config_;
+
+    // Callback
     ResultCallback resultCb_;
 };
 

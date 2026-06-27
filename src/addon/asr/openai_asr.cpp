@@ -22,13 +22,12 @@ struct WavHeader {
     uint16_t audioFormat = 1;       // PCM
     uint16_t numChannels = 1;       // mono
     uint32_t sampleRate = 16000;
-    uint32_t byteRate = 32000;      // 16000 * 1 * 2
+    uint32_t byteRate = 32000;      // sampleRate * 1 * 2
     uint16_t blockAlign = 2;        // 1 * 2
     uint16_t bitsPerSample = 16;
     char data[4] = {'d', 'a', 't', 'a'};
     uint32_t dataSize = 0;
 };
-#pragma pack(pop)
 
 std::vector<uint8_t> FloatPcmToWav(const float* pcm, size_t frames) {
     WavHeader header;
@@ -189,6 +188,15 @@ void OpenaiCompatAsrEngine::TranscribeWorker() {
 
     FCITX_INFO() << "[voice-input:openai] HTTP response: " << response.size()
                  << " bytes in " << httpMs << "ms";
+
+    if (response.empty()) {
+        FCITX_ERROR() << "[voice-input:openai] Empty response from API";
+        if (errorCb_) {
+            errorCb_("Empty response from API");
+        }
+        finishEmpty();
+        return;
+    }
 
     // Parse JSON response
     Json::Value json;

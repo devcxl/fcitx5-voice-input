@@ -1,8 +1,9 @@
 # fcitx5-voice-input 架构设计
 
-> **状态:** 当前实现说明 + 早期设计留存
-> **设计原则:** 砍掉一切不需要的组件，单 addon 搞定
-> **当前交互:** 切换到 Voice Input 后自动监听人声；无快捷键触发录音。
+> **状态:** ⚠️ 超前设计文档 — 实际实现已大幅偏离。**以代码为准。**
+> **当前实现:** PipeWire/PulseAudio → FrameQueue → VADWorker(Silero ONNX) → UtteranceQueue → ASRWorker(OpenAI API) → ResultQueue → 主线程 eventDispatcher → commitString
+> **VAD**: Silero ONNX 独占（无 libfvad），int16 输入，512 samples/window
+> **架构**: 4 线程（Capture + VAD Worker + ASR Worker + 主线程），ThreadSafeQueue 连接各阶段
 
 ---
 

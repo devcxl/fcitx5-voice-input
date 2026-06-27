@@ -1,6 +1,8 @@
 #pragma once
 
-#include "utils/audio_buffer.h"
+#include <string>
+#include "types.h"
+#include "utils/thread_safe_queue.h"
 
 namespace fcitx {
 
@@ -12,9 +14,13 @@ public:
     virtual void Stop() = 0;
     virtual bool IsRunning() const = 0;
     virtual const char* Name() const = 0;
+    virtual void SetSourceName(const std::string& name) {}
+    virtual void SetFrameQueue(ThreadSafeQueue<AudioFrame>* queue) {
+        frameQueue_ = queue;
+    }
 
-    virtual const AudioRingBuffer* RingBuffer() const = 0;
-    virtual AudioRingBuffer* RingBuffer() = 0;
+protected:
+    ThreadSafeQueue<AudioFrame>* frameQueue_ = nullptr;
 };
 
 } // namespace fcitx

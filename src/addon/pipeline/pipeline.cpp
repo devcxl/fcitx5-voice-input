@@ -1,14 +1,10 @@
 #include "pipeline.h"
 
 #include <fcitx-utils/log.h>
-#include <cstring>
-#include <cmath>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <thread>
-#include <memory>
-
-#include <curl/curl.h>
-#include <json/json.h>
 
 #include "capture/pipewire_capture.h"
 #include "capture/pulse_audio_capture.h"
@@ -18,135 +14,41 @@ using namespace std::chrono_literals;
 namespace fcitx {
 
 Pipeline::Pipeline()
-    : vad_(std::make_unique<VAD>())
-{
-}
+    : vadWorker_(std::make_unique<VADWorker>()) {}
 
 Pipeline::~Pipeline() {
     Abort();
-    if (capture_) {
-        capture_->Stop();
-    }
 }
 
 void Pipeline::Init(const VoiceInputConfig& config) {
     config_ = config;
 
-    VAD::Config vadConfig;
-    vadConfig.threshold = static_cast<float>(config_.vadThreshold.value()) / 100.0f;
-    vadConfig.silenceFrames = config_.silenceThresholdMs.value() / 20;
-    vad_->SetConfig(vadConfig);
+    VADWorker::Config vadConfig;
+    vadConfig.speechThreshold =
+        static_cast<float>(config_.vadThreshold.value()) / 100.0f;
+    vadConfig.silenceThreshold =
+        vadConfig.speechThreshold * 0.7f;
+    vadConfig.endSilenceMs = config_.silenceThresholdMs.value();
 
-    FCITX_INFO() << "[voice-input] Init: vadThreshold=" << config_.vadThreshold.value()
-                 << "% silenceThresholdMs=" << config_.silenceThresholdMs.value()
-                 << " silenceFrames=" << vadConfig.silenceFrames;
+    FCITX_INFO() << "[voice-input] Init:"
+                 << " vadThreshold=" << config_.vadThreshold.value()
+                 << "% silenceThresholdMs=" << config_.silenceThresholdMs.value();
 
-    SetState(State::IDLE);
-}
-
-void Pipeline::StartListening() {
-    if (state_.load() != State::IDLE) {
-        FCITX_DEBUG() << "[voice-input] StartListening ignored: state=" << StateName();
-        return;
-    }
-
-    FCITX_INFO() << "[voice-input] StartListening";
-
-    if (!StartCapture()) {
-        return;
-    }
-
-    asrCancelled_ = false;
-
-    sessionAudio_.clear();
-    sessionAudio_.reserve(kSessionReserveSamples);
-
-    // Drain any stale audio from the ring buffer instead of Clear().
-    float discard[320];
-    int drained = 0;
-    for (int i = 0; i < 1000; ++i) {
-        if (!capture_ || capture_->RingBuffer()->Read(discard, 320) == 0) break;
-        drained++;
-    }
-    if (drained > 0) {
-        FCITX_INFO() << "[voice-input] Drained " << (drained * 320) << " stale samples from ring buffer";
-    }
-
-    vad_->Reset();
-
-    SetState(State::LISTENING);
-
-    captureThread_ = std::make_unique<std::thread>(&Pipeline::CaptureLoop, this);
-}
-
-void Pipeline::StopListening() {
-    if (state_.load() == State::IDLE) return;
-
-    FCITX_INFO() << "[voice-input] Pipeline::StopListening";
-
-    asrCancelled_ = true;
-    SetState(State::IDLE);
-
-    if (captureThread_ && captureThread_->joinable()) {
-        captureThread_->join();
-        captureThread_.reset();
-    }
-    if (capture_) {
-        capture_->Stop();
-    }
-    if (asrEngine_) {
-        asrEngine_->Stop();
-    }
-}
-
-void Pipeline::Abort() {
-    asrCancelled_ = true;
-
-    state_.store(State::IDLE);
-
-    if (captureThread_ && captureThread_->joinable()) {
-        captureThread_->join();
-        captureThread_.reset();
-    }
-    if (capture_) {
-        capture_->Stop();
-    }
-
-    if (asrEngine_) {
-        asrEngine_->Stop();
-    }
+    vadWorker_->SetConfig(vadConfig);
+    vadWorker_->SetFrameQueue(&frameQueue_);
+    vadWorker_->SetUtteranceQueue(&utteranceQueue_);
 }
 
 void Pipeline::SetConfig(const VoiceInputConfig& config) {
     config_ = config;
-}
 
-bool Pipeline::StartCapture() {
-    if (capture_ && capture_->IsRunning()) {
-        return true;
-    }
-
-    if (!capture_) {
-        capture_ = std::make_unique<PulseAudioCapture>();
-    }
-
-    if (capture_->Start()) {
-        FCITX_INFO() << "[voice-input] Using audio capture backend: " << capture_->Name();
-        return true;
-    }
-
-    if (std::string(capture_->Name()) != "pipewire") {
-        FCITX_WARN() << "[voice-input] Audio capture backend " << capture_->Name()
-                     << " failed, falling back to pipewire";
-        capture_ = std::make_unique<PipeWireCapture>();
-        if (capture_->Start()) {
-            FCITX_INFO() << "[voice-input] Using audio capture backend: " << capture_->Name();
-            return true;
-        }
-    }
-
-    FCITX_ERROR() << "[voice-input] Failed to start any audio capture backend";
-    return false;
+    VADWorker::Config vadConfig;
+    vadConfig.speechThreshold =
+        static_cast<float>(config_.vadThreshold.value()) / 100.0f;
+    vadConfig.silenceThreshold =
+        vadConfig.speechThreshold * 0.7f;
+    vadConfig.endSilenceMs = config_.silenceThresholdMs.value();
+    vadWorker_->SetConfig(vadConfig);
 }
 
 void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
@@ -154,237 +56,158 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
     if (asrEngine_) {
         asrEngine_->SetResultCallback(
             [this](const std::string& text, bool isFinal) {
-                OnAsrResult(text, isFinal);
+                if (isFinal && !text.empty()) {
+                    AsrResult result;
+                    result.text = text;
+                    result.generation = generation_.load();
+                    FCITX_INFO() << "[voice-input] ASR result: text='"
+                                 << text.substr(0, 50) << "'"
+                                 << " gen=" << result.generation;
+                    resultQueue_.Push(std::move(result));
+                    if (resultCb_) {
+                        resultCb_(text);
+                    }
+                }
             });
     }
 }
 
-const char* Pipeline::StateName() const {
-    switch (state_.load()) {
-        case State::IDLE:            return "IDLE";
-        case State::LISTENING:       return "LISTENING";
-        case State::RECORDING:       return "RECORDING";
-        case State::PROCESSING_ASR:  return "PROCESSING_ASR";
-        case State::PROCESSING_LLM:  return "PROCESSING_LLM";
-    }
-    return "UNKNOWN";
+void Pipeline::SetResultCallback(ResultCallback cb) {
+    resultCb_ = std::move(cb);
 }
 
-void Pipeline::SetState(State newState) {
-    State oldState = state_.exchange(newState);
-    if (oldState != newState && stateCb_) {
-        stateCb_(oldState, newState);
-    }
-}
+void Pipeline::Start() {
+    if (running_) return;
 
-void Pipeline::CaptureLoop() {
-    constexpr size_t chunkFrames = 320;  // 20ms at 16kHz
-    float chunk[chunkFrames];
-    int emptyReadCount = 0;
-    int discardCount = 0;
-
-    while (state_.load() != State::IDLE) {
-        size_t read = capture_ ? capture_->RingBuffer()->Read(chunk, chunkFrames) : 0;
-        if (read == 0) {
-            ++emptyReadCount;
-            if (emptyReadCount % 400 == 0) {
-                FCITX_WARN() << "[voice-input] No audio samples read from PipeWire ring buffer for ~2s"
-                             << " (backend=" << (capture_ ? capture_->Name() : "none")
-                             << " running=" << (capture_ && capture_->IsRunning()) << ")";
-            }
-            std::this_thread::sleep_for(5ms);
-            continue;
-        }
-        emptyReadCount = 0;
-
-        State curState = state_.load();
-
-        if (curState == State::LISTENING) {
-            vad_->Process(chunk, read);
-            if (vad_->IsSpeechActive()) {
-                float energy = 0.0f;
-                for (size_t i = 0; i < read; ++i) energy += std::abs(chunk[i]);
-                FCITX_INFO() << "[voice-input] VAD speech onset, energy="
-                             << (energy / read);
-                sessionAudio_.clear();
-                sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
-                SetState(State::RECORDING);
-            }
-        } else if (curState == State::RECORDING) {
-            vad_->Process(chunk, read);
-            sessionAudio_.insert(sessionAudio_.end(), chunk, chunk + read);
-            if (!vad_->IsSpeechActive() && vad_->IsSilenceTimeout()) {
-                float durSec = sessionAudio_.size() / 16000.0f;
-                FCITX_INFO() << "[voice-input] VAD silence timeout, audio="
-                             << sessionAudio_.size() << " frames ("
-                             << durSec << "s), submitting";
-                SetState(State::PROCESSING_ASR);
-                DispatchToAsr();
-            } else if (sessionAudio_.size() >= kMaxSessionSamples) {
-                FCITX_INFO() << "[voice-input] Max recording duration reached, audio="
-                             << sessionAudio_.size() << " frames, submitting";
-                SetState(State::PROCESSING_ASR);
-                DispatchToAsr();
-            }
-        }
-        // PROCESSING_ASR / PROCESSING_LLM: discard audio, wait for state change
-        if (curState == State::PROCESSING_ASR || curState == State::PROCESSING_LLM) {
-            discardCount++;
-            if (discardCount % 100 == 0) {
-                FCITX_DEBUG() << "[voice-input] Discarding " << (discardCount * read)
-                              << " samples during " << StateName();
-            }
-        }
-    }
-    FCITX_INFO() << "[voice-input] CaptureLoop exited (state=" << StateName() << ")";
-}
-
-void Pipeline::DispatchToAsr() {
     if (!asrEngine_) {
         FCITX_ERROR() << "[voice-input] No ASR engine configured";
-        SetState(State::LISTENING);
         return;
     }
 
-    if (sessionAudio_.empty()) {
-        FCITX_WARN() << "[voice-input] No audio to process";
-        SetState(State::LISTENING);
-        return;
-    }
+    if (!StartCapture()) return;
 
-    float durSec = sessionAudio_.size() / 16000.0f;
-    FCITX_INFO() << "[voice-input] Dispatching " << sessionAudio_.size()
-                 << " frames (" << durSec << "s) to ASR engine: "
-                 << (asrEngine_ ? asrEngine_->Name() : "none");
+    // Drain stale results from previous session
+    AsrResult stale;
+    while (resultQueue_.TryPop(stale)) {}
 
-    asrEngine_->Start();
-    asrEngine_->FeedAudio(sessionAudio_.data(), sessionAudio_.size());
-    sessionAudio_.clear();
-    asrEngine_->Stop();
+    vadWorker_->Start();
+
+    running_ = true;
+    asrThread_ = std::make_unique<std::thread>(&Pipeline::AsrWorkerLoop, this);
+
+    FCITX_INFO() << "[voice-input] Pipeline started";
 }
 
-void Pipeline::OnAsrResult(const std::string& text, bool isFinal) {
-    if (asrCancelled_) return;
+void Pipeline::Stop() {
+    if (!running_) return;
 
-    if (isFinal) {
-        if (!text.empty()) {
-            FCITX_INFO() << "[voice-input] ASR result: \"" << text << "\"";
-        } else {
-            FCITX_INFO() << "[voice-input] ASR result: (empty)";
-        }
+    running_ = false;
 
-        if (!text.empty() && !config_.llmModel.value().empty()) {
-            PostProcessWithLLM(text);
-        } else if (!text.empty() && resultCb_) {
-            resultCb_(text);
-        }
-        SetState(State::LISTENING);
+    if (capture_) {
+        capture_->Stop();
     }
+
+    vadWorker_->Stop();
+
+    if (asrThread_ && asrThread_->joinable()) {
+        asrThread_->join();
+        asrThread_.reset();
+    }
+
+    if (asrEngine_) {
+        asrEngine_->Stop();
+    }
+
+    if (capture_) {
+        capture_.reset();
+    }
+
+    // Drain remaining results (commit via resultCb_ if still valid)
+    AsrResult r;
+    while (resultQueue_.TryPop(r)) {}
+
+    FCITX_INFO() << "[voice-input] Pipeline stopped";
 }
 
-void Pipeline::PostProcessWithLLM(const std::string& text) {
-    // Wait for previous LLM worker to finish
-    if (llmThread_ && llmThread_->joinable()) {
-        llmThread_->join();
+void Pipeline::Abort() {
+    running_ = false;
+
+    if (capture_) {
+        capture_->Stop();
+        capture_.reset();
     }
 
-    llmThread_ = std::make_unique<std::thread>([this, text]() {
-        std::string systemPrompt = config_.llmSystemPrompt.value();
-        if (systemPrompt.empty()) {
-            systemPrompt = "你是一个中文语音识别后处理助手。请修正以下语音识别结果中的错别字，保持原意，只返回修正后的纯文本。";
-        }
+    vadWorker_->Stop();
 
-        std::string corrected = DoLlmHttpRequest(text, systemPrompt);
+    if (asrThread_ && asrThread_->joinable()) {
+        asrThread_->join();
+        asrThread_.reset();
+    }
 
-        if (corrected.empty()) {
-            FCITX_WARN() << "[voice-input:llm] Correction returned empty, using original";
-            if (resultCb_) resultCb_(text);
-        } else {
-            FCITX_INFO() << "[voice-input:llm] Corrected: \"" << corrected << "\"";
-            if (resultCb_) resultCb_(corrected);
-        }
-    });
+    if (asrEngine_) {
+        asrEngine_->Stop();
+    }
+
+    // Clear queues
+    AudioFrame f;
+    while (frameQueue_.TryPop(f)) {}
+    Utterance u;
+    while (utteranceQueue_.TryPop(u)) {}
+    AsrResult r;
+    while (resultQueue_.TryPop(r)) {}
 }
 
-std::string Pipeline::DoLlmHttpRequest(const std::string& userText,
-                                        const std::string& systemPrompt) {
-    CURL* curl = curl_easy_init();
-    if (!curl) return "";
+bool Pipeline::StartCapture() {
+    // PulseAudio first (also works with pipewire-pulse)
+    capture_ = std::make_unique<PulseAudioCapture>();
+    capture_->SetSourceName(config_.audioSource.value());
+    capture_->SetFrameQueue(&frameQueue_);
 
-    std::string endpoint = config_.openaiEndpoint.value();
-    if (endpoint.empty()) endpoint = "https://api.openai.com/v1";
-    if (endpoint.back() != '/') endpoint += '/';
-    std::string url = endpoint + "chat/completions";
-
-    std::string model = config_.llmModel.value();
-    FCITX_INFO() << "[voice-input:llm] POST " << url << " model=" << model;
-
-    Json::Value body;
-    body["model"] = model;
-    body["temperature"] = 0.0;
-
-    Json::Value messages(Json::arrayValue);
-    Json::Value sysMsg;
-    sysMsg["role"] = "system";
-    sysMsg["content"] = systemPrompt;
-    messages.append(sysMsg);
-
-    Json::Value userMsg;
-    userMsg["role"] = "user";
-    userMsg["content"] = userText;
-    messages.append(userMsg);
-
-    body["messages"] = messages;
-
-    Json::StreamWriterBuilder writer;
-    writer["indentation"] = "";
-    std::string bodyStr = Json::writeString(writer, body);
-
-    struct curl_slist* headers = nullptr;
-    std::string auth = "Authorization: Bearer " + config_.openaiApiKey.value();
-    headers = curl_slist_append(headers, auth.c_str());
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    std::string response;
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)bodyStr.size());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
-        size_t total = size * nmemb;
-        static_cast<std::string*>(userp)->append(static_cast<char*>(contents), total);
-        return total;
-    });
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        FCITX_ERROR() << "[voice-input:llm] HTTP error: " << curl_easy_strerror(res);
-        return "";
+    if (capture_->Start()) {
+        FCITX_INFO() << "[voice-input] Capture: " << capture_->Name();
+        return true;
     }
 
-    FCITX_INFO() << "[voice-input:llm] Response: " << response.size() << " bytes";
+    // Fallback to native PipeWire
+    FCITX_WARN() << "[voice-input] PulseAudio failed, falling back to PipeWire";
+    capture_ = std::make_unique<PipeWireCapture>();
+    capture_->SetFrameQueue(&frameQueue_);
 
-    Json::Value json;
-    Json::Reader reader;
-    if (!reader.parse(response, json)) {
-        FCITX_ERROR() << "[voice-input:llm] JSON parse error: "
-                       << reader.getFormattedErrorMessages();
-        return "";
+    if (capture_->Start()) {
+        FCITX_INFO() << "[voice-input] Capture: " << capture_->Name();
+        return true;
     }
 
-    if (json.isMember("error")) {
-        FCITX_ERROR() << "[voice-input:llm] API error: "
-                      << json["error"].get("message", Json::Value("unknown")).asString();
-        return "";
+    FCITX_ERROR() << "[voice-input] Failed to start any capture backend";
+    capture_.reset();
+    return false;
+}
+
+void Pipeline::AsrWorkerLoop() {
+    while (running_) {
+        Utterance u;
+        if (!utteranceQueue_.TryPop(u)) {
+            std::this_thread::sleep_for(10ms);
+            continue;
+        }
+
+        if (u.pcm.empty() || !asrEngine_) continue;
+
+        float durSec = static_cast<float>(u.pcm.size()) / kSampleRate;
+        FCITX_INFO() << "[voice-input:asr] Processing utterance: "
+                     << u.pcm.size() << " samples (" << durSec << "s)";
+
+        // Convert int16 → float32
+        std::vector<float> floatPcm(u.pcm.size());
+        static constexpr float kInt16ToFloat = 1.0f / 32768.0f;
+        for (size_t i = 0; i < u.pcm.size(); ++i) {
+            floatPcm[i] = static_cast<float>(u.pcm[i]) * kInt16ToFloat;
+        }
+
+        asrEngine_->Start();
+        asrEngine_->FeedAudio(floatPcm.data(), floatPcm.size());
+        asrEngine_->Stop();
     }
-    std::string content = json["choices"][0]["message"]["content"].asString();
-    return content;
 }
 
 } // namespace fcitx

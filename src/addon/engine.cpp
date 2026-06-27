@@ -23,33 +23,34 @@
 
 namespace fcitx {
 
-VoiceInputEngine::VoiceInputEngine(Instance *instance)
+VoiceInputEngine::VoiceInputEngine(Instance* instance)
     : instance_(instance), pipeline_(std::make_unique<Pipeline>()) {
     fcitx::registerDomain(FCITX_GETTEXT_DOMAIN, VOICE_INPUT_LOCALE_DIR);
     eventDispatcher_.attach(&instance_->eventLoop());
     reloadConfig();
 }
 
-VoiceInputEngine::~VoiceInputEngine() { pipeline_->Abort(); }
+VoiceInputEngine::~VoiceInputEngine() {
+    pipeline_->Abort();
+}
 
 void VoiceInputEngine::reloadConfig() {
     readAsIni(config_, "conf/voiceinput.conf");
 }
 
-void VoiceInputEngine::setConfig(const RawConfig &rawConfig) {
+void VoiceInputEngine::setConfig(const RawConfig& rawConfig) {
     config_.load(rawConfig, true);
 
     bool saved = safeSaveAsIni(config_, "conf/voiceinput.conf");
     FCITX_INFO() << "[voice-input] setConfig saved=" << saved;
 
-    // Re-apply config to pipeline if initialized
     if (initialized_) {
         pipeline_->SetConfig(config_);
     }
 }
 
-void VoiceInputEngine::activate(const InputMethodEntry &entry,
-                                InputContextEvent &event) {
+void VoiceInputEngine::activate(const InputMethodEntry& entry,
+                                InputContextEvent& event) {
     FCITX_UNUSED(entry);
     FCITX_UNUSED(event);
     InitializeIfNeeded();
@@ -57,35 +58,45 @@ void VoiceInputEngine::activate(const InputMethodEntry &entry,
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
     pendingStopGeneration_ = generation;
     sessionGeneration_.store(generation);
-    if (pipeline_->GetState() == Pipeline::State::IDLE) {
-        pipeline_->StartListening();
-    }
+
+    pipeline_->SetGeneration(generation);
+
+    bool wasRunning = pipeline_->IsRunning();
+    pipeline_->Start();
+
+    FCITX_INFO() << "[voice-input] Activate: gen=" << generation
+                 << " wasRunning=" << wasRunning
+                 << " ic=" << (activeIc_ != nullptr);
+
     statusText_.clear();
-    if (activeIc_) {
-        activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-    }
+    SetStatus("\xF0\x9F\x8E\x99 \xe5\xbd\x95\xe9\x9f\xb3\xe4\xb8\xad...");  // "🎙 录音中..."
 }
 
-void VoiceInputEngine::deactivate(const InputMethodEntry &entry,
-                                  InputContextEvent &event) {
+void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
+                                  InputContextEvent& event) {
     FCITX_UNUSED(entry);
     FCITX_UNUSED(event);
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
     pendingStopGeneration_ = generation;
+
+    FCITX_INFO() << "[voice-input] Deactivate: gen=" << generation;
+
     ClearUI();
 
     delayedStopEvent_ = instance_->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC,
         now(CLOCK_MONOTONIC) + 200000,
         0,
-        [this, generation](EventSourceTime *, uint64_t) {
+        [this, generation](EventSourceTime*, uint64_t) {
             if (pendingStopGeneration_ != generation) {
+                FCITX_INFO() << "[voice-input] DelayedStop: cancelled gen="
+                             << generation;
                 return true;
             }
+            FCITX_INFO() << "[voice-input] DelayedStop: executing gen="
+                         << generation;
             sessionGeneration_.store(0);
-            if (pipeline_->GetState() != Pipeline::State::IDLE) {
-                pipeline_->StopListening();
-            }
+            pipeline_->Stop();
             activeIc_ = nullptr;
             return true;
         });
@@ -96,77 +107,59 @@ std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {
     std::vector<InputMethodEntry> entries;
     entries.emplace_back("voiceinput", _("Voice Input"), "zh_CN",
                          "voiceinput");
-    entries.back().setLabel("🎙").setConfigurable(true);
+    entries.back().setLabel("\xF0\x9F\x8E\x99").setConfigurable(true);
     return entries;
 }
 
-void VoiceInputEngine::keyEvent(const InputMethodEntry &entry,
-                                KeyEvent &keyEvent) {
+void VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
+                                KeyEvent& keyEvent) {
     FCITX_UNUSED(entry);
     FCITX_UNUSED(keyEvent);
 }
 
-void VoiceInputEngine::OnPipelineStateChange(Pipeline::State oldState,
-                                              Pipeline::State newState) {
-    FCITX_UNUSED(oldState);
-    FCITX_DEBUG() << "[voice-input] State change: " << pipeline_->StateName();
-
+void VoiceInputEngine::OnAsrResult(const std::string& text) {
     uint64_t generation = sessionGeneration_.load();
-
-    // State transitions from pipeline/capture threads → dispatch to main loop
-    if (newState == Pipeline::State::LISTENING) {
-        eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
-                statusText_.clear();
-                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-            }
-        });
-    } else if (newState == Pipeline::State::RECORDING) {
-        eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
-                statusText_ = "🎙 录音中...";
-                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-            }
-        });
-    } else if (newState == Pipeline::State::PROCESSING_ASR) {
-        eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
-                statusText_ = "⏳ 转录中...";
-                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-            }
-        });
-    } else if (newState == Pipeline::State::IDLE) {
-        eventDispatcher_.schedule([this, generation]() {
-            if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
-                statusText_.clear();
-                activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-            }
-        });
-    }
-}
-
-void VoiceInputEngine::OnAsrResult(const std::string &text) {
-    uint64_t generation = sessionGeneration_.load();
-
-    eventDispatcher_.schedule([this, generation, text]() {
-        if (generation != 0 && activeGeneration_.load() == generation && activeIc_) {
-            if (!text.empty())
-                activeIc_->commitString(text);
+    FCITX_INFO() << "[voice-input] OnAsrResult: text='"
+                 << text.substr(0, 30) << "'"
+                 << " sessionGen=" << generation
+                 << " activeGen=" << activeGeneration_.load();
+    eventDispatcher_.schedule([this, generation]() {
+        if (generation == 0 || activeGeneration_.load() != generation) {
+            FCITX_INFO() << "[voice-input] PollResults skipped: gen="
+                         << generation << " active=" << activeGeneration_.load();
+            return;
         }
+        PollResults();
     });
 }
 
-void VoiceInputEngine::CommitText(const std::string &text) {
-    auto *ic = activeIc_;
+void VoiceInputEngine::PollResults() {
+    auto& queue = pipeline_->ResultQueue();
+    AsrResult result;
+    while (queue.TryPop(result)) {
+        FCITX_INFO() << "[voice-input] PollResult: text='"
+                     << result.text.substr(0, 50) << "'"
+                     << " gen=" << result.generation
+                     << " activeGen=" << activeGeneration_.load()
+                     << " ic=" << (activeIc_ != nullptr)
+                     << " match=" << (activeGeneration_.load() == result.generation);
+        if (!result.text.empty()
+            && result.generation != 0
+            && activeGeneration_.load() == result.generation
+            && activeIc_) {
+            CommitText(result.text);
+        }
+    }
+}
+
+void VoiceInputEngine::CommitText(const std::string& text) {
+    auto* ic = activeIc_;
     if (ic) {
         ic->commitString(text);
     }
 }
 
-void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
-    FCITX_UNUSED(instant);
-    FCITX_INFO() << "[voice-input] SetUIStatus text='" << text << "'";
-
+void VoiceInputEngine::SetStatus(const std::string& text) {
     eventDispatcher_.schedule([this, text]() {
         statusText_ = text;
         if (activeIc_) {
@@ -176,8 +169,6 @@ void VoiceInputEngine::SetUIStatus(const std::string &text, bool instant) {
 }
 
 void VoiceInputEngine::ClearUI() {
-    FCITX_INFO() << "[voice-input] ClearUI ic_nonnull=" << (activeIc_ != nullptr);
-
     eventDispatcher_.schedule([this]() {
         statusText_.clear();
         if (activeIc_) {
@@ -188,8 +179,8 @@ void VoiceInputEngine::ClearUI() {
     });
 }
 
-std::string VoiceInputEngine::subModeLabelImpl(const InputMethodEntry &entry,
-                                                InputContext &ic) {
+std::string VoiceInputEngine::subModeLabelImpl(const InputMethodEntry& entry,
+                                                InputContext& ic) {
     FCITX_UNUSED(entry);
     if (&ic == activeIc_ && !statusText_.empty()) {
         return statusText_;
@@ -198,22 +189,16 @@ std::string VoiceInputEngine::subModeLabelImpl(const InputMethodEntry &entry,
 }
 
 void VoiceInputEngine::InitializeIfNeeded() {
-    if (initialized_)
-        return;
+    if (initialized_) return;
     initialized_ = true;
 
-    // Setup pipeline callbacks
-    pipeline_->SetStateCallback(
-        [this](Pipeline::State oldState, Pipeline::State newState) {
-            OnPipelineStateChange(oldState, newState);
-        });
-
     pipeline_->SetResultCallback(
-        [this](const std::string &text) { OnAsrResult(text); });
+        [this](const std::string& text) {
+            OnAsrResult(text);
+        });
 
     pipeline_->Init(config_);
 
-    // Create ASR engine
     auto asrConfig = AsrEngine::Config{};
     asrConfig.apiEndpoint = config_.openaiEndpoint.value();
     asrConfig.apiKey = config_.openaiApiKey.value();
@@ -227,18 +212,15 @@ void VoiceInputEngine::InitializeIfNeeded() {
                      << config_.openaiEndpoint.value()
                      << " model=" << config_.openaiModel.value();
     } else {
-        FCITX_WARN() << "[voice-input] OpenAI ASR init failed "
-                        "(no API key?), running capture-only";
+        FCITX_WARN() << "[voice-input] OpenAI ASR init failed";
     }
 }
 
 } // namespace fcitx
 
-// Fcitx5 addon factory — must be outside fcitx namespace for
-// FCITX_ADDON_FACTORY_V2 (which expands to extern "C").
 class VoiceInputAddonFactory : public fcitx::AddonFactory {
 public:
-    fcitx::AddonInstance *create(fcitx::AddonManager *manager) override {
+    fcitx::AddonInstance* create(fcitx::AddonManager* manager) override {
         return new fcitx::VoiceInputEngine(manager->instance());
     }
 };
