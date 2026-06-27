@@ -33,8 +33,8 @@ FCITX_CONFIGURATION(VoiceInputConfig,
     // VAD (Voice Activity Detection)
     // Stored as 0-100 percentage internally; divide by 100 for 0.0-1.0
     Option<int, IntConstrain> vadThreshold{this, "VADThreshold",
-                                            _("VAD Threshold (%)"), 30,
-                                            IntConstrain(0, 100)};
+                                             _("VAD Threshold (%)"), 15,
+                                             IntConstrain(0, 100)};
     Option<int, IntConstrain> silenceThresholdMs{
         this, "SilenceThresholdMs", _("Silence Threshold (ms)"), 800,
         IntConstrain(100, 10000)};
