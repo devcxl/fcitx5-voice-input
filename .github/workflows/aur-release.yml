@@ -17,29 +17,9 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Prepare AUR source tarball
-        run: |
-          TAG=${GITHUB_REF_NAME}
-          VER=${TAG#v}
-          PKG="fcitx5-voice-input"
+      - uses: ./.github/actions/aur
 
-          mkdir -p dist/aur
-
-          # Source tarball with submodules
-          mkdir -p "${PKG}-${VER}"
-          git archive HEAD | tar -x -C "${PKG}-${VER}"
-          cp -a third_party "${PKG}-${VER}/"
-          tar -czf "dist/aur/${PKG}-${VER}.tar.gz" "${PKG}-${VER}"
-
-          # Copy PKGBUILD with version substituted
-          sed "s/pkgver=.*/pkgver=${VER}/" aur/PKGBUILD > dist/aur/PKGBUILD
-
-          # Generate .SRCINFO
-          cd dist/aur
-          sha256=$(sha256sum "${PKG}-${VER}.tar.gz" | cut -d' ' -f1)
-          sed -i "s/sha256sums=('SKIP')/sha256sums=('${sha256}')/" PKGBUILD
-
-      - name: Upload AUR package to release
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           draft: false

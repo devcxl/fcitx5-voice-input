@@ -1,0 +1,38 @@
+name: Package AUR source
+description: Prepare versioned source tarball (with submodules) and PKGBUILD
+
+outputs:
+  tarball:
+    description: Path to the AUR source tarball
+    value: ${{ steps.prepare.outputs.tarball }}
+  pkgbuild:
+    description: Path to the generated PKGBUILD
+    value: ${{ steps.prepare.outputs.pkgbuild }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare AUR package
+      id: prepare
+      shell: bash
+      run: |
+        TAG=${GITHUB_REF_NAME}
+        VER=${TAG#v}
+        PKG="fcitx5-voice-input"
+
+        mkdir -p dist/aur
+
+        # Source tarball with submodules
+        mkdir -p "${PKG}-${VER}"
+        git archive HEAD | tar -x -C "${PKG}-${VER}"
+        cp -a third_party "${PKG}-${VER}/"
+        tar -czf "dist/aur/${PKG}-${VER}.tar.gz" "${PKG}-${VER}"
+
+        # PKGBUILD with version and sha256
+        SHA256=$(sha256sum "dist/aur/${PKG}-${VER}.tar.gz" | cut -d' ' -f1)
+        sed -e "s/pkgver=.*/pkgver=${VER}/" \
+            -e "s/sha256sums=('SKIP')/sha256sums=('${SHA256}')/" \
+            aur/PKGBUILD > dist/aur/PKGBUILD
+
+        echo "tarball=dist/aur/${PKG}-${VER}.tar.gz" >> $GITHUB_OUTPUT
+        echo "pkgbuild=dist/aur/PKGBUILD" >> $GITHUB_OUTPUT
