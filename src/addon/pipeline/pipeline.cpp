@@ -7,6 +7,9 @@
 #include <thread>
 #include <memory>
 
+#include <curl/curl.h>
+#include <nlohmann/json.hpp>
+
 #include "capture/pipewire_capture.h"
 #include "capture/pulse_audio_capture.h"
 
@@ -269,10 +272,104 @@ void Pipeline::OnAsrResult(const std::string& text, bool isFinal) {
         } else {
             FCITX_INFO() << "[voice-input] ASR result: (empty)";
         }
-        if (!text.empty() && resultCb_) {
+
+        if (!text.empty() && !config_.llmModel.value().empty()) {
+            PostProcessWithLLM(text);
+        } else if (!text.empty() && resultCb_) {
             resultCb_(text);
         }
         SetState(State::LISTENING);
+    }
+}
+
+void Pipeline::PostProcessWithLLM(const std::string& text) {
+    // Wait for previous LLM worker to finish
+    if (llmThread_ && llmThread_->joinable()) {
+        llmThread_->join();
+    }
+
+    llmThread_ = std::make_unique<std::thread>([this, text]() {
+        std::string systemPrompt = config_.llmSystemPrompt.value();
+        if (systemPrompt.empty()) {
+            systemPrompt = "你是一个中文语音识别后处理助手。请修正以下语音识别结果中的错别字，保持原意，只返回修正后的纯文本。";
+        }
+
+        std::string corrected = DoLlmHttpRequest(text, systemPrompt);
+
+        if (corrected.empty()) {
+            FCITX_WARN() << "[voice-input:llm] Correction returned empty, using original";
+            if (resultCb_) resultCb_(text);
+        } else {
+            FCITX_INFO() << "[voice-input:llm] Corrected: \"" << corrected << "\"";
+            if (resultCb_) resultCb_(corrected);
+        }
+    });
+}
+
+std::string Pipeline::DoLlmHttpRequest(const std::string& userText,
+                                        const std::string& systemPrompt) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return "";
+
+    std::string endpoint = config_.openaiEndpoint.value();
+    if (endpoint.empty()) endpoint = "https://api.openai.com/v1";
+    if (endpoint.back() != '/') endpoint += '/';
+    std::string url = endpoint + "chat/completions";
+
+    std::string model = config_.llmModel.value();
+    FCITX_INFO() << "[voice-input:llm] POST " << url << " model=" << model;
+
+    nlohmann::json body;
+    body["model"] = model;
+    body["messages"] = {
+        {{"role", "system"}, {"content", systemPrompt}},
+        {{"role", "user"}, {"content", userText}}
+    };
+    body["temperature"] = 0.0;
+    std::string bodyStr = body.dump();
+
+    struct curl_slist* headers = nullptr;
+    std::string auth = "Authorization: Bearer " + config_.openaiApiKey.value();
+    headers = curl_slist_append(headers, auth.c_str());
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    std::string response;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)bodyStr.size());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
+        size_t total = size * nmemb;
+        static_cast<std::string*>(userp)->append(static_cast<char*>(contents), total);
+        return total;
+    });
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        FCITX_ERROR() << "[voice-input:llm] HTTP error: " << curl_easy_strerror(res);
+        return "";
+    }
+
+    FCITX_INFO() << "[voice-input:llm] Response: " << response.size() << " bytes";
+
+    try {
+        auto json = nlohmann::json::parse(response);
+        if (json.contains("error")) {
+            FCITX_ERROR() << "[voice-input:llm] API error: "
+                          << json["error"].value("message", "unknown");
+            return "";
+        }
+        std::string content = json["choices"][0]["message"]["content"];
+        return content;
+    } catch (const std::exception& e) {
+        FCITX_ERROR() << "[voice-input:llm] JSON parse error: " << e.what();
+        return "";
     }
 }
 
