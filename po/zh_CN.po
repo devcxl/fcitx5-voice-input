@@ -1,0 +1,28 @@
+msgid ""
+msgstr ""
+"Language: zh_CN\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Voice Input"
+msgstr "语音输入"
+
+msgid "ASR Backend"
+msgstr "语音识别后端"
+
+msgid "OpenAI API Endpoint"
+msgstr "OpenAI API 地址"
+
+msgid "OpenAI API Key"
+msgstr "OpenAI API 密钥"
+
+msgid "OpenAI Model"
+msgstr "OpenAI 模型"
+
+msgid "Output Language"
+msgstr "输出语言"
+
+msgid "VAD Threshold (%)"
+msgstr "语音检测阈值 (%)"
+
+msgid "Silence Threshold (ms)"
+msgstr "静音检测阈值 (毫秒)"

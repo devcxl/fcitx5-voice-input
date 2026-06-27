@@ -38,10 +38,11 @@ src/addon/
 │   ├── asr_engine.h       # 抽象接口（Start/FeedAudio/Stop）
 │   ├── openai_asr.cpp/.h  # OpenAI 兼容 ASR（默认，HTTP multipart WAV）
 │   ├── sherpa_asr.cpp/.h  # 本地 ASR（ENABLE_SHERPA_ONNX 编译）
-│   └── command_engine.cpp/.h  # 外部命令 ASR
 └── utils/
     ├── audio_buffer.h     # Lock-free SPSC ring buffer
     └── thread_safe_queue.h   # mutex + condition_variable 队列
+po/
+└── zh_CN.po             # 中文翻译文件
 ```
 
 ## 关键约定

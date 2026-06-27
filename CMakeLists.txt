@@ -106,7 +106,32 @@ target_link_libraries(voice-input-addon PRIVATE
 
 target_compile_definitions(voice-input-addon PRIVATE
     VOICE_INPUT_VERSION="${PROJECT_VERSION}"
+    FCITX_GETTEXT_DOMAIN="fcitx5-voice-input"
+    VOICE_INPUT_LOCALE_DIR="${CMAKE_INSTALL_FULL_LOCALEDIR}"
 )
+
+# ─── Translations ────────────────────────────────────────────────────────────
+find_program(GETTEXT_MSGFMT msgfmt REQUIRED)
+set(LOCALE_DIR "${CMAKE_INSTALL_FULL_LOCALEDIR}")
+file(GLOB PO_FILES "${CMAKE_SOURCE_DIR}/po/*.po")
+foreach(PO_FILE ${PO_FILES})
+    get_filename_component(PO_LANG ${PO_FILE} NAME_WE)
+    set(MO_FILE "${CMAKE_BINARY_DIR}/locale/${PO_LANG}/LC_MESSAGES/fcitx5-voice-input.mo")
+    add_custom_command(
+        OUTPUT ${MO_FILE}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/locale/${PO_LANG}/LC_MESSAGES"
+        COMMAND ${GETTEXT_MSGFMT} -o ${MO_FILE} ${PO_FILE}
+        DEPENDS ${PO_FILE}
+        COMMENT "Compiling ${PO_LANG} translation"
+    )
+    list(APPEND MO_FILES ${MO_FILE})
+    install(FILES ${MO_FILE}
+        DESTINATION "${LOCALE_DIR}/${PO_LANG}/LC_MESSAGES"
+        RENAME "fcitx5-voice-input.mo"
+    )
+endforeach()
+add_custom_target(translations ALL DEPENDS ${MO_FILES})
+add_dependencies(voice-input-addon translations)
 
 # ─── Optional: sherpa-onnx local ASR ─────────────────────────────────────────
 if(ENABLE_SHERPA_ONNX AND SHERPA_ONNX_FOUND)

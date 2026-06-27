@@ -25,6 +25,7 @@ namespace fcitx {
 
 VoiceInputEngine::VoiceInputEngine(Instance *instance)
     : instance_(instance), pipeline_(std::make_unique<Pipeline>()) {
+    fcitx::registerDomain(FCITX_GETTEXT_DOMAIN, VOICE_INPUT_LOCALE_DIR);
     eventDispatcher_.attach(&instance_->eventLoop());
     reloadConfig();
 }
