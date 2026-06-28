@@ -20,6 +20,32 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     return total;
 }
 
+// Extract "text" field from a JSON response.
+// Returns empty string on parse failure or missing field.
+std::string ExtractJsonText(const std::string& content) {
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(content, root)) {
+        FCITX_WARN() << "[voice-input:llm] Response is not valid JSON";
+        return {};
+    }
+    if (!root.isMember("text") || !root["text"].isString()) {
+        FCITX_WARN() << "[voice-input:llm] JSON response missing 'text' field";
+        return {};
+    }
+    return root["text"].asString();
+}
+
+// Build system prompt with JSON format instruction appended.
+std::string BuildSystemPrompt(const std::string& userPrompt) {
+    std::string prompt = userPrompt;
+    if (!prompt.empty()) {
+        prompt += "\n\n";
+    }
+    prompt += "你必须以JSON格式回复，格式为：{\"text\": \"修正后的文本\"}。";
+    return prompt;
+}
+
 // SSE streaming callback
 struct SSEContext {
     std::string buffer;
@@ -94,10 +120,10 @@ std::string LLMClient::Process(const std::string& text) {
 
     Json::Value messages(Json::arrayValue);
 
-    if (!config_.systemPrompt.empty()) {
+    {
         Json::Value sysMsg;
         sysMsg["role"] = "system";
-        sysMsg["content"] = config_.systemPrompt;
+        sysMsg["content"] = BuildSystemPrompt(config_.systemPrompt);
         messages.append(sysMsg);
     }
 
@@ -114,7 +140,6 @@ std::string LLMClient::Process(const std::string& text) {
     FCITX_INFO() << "[voice-input:llm] POST " << url
                  << " model=" << config_.model
                  << " input=" << text.size() << " chars"
-                 << (config_.systemPrompt.empty() ? "" : " hasSysPrompt")
                  << " body=" << bodyStr.size() << " bytes";
 
     FCITX_DEBUG() << "[voice-input:llm] Request body:\n" << bodyStr;
@@ -192,12 +217,16 @@ std::string LLMClient::Process(const std::string& text) {
         return {};
     }
 
-    std::string result = json["choices"][0]["message"]["content"].asString();
-    if (result.empty()) {
+    std::string content = json["choices"][0]["message"]["content"].asString();
+    if (content.empty()) {
         FCITX_WARN() << "[voice-input:llm] Empty response content"
                      << " elapsed=" << elapsedMs << "ms";
         return {};
     }
+
+    // Try JSON extraction, fallback to raw LLM output
+    std::string extracted = ExtractJsonText(content);
+    std::string result = extracted.empty() ? text : extracted;
 
     FCITX_INFO() << "[voice-input:llm] Response: http=" << httpCode
                  << " elapsed=" << elapsedMs << "ms"
@@ -228,10 +257,10 @@ void LLMClient::ProcessStream(const std::string& text,
 
     Json::Value messages(Json::arrayValue);
 
-    if (!config_.systemPrompt.empty()) {
+    {
         Json::Value sysMsg;
         sysMsg["role"] = "system";
-        sysMsg["content"] = config_.systemPrompt;
+        sysMsg["content"] = BuildSystemPrompt(config_.systemPrompt);
         messages.append(sysMsg);
     }
 
@@ -264,11 +293,18 @@ void LLMClient::ProcessStream(const std::string& text,
     headers = curl_slist_append(headers, authHeader.c_str());
 
     SSEContext ctx;
-    ctx.onToken = [&onToken](const std::string& s) {
-        if (onToken) onToken(s);
-    };
-    ctx.onComplete = [&onComplete](const std::string& s) {
-        if (onComplete) onComplete(s);
+    // Skip onToken during streaming — partial JSON is not user-friendly
+    ctx.onToken = [](const std::string&) {};
+    ctx.onComplete = [&onComplete, text](const std::string& s) {
+        if (!onComplete) return;
+        std::string extracted = ExtractJsonText(s);
+        if (!extracted.empty()) {
+            onComplete(extracted);
+        } else {
+            FCITX_WARN() << "[voice-input:llm:stream] Failed to parse JSON, "
+                         << "falling back to raw ASR text";
+            onComplete(text);
+        }
     };
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
