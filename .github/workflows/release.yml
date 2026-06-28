@@ -28,6 +28,7 @@ jobs:
           files: |
             *.deb
             dist/aur/*.tar.gz
+            dist/aur/*.pkg.tar.zst
             dist/aur/PKGBUILD
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

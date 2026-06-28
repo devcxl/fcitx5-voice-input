@@ -24,5 +24,6 @@ jobs:
           path: |
             *.deb
             dist/aur/*.tar.gz
+            dist/aur/*.pkg.tar.zst
             dist/aur/PKGBUILD
           if-no-files-found: warn

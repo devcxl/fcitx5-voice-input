@@ -17,14 +17,9 @@ depends=(
     'onnxruntime-cpu'
 )
 optdepends=()
-makedepends=('cmake' 'pkg-config' 'gettext' 'git')
-source=("git+${url}.git#tag=v${pkgver}")
+makedepends=('cmake' 'pkg-config' 'gettext')
+source=("${pkgname}-${pkgver}.tar.gz")
 sha256sums=('SKIP')
-
-prepare() {
-    cd "${srcdir}/${pkgname}"
-    git submodule update --init --recursive
-}
 
 build() {
     cd "${srcdir}/${pkgname}"

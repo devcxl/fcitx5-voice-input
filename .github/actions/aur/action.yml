@@ -1,7 +1,10 @@
 name: Package AUR source
-description: Prepare versioned source tarball (with submodules) and PKGBUILD
+description: Prepare Arch Linux source tarball and build .pkg.tar.zst
 
 outputs:
+  pkgfile:
+    description: Path to the built Arch package
+    value: ${{ steps.build.outputs.pkgfile }}
   tarball:
     description: Path to the AUR source tarball
     value: ${{ steps.prepare.outputs.tarball }}
@@ -12,7 +15,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Prepare AUR package
+    - name: Prepare AUR source
       id: prepare
       shell: bash
       run: |
@@ -20,19 +23,55 @@ runs:
         VER=${TAG#v}
         PKG="fcitx5-voice-input"
 
-        mkdir -p dist/aur
+        mkdir -p dist/aur/src
 
-        # Source tarball with submodules
-        mkdir -p "${PKG}-${VER}"
-        git archive HEAD | tar -x -C "${PKG}-${VER}"
-        cp -a third_party "${PKG}-${VER}/"
-        tar -czf "dist/aur/${PKG}-${VER}.tar.gz" "${PKG}-${VER}"
+        # Source tarball with submodules (top dir = pkgname for makepkg)
+        mkdir -p "${PKG}"
+        git archive HEAD | tar -x -C "${PKG}"
+        cp -a third_party "${PKG}/"
+        tar -czf "dist/aur/src/${PKG}-${VER}.tar.gz" "${PKG}"
+        rm -rf "${PKG}"
 
         # PKGBUILD with version and sha256
-        SHA256=$(sha256sum "dist/aur/${PKG}-${VER}.tar.gz" | cut -d' ' -f1)
+        SHA256=$(sha256sum "dist/aur/src/${PKG}-${VER}.tar.gz" | cut -d' ' -f1)
         sed -e "s/pkgver=.*/pkgver=${VER}/" \
             -e "s/sha256sums=('SKIP')/sha256sums=('${SHA256}')/" \
             aur/PKGBUILD > dist/aur/PKGBUILD
 
-        echo "tarball=dist/aur/${PKG}-${VER}.tar.gz" >> $GITHUB_OUTPUT
+        echo "tarball=dist/aur/src/${PKG}-${VER}.tar.gz" >> $GITHUB_OUTPUT
         echo "pkgbuild=dist/aur/PKGBUILD" >> $GITHUB_OUTPUT
+
+    - name: Build Arch package
+      id: build
+      shell: bash
+      run: |
+        PKG="fcitx5-voice-input"
+        mkdir -p dist/aur/pkg
+
+        # Copy PKGBUILD and source tarball into a build directory
+        cp dist/aur/PKGBUILD "dist/aur/pkg/"
+        cp dist/aur/src/*.tar.gz "dist/aur/pkg/"
+
+        docker run --rm \
+          -v "$PWD/dist/aur/pkg:/build" \
+          archlinux:base-devel \
+          bash -c "
+            set -e
+            pacman -Syu --noconfirm
+            pacman -S --noconfirm --needed cmake pkg-config onnxruntime-cpu
+            cd /build
+            chmod 777 .
+            useradd -m builder
+            echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+            chown -R builder:builder /build
+            su builder -c 'makepkg -f --noconfirm'
+          "
+
+        # Copy the built .pkg.tar.zst out
+        PKGFILE=$(ls dist/aur/pkg/*.pkg.tar.zst 2>/dev/null | head -1)
+        if [ -n "$PKGFILE" ]; then
+          cp "$PKGFILE" dist/aur/
+          echo "pkgfile=${PKGFILE}" >> $GITHUB_OUTPUT
+        else
+          echo "pkgfile=" >> $GITHUB_OUTPUT
+        fi
