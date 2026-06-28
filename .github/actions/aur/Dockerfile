@@ -4,6 +4,11 @@ RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm --needed \
         cmake \
         pkg-config \
+        fcitx5 \
+        pipewire \
+        libpulse \
+        jsoncpp \
+        curl \
         onnxruntime-cpu \
         sudo && \
     pacman -Scc --noconfirm
