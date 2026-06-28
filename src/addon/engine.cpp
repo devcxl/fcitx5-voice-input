@@ -264,6 +264,15 @@ void VoiceInputEngine::InitializeIfNeeded() {
             OnAsrResult(text);
         });
 
+    pipeline_->SetVadStatusCallback(
+        [this](bool speaking) {
+            if (speaking) {
+                SetStatus(_("正在录音中..."));
+            } else {
+                SetStatus(_("语音输入就绪"));
+            }
+        });
+
     pipeline_->Init(config_);
 
     auto asrConfig = AsrEngine::Config{};

@@ -155,6 +155,10 @@ void Pipeline::SetResultCallback(ResultCallback cb) {
     resultCb_ = std::move(cb);
 }
 
+void Pipeline::SetVadStatusCallback(VADWorker::VadStatusCallback cb) {
+    vadWorker_->SetVadStatusCallback(std::move(cb));
+}
+
 void Pipeline::Start() {
     if (running_) return;
 

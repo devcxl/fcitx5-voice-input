@@ -31,6 +31,7 @@ public:
     void SetLLMClient(std::unique_ptr<LLMClient> client);
     void SetLLMStream(bool stream) { llmStream_ = stream; }
     void SetResultCallback(ResultCallback cb);
+    void SetVadStatusCallback(VADWorker::VadStatusCallback cb);
     void SetGeneration(uint64_t gen) { generation_.store(gen); }
 
     // Lifecycle

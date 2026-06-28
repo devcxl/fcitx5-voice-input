@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -35,9 +36,12 @@ public:
     VADWorker(const VADWorker&) = delete;
     VADWorker& operator=(const VADWorker&) = delete;
 
+    using VadStatusCallback = std::function<void(bool speaking)>;
+
     void SetConfig(const Config& config);
     void SetFrameQueue(ThreadSafeQueue<AudioFrame>* queue);
     void SetUtteranceQueue(ThreadSafeQueue<Utterance>* queue);
+    void SetVadStatusCallback(VadStatusCallback cb);
 
     void Start();
     void Stop();
@@ -60,6 +64,9 @@ private:
 
     std::unique_ptr<std::thread> thread_;
     std::atomic<bool> running_{false};
+
+    // Callback
+    VadStatusCallback vadStatusCb_;
 
     // Session state
     enum class State { Idle, Speaking };

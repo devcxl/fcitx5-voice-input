@@ -51,6 +51,10 @@ void VADWorker::SetUtteranceQueue(ThreadSafeQueue<Utterance>* queue) {
     utteranceQueue_ = queue;
 }
 
+void VADWorker::SetVadStatusCallback(VadStatusCallback cb) {
+    vadStatusCb_ = std::move(cb);
+}
+
 void VADWorker::Start() {
     if (running_) return;
 
@@ -125,6 +129,9 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
                 FCITX_INFO() << "[voice-input:vadworker] Speech onset"
                              << " startMs=" << startMs_
                              << " preRollSamples=" << preRoll_.size();
+                if (vadStatusCb_) {
+                    vadStatusCb_(true);
+                }
             }
         } else {
             speechFrames_ = 0;
@@ -182,6 +189,9 @@ void VADWorker::FlushUtterance(int64_t endMs) {
     }
 
     silero_->Reset();
+    if (vadStatusCb_) {
+        vadStatusCb_(false);
+    }
     ResetSession();
 }
 
