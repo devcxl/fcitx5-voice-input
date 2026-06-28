@@ -1,8 +1,7 @@
 #pragma once
 
-#include <cstdio>
-#include <cstring>
 #include <string>
+#include <utility>
 
 #include <fcitx-config/configuration.h>
 #include <fcitx-config/option.h>
@@ -10,45 +9,34 @@
 
 namespace fcitx {
 
-struct AudioSourceAnnotation : public EnumAnnotation {
+struct AsrBackendAnnotation : public EnumAnnotation {
     void dumpDescription(RawConfig &config) const {
         EnumAnnotation::dumpDescription(config);
+        config.setValueByPath("Enum/0", "openai");
+        config.setValueByPath("EnumI18n/0", "OpenAI Compatible");
+    }
+};
 
-        // Default (auto-detect) option
-        config.setValueByPath("Enum/0", "");
-        config.setValueByPath("EnumI18n/0", "Default (Auto)");
-
-        FILE* fp = popen("pactl list sources short 2>/dev/null", "r");
-        if (!fp) return;
-
-        char line[512];
-        int idx = 1;
-        while (fgets(line, sizeof(line), fp)) {
-            // Parse: <index>\t<name>\t<driver>\t<sample_spec>\t<state>
-            char* tab = std::strchr(line, '\t');
-            if (!tab) continue;
-            char* name = tab + 1;
-            tab = std::strchr(name, '\t');
-            if (tab) *tab = '\0';
-            if (!*name) continue;
-
-            // Skip monitor sources
-            size_t len = std::strlen(name);
-            if (len >= 8 && std::strcmp(name + len - 8, ".monitor") == 0) continue;
-
-            config.setValueByPath("Enum/" + std::to_string(idx), name);
-            config.setValueByPath("EnumI18n/" + std::to_string(idx), name);
-            idx++;
+struct OpenaiLanguageAnnotation : public EnumAnnotation {
+    void dumpDescription(RawConfig &config) const {
+        EnumAnnotation::dumpDescription(config);
+        static const std::pair<const char*, const char*> kLanguages[] = {
+            {"",   _("Default (Auto)")},
+            {"en", "English"},
+            {"zh", "中文"},
+        };
+        for (size_t i = 0; i < std::size(kLanguages); ++i) {
+            config.setValueByPath("Enum/" + std::to_string(i), kLanguages[i].first);
+            config.setValueByPath("EnumI18n/" + std::to_string(i), kLanguages[i].second);
         }
-        pclose(fp);
     }
 };
 
 FCITX_CONFIGURATION(VoiceInputConfig,
     // ASR backend selection
-    Option<std::string> asrBackend{this, "ASRBackend",
-                                    _("ASR Backend"),
-                                    "openai"};
+    Option<std::string, NoConstrain<std::string>,
+           DefaultMarshaller<std::string>, AsrBackendAnnotation>
+        asrBackend{this, "ASRBackend", _("ASR Backend"), "openai"};
 
     // OpenAI-compatible API settings
     Option<std::string> openaiEndpoint{this, "OpenAIEndpoint",
@@ -59,14 +47,9 @@ FCITX_CONFIGURATION(VoiceInputConfig,
     Option<std::string> openaiModel{this, "OpenAIModel",
                                      _("OpenAI Model"),
                                      "whisper-1"};
-    Option<std::string> openaiLanguage{this, "OpenAILanguage",
-                                         _("Output Language"), ""};
-
-    // Audio source selection (empty = auto-detect)
-    // Shown as a dropdown populated from system audio devices
     Option<std::string, NoConstrain<std::string>,
-           DefaultMarshaller<std::string>, AudioSourceAnnotation>
-        audioSource{this, "AudioSource", _("Audio Source"), ""};
+           DefaultMarshaller<std::string>, OpenaiLanguageAnnotation>
+        openaiLanguage{this, "OpenAILanguage", _("Output Language"), ""};
 
     // LLM post-processing settings
     Option<bool> llmEnabled{this, "LLMEnabled",

@@ -14,7 +14,6 @@ public:
     virtual void Stop() = 0;
     virtual bool IsRunning() const = 0;
     virtual const char* Name() const = 0;
-    virtual void SetSourceName(const std::string& name) {}
     virtual void SetFrameQueue(ThreadSafeQueue<AudioFrame>* queue) {
         frameQueue_ = queue;
     }

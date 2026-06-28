@@ -77,13 +77,7 @@ bool PulseAudioCapture::Start() {
     sampleSpec.rate = 16000;
     sampleSpec.channels = 1;
 
-    std::string sourceName;
-    if (!configuredSource_.empty()) {
-        sourceName = configuredSource_;
-        FCITX_INFO() << "[voice-input:pulse] Using configured source: " << sourceName;
-    } else {
-        sourceName = FindBestSourceName();
-    }
+    std::string sourceName = FindBestSourceName();
     const char* device = sourceName.empty() ? nullptr : sourceName.c_str();
 
     int error = 0;

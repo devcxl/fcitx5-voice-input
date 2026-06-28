@@ -239,7 +239,6 @@ void Pipeline::Abort() {
 bool Pipeline::StartCapture() {
     // PulseAudio first (also works with pipewire-pulse)
     capture_ = std::make_unique<PulseAudioCapture>();
-    capture_->SetSourceName(config_.audioSource.value());
     capture_->SetFrameQueue(&frameQueue_);
 
     if (capture_->Start()) {
