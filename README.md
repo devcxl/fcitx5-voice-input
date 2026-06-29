@@ -30,6 +30,10 @@
 - Graphical configuration via `fcitx5-configtool`
 - Smart delayed stop on window switching
 
+<p align="center">
+  <img width="720" alt="Demo" src="https://github.com/user-attachments/assets/48164962-deba-4328-bf26-70cd258f86a6" />
+</p>
+
 ## Usage
 
 ### 1. Installation

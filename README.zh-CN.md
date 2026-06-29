@@ -30,6 +30,10 @@
 - 通过 `fcitx5-configtool` 图形化配置
 - 窗口快速切换自动延迟停止，防止误停
 
+<p align="center">
+  <img width="720" alt="演示" src="https://github.com/user-attachments/assets/48164962-deba-4328-bf26-70cd258f86a6" />
+</p>
+
 ## 使用
 
 ### 1. 安装
