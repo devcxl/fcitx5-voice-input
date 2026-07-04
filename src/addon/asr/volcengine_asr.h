@@ -16,7 +16,6 @@ namespace fcitx {
 class VolcengineAsrSession : public AsrSession {
 public:
     VolcengineAsrSession(const AsrEngine::Config& config,
-                         AsrSession::ResultCallback resultCb,
                          AsrSession::ErrorCallback errorCb,
                          uint64_t sessionId);
     ~VolcengineAsrSession() override;
@@ -25,11 +24,12 @@ public:
     void End() override;
     void Cancel() override;
     void JoinWithTimeout(std::chrono::milliseconds timeout) override;
+    void StartWorker() override;
 
 private:
     void WorkerLoop();
 
-    // Config snapshot
+    // Config snapshot (copied at construction, safe for worker)
     std::string endpoint_;
     std::string authMode_;
     std::string apiKey_;
@@ -44,7 +44,7 @@ private:
     bool enableNonstream_ = true;
     int endWindowMs_ = 800;
 
-    ThreadSafeQueue<std::vector<int16_t>> audioChunks_;
+    std::shared_ptr<ThreadSafeQueue<std::vector<int16_t>>> audioChunks_;
     std::unique_ptr<std::thread> workerThread_;
 };
 

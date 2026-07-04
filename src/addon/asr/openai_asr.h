@@ -14,7 +14,6 @@ namespace fcitx {
 class OpenaiAsrSession : public AsrSession {
 public:
     OpenaiAsrSession(const AsrEngine::Config& config,
-                     AsrSession::ResultCallback resultCb,
                      AsrSession::ErrorCallback errorCb,
                      uint64_t sessionId);
     ~OpenaiAsrSession() override;
@@ -23,10 +22,10 @@ public:
     void End() override;
     void Cancel() override;
     void JoinWithTimeout(std::chrono::milliseconds timeout) override;
+    void StartWorker() override;
 
 private:
     void TranscribeWorker(std::vector<float> pcm);
-    std::string DoHttpRequest(const std::vector<uint8_t>& wavData);
 
     std::string apiEndpoint_;
     std::string apiKey_;

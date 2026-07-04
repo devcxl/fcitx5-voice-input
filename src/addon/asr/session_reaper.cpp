@@ -14,20 +14,26 @@ SessionReaper::SessionReaper() {
 SessionReaper::~SessionReaper() {
     running_ = false;
     reapQueue_.Clear();
-    reapQueue_.Push(nullptr); // wake up reaper loop
-    if (thread_ && thread_->joinable()) {
-        thread_->join();
-    }
+    reapQueue_.Push(nullptr);
+    if (thread_ && thread_->joinable()) thread_->join();
 }
 
 void SessionReaper::Add(std::shared_ptr<AsrSession> session) {
+    pending_++;
     reapQueue_.Push(std::move(session));
 }
 
 void SessionReaper::DrainAll() {
     reapQueue_.Clear();
-    reapQueue_.Push(nullptr); // wake up in case it's blocked
-    std::this_thread::sleep_for(50ms);
+    // Wait for currently joining session to finish
+    auto deadline = std::chrono::steady_clock::now() + 16s;
+    while (pending_.load() > 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(10ms);
+    }
+    if (pending_.load() > 0) {
+        FCITX_WARN() << "[voice-input:reaper] DrainAll timeout, "
+                     << pending_.load() << " sessions left";
+    }
 }
 
 void SessionReaper::ReaperLoop() {
@@ -40,6 +46,7 @@ void SessionReaper::ReaperLoop() {
         FCITX_DEBUG() << "[voice-input:reaper] Joining session " << sid;
         session->JoinWithTimeout(15s);
         FCITX_INFO() << "[voice-input:reaper] Released session " << sid;
+        pending_--;
     }
 }
 

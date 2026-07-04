@@ -32,12 +32,7 @@ constexpr int kVolcengineSampleRate = 16000;
 constexpr int kVolcengineBigmodelSuccessCode = 20000000;
 constexpr int kVolcengineLegacySuccessCode = 1000;
 
-enum class RecvStatus {
-    Ok,
-    Again,
-    Closed,
-    Error,
-};
+enum class RecvStatus { Ok, Again, Closed, Error };
 
 struct ServerMessage {
     uint8_t type = 0;
@@ -62,16 +57,14 @@ uint32_t ReadUint32Be(const uint8_t* data) {
 std::vector<uint8_t> GzipCompress(const uint8_t* data, size_t size) {
     z_stream zs{};
     if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                     MAX_WBITS + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+                     MAX_WBITS + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
         return {};
-    }
     std::vector<uint8_t> out(deflateBound(&zs, size));
     zs.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(data));
     zs.avail_in = static_cast<uInt>(size);
     zs.next_out = reinterpret_cast<Bytef*>(out.data());
     zs.avail_out = static_cast<uInt>(out.size());
-    int result = deflate(&zs, Z_FINISH);
-    if (result != Z_STREAM_END) {
+    if (deflate(&zs, Z_FINISH) != Z_STREAM_END) {
         deflateEnd(&zs);
         return {};
     }
@@ -86,9 +79,7 @@ std::vector<uint8_t> GzipCompress(const std::string& data) {
 
 std::string GzipDecompress(const uint8_t* data, size_t size) {
     z_stream zs{};
-    if (inflateInit2(&zs, MAX_WBITS + 16) != Z_OK) {
-        return {};
-    }
+    if (inflateInit2(&zs, MAX_WBITS + 16) != Z_OK) return {};
     std::string out;
     std::array<char, 8192> buffer{};
     zs.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(data));
@@ -164,10 +155,7 @@ bool SendWebSocketBinary(CURL* curl, const uint8_t* data, size_t length,
         if (cancelFlag.load()) return false;
         size_t sent = 0;
         CURLcode result = curl_ws_send(curl, ptr, remaining, &sent, 0, CURLWS_BINARY);
-        if (result == CURLE_AGAIN) {
-            std::this_thread::sleep_for(10ms);
-            continue;
-        }
+        if (result == CURLE_AGAIN) { std::this_thread::sleep_for(10ms); continue; }
         if (result != CURLE_OK) {
             FCITX_ERROR() << "[voice-input:volcengine] curl_ws_send failed: "
                           << curl_easy_strerror(result);
@@ -185,8 +173,7 @@ RecvStatus ReceiveWebSocketFrame(CURL* curl, std::vector<uint8_t>& frame) {
     while (true) {
         size_t received = 0;
         const struct curl_ws_frame* meta = nullptr;
-        CURLcode result = curl_ws_recv(curl, buffer.data(), buffer.size(),
-                                       &received, &meta);
+        CURLcode result = curl_ws_recv(curl, buffer.data(), buffer.size(), &received, &meta);
         if (result == CURLE_AGAIN) return RecvStatus::Again;
         if (result != CURLE_OK) {
             FCITX_ERROR() << "[voice-input:volcengine] curl_ws_recv failed: "
@@ -200,55 +187,49 @@ RecvStatus ReceiveWebSocketFrame(CURL* curl, std::vector<uint8_t>& frame) {
     }
 }
 
-bool ParseServerMessage(const std::vector<uint8_t>& frame, ServerMessage& message) {
+bool ParseServerMessage(const std::vector<uint8_t>& frame, ServerMessage& msg) {
     if (frame.size() < 8) return false;
     uint8_t version = frame[0] >> 4;
     size_t headerSize = (frame[0] & 0x0f) * 4;
     if (version != 1 || frame.size() < headerSize + 4) return false;
-    message.type = frame[1] >> 4;
-    message.flags = frame[1] & 0x0f;
+    msg.type = frame[1] >> 4;
+    msg.flags = frame[1] & 0x0f;
     uint8_t compression = frame[2] & 0x0f;
     size_t offset = headerSize;
-    if (message.type == kMsgFullServerResponse &&
-        (message.flags == kFlagPositiveSequence || message.flags == kFlagFinalSequence)) {
-        if (frame.size() < offset + 4) return false;
-        offset += 4;
-    } else if (message.type == kMsgError) {
-        if (frame.size() < offset + 4) return false;
-        offset += 4;
+    if (msg.type == kMsgFullServerResponse &&
+        (msg.flags == kFlagPositiveSequence || msg.flags == kFlagFinalSequence)) {
+        if (frame.size() < offset + 4) return false; offset += 4;
+    } else if (msg.type == kMsgError) {
+        if (frame.size() < offset + 4) return false; offset += 4;
     }
     if (frame.size() < offset + 4) return false;
     uint32_t payloadSize = ReadUint32Be(frame.data() + offset);
     offset += 4;
     if (frame.size() < offset + payloadSize) return false;
     if (compression == kCompressionGzip) {
-        message.payload = GzipDecompress(frame.data() + offset, payloadSize);
-    } else if (compression == kCompressionNone) {
-        message.payload.assign(reinterpret_cast<const char*>(frame.data() + offset), payloadSize);
+        msg.payload = GzipDecompress(frame.data() + offset, payloadSize);
     } else {
-        return false;
+        msg.payload.assign(reinterpret_cast<const char*>(frame.data() + offset), payloadSize);
     }
-    return !message.payload.empty() || payloadSize == 0;
+    return !msg.payload.empty() || payloadSize == 0;
 }
 
 std::string ExtractTextFromResult(const Json::Value& result) {
     if (result.isObject()) {
-        std::string text = result.get("text", Json::Value("")).asString();
+        std::string text = result.get("text", "").asString();
         if (!text.empty()) return text;
         const Json::Value& utterances = result["utterances"];
         if (utterances.isArray()) {
             std::string joined;
-            for (Json::ArrayIndex i = 0; i < utterances.size(); ++i) {
-                joined += utterances[i].get("text", Json::Value("")).asString();
-            }
+            for (Json::ArrayIndex i = 0; i < utterances.size(); ++i)
+                joined += utterances[i].get("text", "").asString();
             return joined;
         }
     }
     if (result.isArray()) {
         std::string joined;
-        for (Json::ArrayIndex i = 0; i < result.size(); ++i) {
+        for (Json::ArrayIndex i = 0; i < result.size(); ++i)
             joined += ExtractTextFromResult(result[i]);
-        }
         return joined;
     }
     return "";
@@ -259,11 +240,8 @@ bool ResponseHasDefiniteUtterance(const Json::Value& json) {
     if (!result.isObject()) return false;
     const Json::Value& utterances = result["utterances"];
     if (!utterances.isArray() || utterances.empty()) return false;
-    for (Json::ArrayIndex i = 0; i < utterances.size(); ++i) {
-        if (!utterances[i].get("definite", Json::Value(false)).asBool()) {
-            return false;
-        }
-    }
+    for (Json::ArrayIndex i = 0; i < utterances.size(); ++i)
+        if (!utterances[i].get("definite", false).asBool()) return false;
     return true;
 }
 
@@ -277,9 +255,7 @@ Json::Value BuildRequestJson(const std::string& modelName, bool enableItN,
     root["audio"]["rate"] = 16000;
     root["audio"]["bits"] = 16;
     root["audio"]["channel"] = 1;
-    root["request"]["model_name"] = modelName.empty()
-                                      ? Json::Value("bigmodel")
-                                      : Json::Value(modelName.c_str());
+    root["request"]["model_name"] = modelName.empty() ? "bigmodel" : modelName.c_str();
     root["request"]["enable_itn"] = enableItN;
     root["request"]["enable_punc"] = enablePunc;
     root["request"]["enable_ddc"] = enableDdc;
@@ -291,18 +267,15 @@ Json::Value BuildRequestJson(const std::string& modelName, bool enableItN,
 }
 
 std::string JsonToString(const Json::Value& json) {
-    Json::FastWriter writer;
-    return writer.write(json);
+    return Json::FastWriter().write(json);
 }
 
 void CloseWebSocket(CURL* curl) {
     if (!curl) return;
     size_t sent = 0;
-    CURLcode result = curl_ws_send(curl, "", 0, &sent, 0, CURLWS_CLOSE);
-    if (result != CURLE_OK) {
-        FCITX_WARN() << "[voice-input:volcengine] WS close failed: "
-                     << curl_easy_strerror(result);
-    }
+    CURLcode res = curl_ws_send(curl, "", 0, &sent, 0, CURLWS_CLOSE);
+    if (res != CURLE_OK)
+        FCITX_WARN() << "[voice-input:volcengine] WS close failed: " << curl_easy_strerror(res);
 }
 
 } // namespace
@@ -310,12 +283,11 @@ void CloseWebSocket(CURL* curl) {
 // ── VolcengineAsrSession ──────────────────────────────────────
 
 VolcengineAsrSession::VolcengineAsrSession(const AsrEngine::Config& config,
-                                           AsrSession::ResultCallback resultCb,
                                            AsrSession::ErrorCallback errorCb,
                                            uint64_t sessionId) {
     state_->sessionId = sessionId;
-    resultCb_ = std::move(resultCb);
     errorCb_ = std::move(errorCb);
+    audioChunks_ = std::make_shared<ThreadSafeQueue<std::vector<int16_t>>>();
 
     endpoint_ = config.apiEndpoint.empty()
                     ? "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
@@ -324,9 +296,7 @@ VolcengineAsrSession::VolcengineAsrSession(const AsrEngine::Config& config,
     apiKey_ = config.apiKey;
     appKey_ = config.appKey;
     accessKey_ = config.accessKey;
-    resourceId_ = config.resourceId.empty()
-                      ? "volc.seedasr.sauc.duration"
-                      : config.resourceId;
+    resourceId_ = config.resourceId.empty() ? "volc.seedasr.sauc.duration" : config.resourceId;
     modelName_ = config.modelName.empty() ? "bigmodel" : config.modelName;
     chunkMs_ = std::clamp(config.chunkMs, 100, 200);
     enableItN_ = config.enableItN;
@@ -335,28 +305,25 @@ VolcengineAsrSession::VolcengineAsrSession(const AsrEngine::Config& config,
     enableNonstream_ = config.enableNonstream;
     endWindowMs_ = std::clamp(config.endWindowMs, 200, 3000);
 
+    bool valid = true;
     if (authMode_ == "api_key") {
-        if (apiKey_.empty()) {
-            if (errorCb_) errorCb_("Volcengine API key not configured");
-            if (resultCb_) resultCb_("", true);
-            return;
-        }
+        if (apiKey_.empty()) { valid = false; }
     } else if (authMode_ == "app_access_key") {
-        if (appKey_.empty() || accessKey_.empty()) {
-            if (errorCb_) errorCb_("Volcengine app key/access key not configured");
-            if (resultCb_) resultCb_("", true);
-            return;
-        }
+        if (appKey_.empty() || accessKey_.empty()) { valid = false; }
+    }
+
+    if (!valid) {
+        state_->finished = true;
+        if (errorCb_) errorCb_("Volcengine credentials not configured");
+        if (resultCb_) resultCb_("", true, state_->sessionId);
+        return;
     }
 
     FCITX_INFO() << "[voice-input:volcengine] Init session=" << sessionId
                  << " endpoint=" << endpoint_
                  << " apiKey=" << MaskSecret(apiKey_)
-                 << " chunkMs=" << chunkMs_;
-
-    // Start worker thread
-    workerThread_ = std::make_unique<std::thread>(
-        &VolcengineAsrSession::WorkerLoop, this);
+                 << " appKey=" << MaskSecret(appKey_)
+                 << " accessKey=" << MaskSecret(accessKey_);
 }
 
 VolcengineAsrSession::~VolcengineAsrSession() {
@@ -364,62 +331,65 @@ VolcengineAsrSession::~VolcengineAsrSession() {
     JoinWithTimeout(5s);
 }
 
+void VolcengineAsrSession::StartWorker() {
+    if (!state_->finished && !workerThread_) {
+        auto self = std::static_pointer_cast<VolcengineAsrSession>(shared_from_this());
+        workerThread_ = std::make_unique<std::thread>([self]() { self->WorkerLoop(); });
+    }
+}
+
 void VolcengineAsrSession::FeedAudio(const float* pcm, size_t frames) {
     if (state_->cancelled || state_->finished) return;
+    if (!audioChunks_) return;
     std::vector<int16_t> chunk(frames);
     for (size_t i = 0; i < frames; ++i) {
-        float sample = std::clamp(pcm[i], -1.0f, 1.0f);
-        chunk[i] = static_cast<int16_t>(sample * 32767.0f);
+        float s = std::clamp(pcm[i], -1.0f, 1.0f);
+        chunk[i] = static_cast<int16_t>(s * 32767.0f);
     }
-    audioChunks_.Push(std::move(chunk));
+    audioChunks_->Push(std::move(chunk));
 }
 
 void VolcengineAsrSession::End() {
     state_->finished = true;
-    audioChunks_.Push(std::vector<int16_t>());
+    if (audioChunks_) audioChunks_->Push(std::vector<int16_t>());
 }
 
 void VolcengineAsrSession::Cancel() {
     state_->cancelled = true;
-    // Push sentinel to unblock worker if stuck on queue
-    audioChunks_.Push(std::vector<int16_t>());
+    if (audioChunks_) audioChunks_->Push(std::vector<int16_t>());
 }
 
 void VolcengineAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout) {
     if (workerThread_ && workerThread_->joinable()) {
         auto start = std::chrono::steady_clock::now();
         while (std::chrono::steady_clock::now() - start < timeout) {
-            // Check if thread has exited
             std::this_thread::sleep_for(10ms);
-            if (!workerThread_->joinable()) {
-                workerThread_->join();
-                return;
-            }
+            if (!workerThread_->joinable()) { workerThread_->join(); return; }
         }
-        FCITX_WARN() << "[voice-input:volcengine] Join timeout session="
-                     << state_->sessionId;
+        FCITX_WARN() << "[voice-input:volcengine] Join timeout session=" << state_->sessionId;
         workerThread_->detach();
     }
     workerThread_.reset();
 }
 
 void VolcengineAsrSession::WorkerLoop() {
-    auto state = state_; // capture shared_ptr, safe even if this is destroyed
+    uint64_t sid = state_->sessionId;
+    auto audioChunks = audioChunks_;  // keep queue alive
+    auto cb = resultCb_;
+    auto ecb = errorCb_;
 
-    const size_t chunkSamples = static_cast<size_t>(
-        kVolcengineSampleRate * chunkMs_ / 1000);
+    const size_t chunkSamples = static_cast<size_t>(kVolcengineSampleRate * chunkMs_ / 1000);
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        if (errorCb_) errorCb_("Failed to initialize libcurl");
-        if (resultCb_) resultCb_("", true);
+        if (ecb) ecb("Failed to init curl");
+        if (cb) cb("", true, sid);
         return;
     }
 
     struct curl_slist* headers = nullptr;
-    const std::string requestId = GenerateRequestId();
+    std::string requestId = GenerateRequestId();
     std::vector<std::string> headerStrings;
-    headerStrings.reserve(16);
     auto addHeader = [&](const std::string& h) {
         headerStrings.push_back(h);
         headers = curl_slist_append(headers, headerStrings.back().c_str());
@@ -443,48 +413,54 @@ void VolcengineAsrSession::WorkerLoop() {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
-                     +[](char* buffer, size_t size, size_t nitems, void* userdata) -> size_t {
-                         auto* hdrs = static_cast<std::string*>(userdata);
-                         hdrs->append(buffer, size * nitems);
-                         return size * nitems;
+                     +[](char* buf, size_t s, size_t n, void* u) -> size_t {
+                         static_cast<std::string*>(u)->append(buf, s * n); return s * n;
                      });
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &responseHeaders);
 
     CURLcode connectResult = curl_easy_perform(curl);
     curl_slist_free_all(headers);
 
-    if (connectResult != CURLE_OK || state->cancelled) {
+    if (state_->cancelled) {
+        if (connectResult != CURLE_OK) {
+            FCITX_INFO() << "[voice-input:volcengine] Connect failed (cancelled): "
+                         << curl_easy_strerror(connectResult);
+        } else {
+            FCITX_INFO() << "[voice-input:volcengine] Cancelled during connect";
+        }
+        curl_easy_cleanup(curl);
+        return;
+    }
+
+    if (connectResult != CURLE_OK) {
         FCITX_ERROR() << "[voice-input:volcengine] WS connect failed: "
                       << curl_easy_strerror(connectResult);
-        if (errorCb_) errorCb_("Volcengine connect failed: " +
-                               std::string(curl_easy_strerror(connectResult)));
-        if (resultCb_) resultCb_("", true);
+        if (ecb) ecb("Volcengine connect failed: " + std::string(curl_easy_strerror(connectResult)));
+        if (cb) cb("", true, sid);
         curl_easy_cleanup(curl);
         return;
     }
 
     std::string logId = ExtractHeaderValue(responseHeaders, "X-Tt-Logid:");
-    FCITX_INFO() << "[voice-input:volcengine] WS connected session="
-                 << state->sessionId << " logId=" << logId;
+    FCITX_INFO() << "[voice-input:volcengine] WS connected session=" << sid << " logId=" << logId;
 
     // Send full client request
     Json::Value requestJson = BuildRequestJson(modelName_, enableItN_, enablePunc_,
                                                enableDdc_, enableNonstream_, endWindowMs_);
-    std::vector<uint8_t> compressedRequest = GzipCompress(JsonToString(requestJson));
+    auto compressedRequest = GzipCompress(JsonToString(requestJson));
     if (compressedRequest.empty()) {
-        if (errorCb_) errorCb_("Failed to gzip request");
-        if (resultCb_) resultCb_("", true);
+        if (ecb) ecb("Failed to gzip request");
+        if (cb) cb("", true, sid);
         CloseWebSocket(curl);
         curl_easy_cleanup(curl);
         return;
     }
 
-    std::vector<uint8_t> requestFrame = BuildFrame(
-        kMsgFullClientRequest, kFlagNoSequence, kSerializationJson,
-        kCompressionGzip, compressedRequest);
-    if (!SendWebSocketBinary(curl, requestFrame.data(), requestFrame.size(), state->cancelled)) {
-        if (errorCb_) errorCb_("Failed to send Volcengine request");
-        if (resultCb_) resultCb_("", true);
+    auto requestFrame = BuildFrame(kMsgFullClientRequest, kFlagNoSequence,
+                                   kSerializationJson, kCompressionGzip, compressedRequest);
+    if (!SendWebSocketBinary(curl, requestFrame.data(), requestFrame.size(), state_->cancelled)) {
+        if (ecb) ecb("Failed to send request");
+        if (cb) cb("", true, sid);
         curl_easy_cleanup(curl);
         return;
     }
@@ -496,100 +472,75 @@ void VolcengineAsrSession::WorkerLoop() {
 
     auto handleResponses = [&](std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!state->cancelled && std::chrono::steady_clock::now() < deadline) {
+        while (!state_->cancelled && std::chrono::steady_clock::now() < deadline) {
             std::vector<uint8_t> rawFrame;
             RecvStatus r = ReceiveWebSocketFrame(curl, rawFrame);
-            if (r == RecvStatus::Again) {
-                std::this_thread::sleep_for(10ms);
-                continue;
-            }
+            if (r == RecvStatus::Again) { std::this_thread::sleep_for(10ms); continue; }
             if (r == RecvStatus::Closed) { gotFinal = true; return; }
-            if (r == RecvStatus::Error) {
-                if (errorCb_) errorCb_("Volcengine WS receive failed");
-                gotFinal = true; return;
-            }
+            if (r == RecvStatus::Error) { if (ecb) ecb("WS recv error"); gotFinal = true; return; }
 
             ServerMessage msg;
             if (!ParseServerMessage(rawFrame, msg)) continue;
-
-            if (msg.type == kMsgError) {
-                if (errorCb_) errorCb_("Volcengine error: " + msg.payload);
-                gotFinal = true; return;
-            }
-            if (msg.type != kMsgFullServerResponse || msg.payload.empty()) continue;
+            if (msg.type == kMsgError || msg.payload.empty()) continue;
 
             Json::Value json;
             Json::Reader reader;
             if (!reader.parse(msg.payload, json)) continue;
 
-            int code = json.get("code", Json::Value(kVolcengineBigmodelSuccessCode)).asInt();
+            int code = json.get("code", kVolcengineBigmodelSuccessCode).asInt();
             if (code != kVolcengineBigmodelSuccessCode && code != kVolcengineLegacySuccessCode) {
-                if (errorCb_) errorCb_("Volcengine API error: " +
-                                       json.get("message", Json::Value("")).asString());
+                if (ecb) ecb("API error: " + json.get("message", "").asString());
                 gotFinal = true; return;
             }
 
             std::string text = ExtractTextFromResult(json["result"]);
             if (!text.empty() && text != latestText) {
                 latestText = text;
-                if (resultCb_) resultCb_(text, false);
+                if (cb) cb(text, false, sid);
             }
-
             if (msg.flags == kFlagFinalSequence || ResponseHasDefiniteUtterance(json)) {
-                gotFinal = true;
-                return;
+                gotFinal = true; return;
             }
         }
     };
 
-    while (!state->cancelled && !gotFinal) {
+    while (!state_->cancelled && !gotFinal) {
         std::vector<int16_t> chunk;
-        bool hasChunk = audioChunks_.TryPop(chunk);
-        if (hasChunk && chunk.empty() && state->finished) {
-            // Final marker from End()
+        bool hasChunk = audioChunks->TryPop(chunk);
+        if (hasChunk && chunk.empty() && state_->finished) {
             if (!pendingAudio.empty()) {
-                auto* bytes = reinterpret_cast<const uint8_t*>(pendingAudio.data());
-                std::vector<uint8_t> compressed = GzipCompress(bytes, pendingAudio.size() * sizeof(int16_t));
+                auto compressed = GzipCompress(
+                    reinterpret_cast<const uint8_t*>(pendingAudio.data()),
+                    pendingAudio.size() * sizeof(int16_t));
                 if (!compressed.empty()) {
-                    std::vector<uint8_t> frame = BuildFrame(
-                        kMsgAudioOnlyRequest, kFlagFinalNoSequence,
-                        kSerializationNone, kCompressionGzip, compressed);
-                    SendWebSocketBinary(curl, frame.data(), frame.size(), state->cancelled);
+                    auto frame = BuildFrame(kMsgAudioOnlyRequest, kFlagFinalNoSequence,
+                                            kSerializationNone, kCompressionGzip, compressed);
+                    SendWebSocketBinary(curl, frame.data(), frame.size(), state_->cancelled);
                 }
             } else {
-                std::vector<uint8_t> frame = BuildFrame(
-                    kMsgAudioOnlyRequest, kFlagFinalNoSequence,
-                    kSerializationNone, kCompressionNone, {});
-                SendWebSocketBinary(curl, frame.data(), frame.size(), state->cancelled);
+                auto frame = BuildFrame(kMsgAudioOnlyRequest, kFlagFinalNoSequence,
+                                        kSerializationNone, kCompressionNone, {});
+                SendWebSocketBinary(curl, frame.data(), frame.size(), state_->cancelled);
             }
-
-            auto finalDeadline = std::chrono::steady_clock::now() + 30s;
-            while (!state->cancelled && !gotFinal && std::chrono::steady_clock::now() < finalDeadline) {
+            auto deadline = std::chrono::steady_clock::now() + 30s;
+            while (!state_->cancelled && !gotFinal && std::chrono::steady_clock::now() < deadline)
                 handleResponses(50ms);
-            }
             break;
         }
-
-        if (hasChunk && !chunk.empty()) {
+        if (hasChunk && !chunk.empty())
             pendingAudio.insert(pendingAudio.end(), chunk.begin(), chunk.end());
-        }
 
-        bool shouldSend = pendingAudio.size() >= chunkSamples;
-        if (shouldSend && !state->cancelled) {
-            size_t sendSize = std::min(pendingAudio.size(), chunkSamples);
-            auto* bytes = reinterpret_cast<const uint8_t*>(pendingAudio.data());
-            std::vector<uint8_t> compressed = GzipCompress(bytes, sendSize * sizeof(int16_t));
+        if (pendingAudio.size() >= chunkSamples && !state_->cancelled) {
+            size_t sendSize = (pendingAudio.size() / chunkSamples) * chunkSamples;
+            auto compressed = GzipCompress(
+                reinterpret_cast<const uint8_t*>(pendingAudio.data()),
+                sendSize * sizeof(int16_t));
             if (!compressed.empty()) {
-                std::vector<uint8_t> frame = BuildFrame(
-                    kMsgAudioOnlyRequest, kFlagNoSequence,
-                    kSerializationNone, kCompressionGzip, compressed);
-                SendWebSocketBinary(curl, frame.data(), frame.size(), state->cancelled);
+                auto frame = BuildFrame(kMsgAudioOnlyRequest, kFlagNoSequence,
+                                        kSerializationNone, kCompressionGzip, compressed);
+                SendWebSocketBinary(curl, frame.data(), frame.size(), state_->cancelled);
             }
-            if (sendSize < pendingAudio.size()) {
-                pendingAudio.erase(pendingAudio.begin(), pendingAudio.begin() + sendSize);
-            } else {
-                pendingAudio.clear();
-            }
+            pendingAudio.erase(pendingAudio.begin(), pendingAudio.begin() + sendSize);
             handleResponses(20ms);
         } else if (!hasChunk) {
             handleResponses(20ms);
@@ -600,22 +551,17 @@ void VolcengineAsrSession::WorkerLoop() {
     CloseWebSocket(curl);
     curl_easy_cleanup(curl);
 
-    if (state->cancelled) {
-        FCITX_INFO() << "[voice-input:volcengine] Cancelled session="
-                     << state->sessionId;
+    if (state_->cancelled) {
+        FCITX_INFO() << "[voice-input:volcengine] Cancelled session=" << sid;
         return;
     }
-
     if (latestText.empty()) {
-        FCITX_WARN() << "[voice-input:volcengine] Empty transcript session="
-                     << state->sessionId;
-        if (resultCb_) resultCb_("", true);
+        FCITX_WARN() << "[voice-input:volcengine] Empty transcript session=" << sid;
+        if (cb) cb("", true, sid);
         return;
     }
-
-    FCITX_INFO() << "[voice-input:volcengine] final session="
-                 << state->sessionId << " \"" << latestText << "\"";
-    if (resultCb_) resultCb_(latestText, true);
+    FCITX_INFO() << "[voice-input:volcengine] final session=" << sid << " \"" << latestText << "\"";
+    if (cb) cb(latestText, true, sid);
 }
 
 // ── VolcengineAsrEngine ──────────────────────────────────────
@@ -626,41 +572,43 @@ bool VolcengineAsrEngine::Init(const Config& config) {
 }
 
 std::shared_ptr<AsrSession> VolcengineAsrEngine::StartSession() {
+    {
+        std::lock_guard<std::mutex> lock(sessionsMutex_);
+        // Clean expired weak_ptrs
+        for (auto it = sessions_.begin(); it != sessions_.end(); ) {
+            if (it->second.expired()) it = sessions_.erase(it);
+            else ++it;
+        }
+        // Enforce maxActiveSessions: cancel oldest
+        while (sessions_.size() >= maxActiveSessions_) {
+            auto oldest = sessions_.begin();
+            for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
+                auto s = it->second.lock();
+                auto o = oldest->second.lock();
+                if (s && (!o || s->GetState()->sessionId < o->GetState()->sessionId))
+                    oldest = it;
+            }
+            auto s = oldest->second.lock();
+            if (s) { FCITX_WARN() << "[voice-input:volcengine] Too many sessions, cancel oldest"; s->Cancel(); }
+            sessions_.erase(oldest);
+        }
+    }
+
     uint64_t sid;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         sid = nextSessionId_++;
-
-        // Enforce maxActiveSessions
-        while (sessions_.size() >= maxActiveSessions_) {
-            // Find and cancel the oldest session
-            auto it = sessions_.begin();
-            auto oldest = it->second.lock();
-            uint64_t oldestId = it->first;
-            for (auto& [id, weak] : sessions_) {
-                auto s = weak.lock();
-                if (s && (!oldest || s->GetState()->sessionId < oldest->GetState()->sessionId)) {
-                    oldest = s;
-                    oldestId = id;
-                }
-            }
-            if (oldest) {
-                FCITX_WARN() << "[voice-input:volcengine] Too many sessions, cancel oldest="
-                             << oldestId;
-                oldest->Cancel();
-            }
-            sessions_.erase(oldestId);
-        }
     }
 
-    auto session = std::make_shared<VolcengineAsrSession>(
-        config_, resultCb_, errorCb_, sid);
+    auto session = std::make_shared<VolcengineAsrSession>(config_, errorCb_, sid);
+    session->SetResultCallback(resultCb_);
+    if (!session->GetState()->finished)
+        session->StartWorker();
 
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         sessions_[sid] = session;
     }
-
     return session;
 }
 

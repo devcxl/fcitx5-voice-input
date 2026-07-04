@@ -73,7 +73,7 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
     asrEngine_ = std::move(engine);
     if (asrEngine_) {
         asrEngine_->SetResultCallback(
-            [this](const std::string& text, bool isFinal) {
+            [this](const std::string& text, bool isFinal, uint64_t sid) {
                 uint64_t gen = generation_.load();
 
                 if (isFinal) {
@@ -81,7 +81,6 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
 
                     uint64_t uid = ++utteranceCounter_;
 
-                    // Drain stale LLM-refined leftovers from previous utterance
                     AsrResult stale;
                     while (resultQueue_.TryPop(stale)) {
                         if (stale.isLLMRefined) {
@@ -90,11 +89,10 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                         }
                     }
 
-                    // Push raw ASR result immediately
                     AsrResult rawResult;
                     rawResult.text = text;
                     rawResult.generation = gen;
-                    rawResult.sessionId = activeSessionId_;
+                    rawResult.sessionId = sid;
                     rawResult.utteranceId = uid;
                     rawResult.isLLMRefined = false;
                     FCITX_INFO() << "[voice-input] ASR raw: uid=" << uid
@@ -105,13 +103,11 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                         resultCb_(text);
                     }
 
-                    // If LLM is configured, process and push refined result
                     if (llmClient_) {
                         FCITX_DEBUG() << "[voice-input] LLM refine started"
                                      << " uid=" << uid << " gen=" << gen
                                      << " stream=" << llmStream_;
                         if (llmStream_) {
-                            uint64_t sid = activeSessionId_;
                             llmClient_->ProcessStream(text,
                                 [this, uid, gen, sid](const std::string& partial) {
                                     AsrResult partialResult;
@@ -141,7 +137,7 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                                 AsrResult refinedResult;
                                 refinedResult.text = processed;
                                 refinedResult.generation = gen;
-                                refinedResult.sessionId = activeSessionId_;
+                                refinedResult.sessionId = sid;
                                 refinedResult.utteranceId = uid;
                                 refinedResult.isLLMRefined = true;
                                 resultQueue_.Push(std::move(refinedResult));
@@ -153,7 +149,7 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                     AsrResult partial;
                     partial.text = text;
                     partial.generation = gen;
-                    partial.sessionId = activeSessionId_;
+                    partial.sessionId = sid;
                     partial.isLLMRefined = false;
                     partial.isPartial = true;
                     resultQueue_.Push(std::move(partial));
@@ -308,6 +304,7 @@ void Pipeline::AsrDispatcherLoop() {
 
         switch (ev.type) {
         case SpeechEventType::Begin:
+            if (!asrEngine_) break;
             // Cancel current session if still active
             if (activeSession_) {
                 activeSession_->Cancel();

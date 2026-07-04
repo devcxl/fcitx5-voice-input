@@ -96,11 +96,9 @@ std::string BuildMultipartBody(const std::vector<uint8_t>& wavData,
 // ── OpenaiAsrSession ─────────────────────────────────────────
 
 OpenaiAsrSession::OpenaiAsrSession(const AsrEngine::Config& config,
-                                   ResultCallback resultCb,
-                                   ErrorCallback errorCb,
+                                   AsrSession::ErrorCallback errorCb,
                                    uint64_t sessionId) {
     state_->sessionId = sessionId;
-    resultCb_ = std::move(resultCb);
     errorCb_ = std::move(errorCb);
 
     apiEndpoint_ = config.apiEndpoint;
@@ -111,6 +109,10 @@ OpenaiAsrSession::OpenaiAsrSession(const AsrEngine::Config& config,
     FCITX_INFO() << "[voice-input:openai] Init session=" << sessionId
                  << " endpoint=" << apiEndpoint_
                  << " model=" << modelName_;
+}
+
+void OpenaiAsrSession::StartWorker() {
+    // OpenAI doesn't start the worker until End()
 }
 
 OpenaiAsrSession::~OpenaiAsrSession() {
@@ -177,7 +179,7 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         if (errorCb_) errorCb_("Failed to init curl");
-        if (resultCb_) resultCb_("", true);
+        if (resultCb_) resultCb_("", true, state->sessionId);
         return;
     }
 
@@ -217,7 +219,7 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     if (res != CURLE_OK) {
         FCITX_ERROR() << "[voice-input:openai] HTTP request failed: " << curl_easy_strerror(res);
         if (errorCb_) errorCb_("OpenAI request failed: " + std::string(curl_easy_strerror(res)));
-        if (resultCb_) resultCb_("", true);
+        if (resultCb_) resultCb_("", true, state->sessionId);
         return;
     }
 
@@ -235,17 +237,16 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
 
     if (text.empty()) {
         FCITX_WARN() << "[voice-input:openai] Empty response";
-        if (resultCb_) resultCb_("", true);
+        if (resultCb_) resultCb_("", true, state->sessionId);
         return;
     }
 
-    // Trim
     text.erase(0, text.find_first_not_of(" \t\n\r"));
     text.erase(text.find_last_not_of(" \t\n\r") + 1);
 
     FCITX_INFO() << "[voice-input:openai] final session=" << state->sessionId
                  << " \"" << text << "\"";
-    if (resultCb_) resultCb_(text, true);
+    if (resultCb_) resultCb_(text, true, state->sessionId);
 }
 
 // ── OpenaiAsrEngine ──────────────────────────────────────────
@@ -263,13 +264,15 @@ std::shared_ptr<AsrSession> OpenaiAsrEngine::StartSession() {
     }
 
     auto session = std::make_shared<OpenaiAsrSession>(
-        config_, resultCb_, errorCb_, sid);
+        config_, errorCb_, sid);
+    session->SetResultCallback(resultCb_);
+    if (!session->GetState()->finished)
+        session->StartWorker();
 
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         sessions_[sid] = session;
     }
-
     return session;
 }
 
