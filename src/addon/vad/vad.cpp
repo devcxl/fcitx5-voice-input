@@ -47,8 +47,8 @@ void VADWorker::SetFrameQueue(ThreadSafeQueue<AudioFrame>* queue) {
     frameQueue_ = queue;
 }
 
-void VADWorker::SetUtteranceQueue(ThreadSafeQueue<Utterance>* queue) {
-    utteranceQueue_ = queue;
+void VADWorker::SetSpeechEventQueue(ThreadSafeQueue<SpeechEvent>* queue) {
+    speechEventQueue_ = queue;
 }
 
 void VADWorker::SetVadStatusCallback(VadStatusCallback cb) {
@@ -114,13 +114,27 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
         if (speechStart) {
             speechFrames_++;
             if (speechFrames_ >= config_.startFrames) {
-                // Speech onset
                 state_ = State::Speaking;
                 startMs_ = frame.timestamp_ms - config_.preRollMs;
 
-                currentAudio_.clear();
-                currentAudio_.insert(currentAudio_.end(),
-                                    preRoll_.begin(), preRoll_.end());
+                SpeechEvent begin;
+                begin.type = SpeechEventType::Begin;
+                begin.timestamp_ms = startMs_;
+                if (speechEventQueue_) speechEventQueue_->Push(std::move(begin));
+
+                if (!preRoll_.empty()) {
+                    SpeechEvent preAudio;
+                    preAudio.type = SpeechEventType::Audio;
+                    preAudio.timestamp_ms = startMs_;
+                    preAudio.pcm.assign(preRoll_.begin(), preRoll_.end());
+                    if (speechEventQueue_) speechEventQueue_->Push(std::move(preAudio));
+                }
+
+                SpeechEvent audio;
+                audio.type = SpeechEventType::Audio;
+                audio.timestamp_ms = frame.timestamp_ms;
+                audio.pcm.assign(frame.pcm.begin(), frame.pcm.end());
+                if (speechEventQueue_) speechEventQueue_->Push(std::move(audio));
 
                 silenceFrames_ = 0;
                 lastSpeechMs_ = frame.timestamp_ms;
@@ -140,8 +154,11 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
     }
 
     // State::Speaking
-    currentAudio_.insert(currentAudio_.end(),
-                         frame.pcm.begin(), frame.pcm.end());
+    SpeechEvent audio;
+    audio.type = SpeechEventType::Audio;
+    audio.timestamp_ms = frame.timestamp_ms;
+    audio.pcm.assign(frame.pcm.begin(), frame.pcm.end());
+    if (speechEventQueue_) speechEventQueue_->Push(std::move(audio));
 
     if (speechKeep) {
         silenceFrames_ = 0;
@@ -154,45 +171,35 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
         config_.endSilenceMs / kFrameMs;
     bool silenceEnd = silenceFrames_ >= endSilenceFrames;
 
-    int maxSamples = kSampleRate * config_.maxSpeechMs / 1000;
-    bool tooLong = currentAudio_.size() >= static_cast<size_t>(maxSamples);
+    int maxDurationMs = config_.maxSpeechMs;
+    bool tooLong =
+        (lastSpeechMs_ - startMs_) >= maxDurationMs;
 
     if (silenceEnd || tooLong) {
-        FlushUtterance(frame.timestamp_ms);
-    }
-}
-
-void VADWorker::FlushUtterance(int64_t endMs) {
-    int durationMs =
-        static_cast<int>((lastSpeechMs_ - startMs_));
-    int minSpeechSamples =
-        kSampleRate * config_.minSpeechMs / 1000;
-
-    if (static_cast<int>(currentAudio_.size()) >= minSpeechSamples) {
-        Utterance u;
-        u.start_ms = startMs_;
-        u.end_ms = lastSpeechMs_;
-        u.pcm = std::move(currentAudio_);
-
-        float durSec = static_cast<float>(durationMs) / 1000.0f;
-        FCITX_INFO() << "[voice-input:vadworker] Utterance: "
-                     << durSec << "s, "
-                     << u.pcm.size() << " samples";
-
-        if (utteranceQueue_) {
-            utteranceQueue_->Push(std::move(u));
+        int durationMs = static_cast<int>((lastSpeechMs_ - startMs_));
+        if (durationMs >= config_.minSpeechMs) {
+            SpeechEvent end;
+            end.type = SpeechEventType::End;
+            end.timestamp_ms = frame.timestamp_ms;
+            if (speechEventQueue_) speechEventQueue_->Push(std::move(end));
+            FCITX_INFO() << "[voice-input:vadworker] Utterance end, "
+                         << (durationMs / 1000) << "." << (durationMs % 1000) << "s";
+        } else {
+            SpeechEvent cancel;
+            cancel.type = SpeechEventType::Cancel;
+            cancel.timestamp_ms = frame.timestamp_ms;
+            if (speechEventQueue_) speechEventQueue_->Push(std::move(cancel));
+            FCITX_DEBUG() << "[voice-input:vadworker] Utterance too short ("
+                          << durationMs << "ms < " << config_.minSpeechMs
+                          << "ms), cancelled";
         }
-    } else {
-        FCITX_DEBUG() << "[voice-input:vadworker] Utterance too short ("
-                      << durationMs << "ms < " << config_.minSpeechMs
-                      << "ms), discarded";
-    }
 
-    silero_->Reset();
-    if (vadStatusCb_) {
-        vadStatusCb_(false);
+        silero_->Reset();
+        if (vadStatusCb_) {
+            vadStatusCb_(false);
+        }
+        ResetSession();
     }
-    ResetSession();
 }
 
 void VADWorker::AppendPreRoll(
@@ -211,7 +218,6 @@ void VADWorker::AppendPreRoll(
 void VADWorker::ResetSession() {
     state_ = State::Idle;
     preRoll_.clear();
-    currentAudio_.clear();
     speechFrames_ = 0;
     silenceFrames_ = 0;
     startMs_ = 0;

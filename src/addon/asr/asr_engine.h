@@ -27,6 +27,18 @@ public:
         std::string apiEndpoint;
         std::string apiKey;
         std::string language = "zh";
+
+        // Volcengine Doubao streaming ASR (cloud)
+        std::string authMode;
+        std::string appKey;
+        std::string accessKey;
+        std::string resourceId;
+        int chunkMs = 200;
+        bool enableItN = true;
+        bool enablePunc = true;
+        bool enableDdc = false;
+        bool enableNonstream = true;
+        int endWindowMs = 800;
     };
 
     // Result callback — called from worker thread, caller must dispatch

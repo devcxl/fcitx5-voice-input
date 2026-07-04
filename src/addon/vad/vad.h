@@ -40,7 +40,7 @@ public:
 
     void SetConfig(const Config& config);
     void SetFrameQueue(ThreadSafeQueue<AudioFrame>* queue);
-    void SetUtteranceQueue(ThreadSafeQueue<Utterance>* queue);
+    void SetSpeechEventQueue(ThreadSafeQueue<SpeechEvent>* queue);
     void SetVadStatusCallback(VadStatusCallback cb);
 
     void Start();
@@ -51,7 +51,6 @@ public:
 private:
     void WorkerLoop();
     void ProcessFrame(const AudioFrame& frame, float probability);
-    void FlushUtterance(int64_t endMs);
     void AppendPreRoll(const std::array<int16_t, kWindowSize>& pcm);
     void ResetSession();
 
@@ -60,7 +59,7 @@ private:
     std::unique_ptr<SileroVad> silero_;
 
     ThreadSafeQueue<AudioFrame>* frameQueue_ = nullptr;
-    ThreadSafeQueue<Utterance>* utteranceQueue_ = nullptr;
+    ThreadSafeQueue<SpeechEvent>* speechEventQueue_ = nullptr;
 
     std::unique_ptr<std::thread> thread_;
     std::atomic<bool> running_{false};
@@ -73,7 +72,6 @@ private:
     State state_ = State::Idle;
 
     std::deque<int16_t> preRoll_;
-    std::vector<int16_t> currentAudio_;
 
     int speechFrames_ = 0;
     int silenceFrames_ = 0;
