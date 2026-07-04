@@ -2,7 +2,7 @@
 
 > **状态:** 提案文档（经审查修订版）。
 > **审查:** docs/reviews/2026-07-05-architecture-review.md
-> **上一版:** [ARCHITECTURE.md](/ARCHITECTURE.md) (v3)
+> **上一版:** [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) (v3)
 
 ---
 
