@@ -45,7 +45,7 @@ void SessionReaper::ReaperLoop() {
         uint64_t sid = session->GetState()->sessionId;
         FCITX_DEBUG() << "[voice-input:reaper] Joining session " << sid;
         session->JoinWithTimeout(15s);
-        FCITX_INFO() << "[voice-input:reaper] Released session " << sid;
+        FCITX_DEBUG() << "[voice-input:reaper] Released session " << sid;
         pending_--;
     }
 }

@@ -95,7 +95,7 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                     rawResult.sessionId = sid;
                     rawResult.utteranceId = uid;
                     rawResult.isLLMRefined = false;
-                    FCITX_INFO() << "[voice-input] ASR raw: uid=" << uid
+                    FCITX_DEBUG() << "[voice-input] ASR raw: uid=" << uid
                                  << " text=\"" << text << "\"";
                     resultQueue_.Push(std::move(rawResult));
 

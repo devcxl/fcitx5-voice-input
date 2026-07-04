@@ -106,7 +106,7 @@ OpenaiAsrSession::OpenaiAsrSession(const AsrEngine::Config& config,
     modelName_ = config.modelName.empty() ? "whisper-1" : config.modelName;
     language_ = config.language;
 
-    FCITX_INFO() << "[voice-input:openai] Init session=" << sessionId
+    FCITX_DEBUG() << "[voice-input:openai] Init session=" << sessionId
                  << " endpoint=" << apiEndpoint_
                  << " model=" << modelName_;
 }
@@ -212,7 +212,7 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     curl_easy_cleanup(curl);
 
     if (state->cancelled) {
-        FCITX_INFO() << "[voice-input:openai] Cancelled session=" << state->sessionId;
+        FCITX_DEBUG() << "[voice-input:openai] Cancelled session=" << state->sessionId;
         return;
     }
 

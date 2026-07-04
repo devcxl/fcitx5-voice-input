@@ -151,7 +151,7 @@ void PipeWireCapture::OnProcess(void* userdata) {
 
 void PipeWireCapture::OnStateChanged(void*, pw_stream_state oldState,
                                      pw_stream_state state, const char* error) {
-    FCITX_INFO() << "[voice-input:pw] Stream state: "
+    FCITX_DEBUG() << "[voice-input:pw] Stream state: "
                  << pw_stream_state_as_string(oldState) << " -> "
                  << pw_stream_state_as_string(state)
                  << (error ? " error=" : "") << (error ? error : "");

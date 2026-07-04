@@ -319,7 +319,7 @@ VolcengineAsrSession::VolcengineAsrSession(const AsrEngine::Config& config,
         return;
     }
 
-    FCITX_INFO() << "[voice-input:volcengine] Init session=" << sessionId
+    FCITX_DEBUG() << "[voice-input:volcengine] Init session=" << sessionId
                  << " endpoint=" << endpoint_
                  << " apiKey=" << MaskSecret(apiKey_)
                  << " appKey=" << MaskSecret(appKey_)
@@ -423,10 +423,10 @@ void VolcengineAsrSession::WorkerLoop() {
 
     if (state_->cancelled) {
         if (connectResult != CURLE_OK) {
-            FCITX_INFO() << "[voice-input:volcengine] Connect failed (cancelled): "
+            FCITX_DEBUG() << "[voice-input:volcengine] Connect failed (cancelled): "
                          << curl_easy_strerror(connectResult);
         } else {
-            FCITX_INFO() << "[voice-input:volcengine] Cancelled during connect";
+            FCITX_DEBUG() << "[voice-input:volcengine] Cancelled during connect";
         }
         curl_easy_cleanup(curl);
         return;
@@ -552,7 +552,7 @@ void VolcengineAsrSession::WorkerLoop() {
     curl_easy_cleanup(curl);
 
     if (state_->cancelled) {
-        FCITX_INFO() << "[voice-input:volcengine] Cancelled session=" << sid;
+        FCITX_DEBUG() << "[voice-input:volcengine] Cancelled session=" << sid;
         return;
     }
     if (latestText.empty()) {

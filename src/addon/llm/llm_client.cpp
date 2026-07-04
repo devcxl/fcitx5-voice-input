@@ -137,7 +137,7 @@ std::string LLMClient::Process(const std::string& text) {
     Json::StreamWriterBuilder writer;
     std::string bodyStr = Json::writeString(writer, body);
 
-    FCITX_INFO() << "[voice-input:llm] POST " << url
+    FCITX_DEBUG() << "[voice-input:llm] POST " << url
                  << " model=" << config_.model
                  << " input=" << text.size() << " chars"
                  << " body=" << bodyStr.size() << " bytes";
@@ -228,13 +228,13 @@ std::string LLMClient::Process(const std::string& text) {
     std::string extracted = ExtractJsonText(content);
     std::string result = extracted.empty() ? text : extracted;
 
-    FCITX_INFO() << "[voice-input:llm] Response: http=" << httpCode
+    FCITX_DEBUG() << "[voice-input:llm] Response: http=" << httpCode
                  << " elapsed=" << elapsedMs << "ms"
                  << " output=" << result.size() << " chars";
 
     FCITX_DEBUG() << "[voice-input:llm] Response body:\n" << response;
 
-    FCITX_INFO() << "[voice-input:llm] Done: raw=\"" << text
+    FCITX_DEBUG() << "[voice-input:llm] Done: raw=\"" << text
                  << "\" → out=\"" << result << "\"";
     return result;
 }
@@ -274,7 +274,7 @@ void LLMClient::ProcessStream(const std::string& text,
     Json::StreamWriterBuilder writer;
     std::string bodyStr = Json::writeString(writer, body);
 
-    FCITX_INFO() << "[voice-input:llm:stream] POST " << url
+    FCITX_DEBUG() << "[voice-input:llm:stream] POST " << url
                  << " model=" << config_.model
                  << " input=" << text.size() << " chars";
 
@@ -336,7 +336,7 @@ void LLMClient::ProcessStream(const std::string& text,
         return;
     }
 
-    FCITX_INFO() << "[voice-input:llm:stream] Done: elapsed=" << elapsedMs << "ms"
+    FCITX_DEBUG() << "[voice-input:llm:stream] Done: elapsed=" << elapsedMs << "ms"
                  << " accumulated=" << ctx.accumulated.size() << " chars"
                  << " \"" << ctx.accumulated << "\"";
 }
