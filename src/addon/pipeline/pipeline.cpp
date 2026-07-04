@@ -30,14 +30,22 @@ void Pipeline::Init(const VoiceInputConfig& config) {
     vadConfig.silenceThreshold =
         vadConfig.speechThreshold * 0.7f;
     vadConfig.endSilenceMs = config_.silenceThresholdMs.value();
+    vadConfig.startFrames = config_.startFrames.value();
+    vadConfig.preRollMs = config_.preRollMs.value();
+    vadConfig.minSpeechMs = config_.minSpeechMs.value();
+    vadConfig.maxSpeechMs = config_.maxSpeechMs.value();
 
     FCITX_INFO() << "[voice-input] Init:"
                  << " vadThreshold=" << config_.vadThreshold.value()
-                 << "% silenceThresholdMs=" << config_.silenceThresholdMs.value();
+                 << "% silenceThresholdMs=" << config_.silenceThresholdMs.value()
+                 << " startFrames=" << config_.startFrames.value()
+                 << " preRollMs=" << config_.preRollMs.value()
+                 << " minSpeechMs=" << config_.minSpeechMs.value()
+                 << " maxSpeechMs=" << config_.maxSpeechMs.value();
 
     vadWorker_->SetConfig(vadConfig);
     vadWorker_->SetFrameQueue(&frameQueue_);
-    vadWorker_->SetUtteranceQueue(&utteranceQueue_);
+    vadWorker_->SetSpeechEventQueue(&speechEventQueue_);
 }
 
 void Pipeline::SetConfig(const VoiceInputConfig& config) {
@@ -49,6 +57,10 @@ void Pipeline::SetConfig(const VoiceInputConfig& config) {
     vadConfig.silenceThreshold =
         vadConfig.speechThreshold * 0.7f;
     vadConfig.endSilenceMs = config_.silenceThresholdMs.value();
+    vadConfig.startFrames = config_.startFrames.value();
+    vadConfig.preRollMs = config_.preRollMs.value();
+    vadConfig.minSpeechMs = config_.minSpeechMs.value();
+    vadConfig.maxSpeechMs = config_.maxSpeechMs.value();
     vadWorker_->SetConfig(vadConfig);
 }
 
@@ -61,8 +73,11 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
     if (asrEngine_) {
         asrEngine_->SetResultCallback(
             [this](const std::string& text, bool isFinal) {
-                if (isFinal && !text.empty()) {
-                    uint64_t gen = generation_.load();
+                uint64_t gen = generation_.load();
+
+                if (isFinal) {
+                    if (text.empty()) return;
+
                     uint64_t uid = ++utteranceCounter_;
 
                     // Drain stale LLM-refined leftovers from previous utterance
@@ -146,7 +161,22 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                             }
                         }
                     }
+                } else if (!text.empty()) {
+                    // ASR partial result — push for preedit updates
+                    AsrResult partial;
+                    partial.text = text;
+                    partial.generation = gen;
+                    partial.isLLMRefined = false;
+                    partial.isPartial = true;
+                    resultQueue_.Push(std::move(partial));
+                    if (resultCb_) {
+                        resultCb_(text);
+                    }
                 }
+            });
+        asrEngine_->SetErrorCallback(
+            [this](const std::string& error) {
+                FCITX_ERROR() << "[voice-input] ASR error: " << error;
             });
     }
 }
@@ -234,8 +264,8 @@ void Pipeline::Abort() {
     // Clear queues
     AudioFrame f;
     while (frameQueue_.TryPop(f)) {}
-    Utterance u;
-    while (utteranceQueue_.TryPop(u)) {}
+    SpeechEvent se;
+    while (speechEventQueue_.TryPop(se)) {}
     AsrResult r;
     while (resultQueue_.TryPop(r)) {}
 }
@@ -266,29 +296,59 @@ bool Pipeline::StartCapture() {
 }
 
 void Pipeline::AsrWorkerLoop() {
+    static constexpr float kInt16ToFloat = 1.0f / 32768.0f;
+    static constexpr int kChunkSamples = kSampleRate * 200 / 1000;
+
     while (running_) {
-        Utterance u;
-        if (!utteranceQueue_.TryPop(u)) {
-            std::this_thread::sleep_for(10ms);
+        SpeechEvent ev;
+        if (!speechEventQueue_.TryPop(ev)) {
+            std::this_thread::sleep_for(5ms);
             continue;
         }
 
-        if (u.pcm.empty() || !asrEngine_) continue;
+        switch (ev.type) {
+        case SpeechEventType::Begin:
+            pendingAsrAudio_.clear();
+            if (asrEngine_) {
+                asrEngine_->Start();
+                FCITX_DEBUG() << "[voice-input:asr] SpeechEvent Begin -> Start()";
+            }
+            break;
 
-        float durSec = static_cast<float>(u.pcm.size()) / kSampleRate;
-        FCITX_INFO() << "[voice-input:asr] Processing utterance: "
-                     << u.pcm.size() << " samples (" << durSec << "s)";
+        case SpeechEventType::Audio:
+            if (!asrEngine_ || ev.pcm.empty()) break;
 
-        // Convert int16 → float32
-        std::vector<float> floatPcm(u.pcm.size());
-        static constexpr float kInt16ToFloat = 1.0f / 32768.0f;
-        for (size_t i = 0; i < u.pcm.size(); ++i) {
-            floatPcm[i] = static_cast<float>(u.pcm[i]) * kInt16ToFloat;
+            // Batch frames to ~200ms chunks
+            pendingAsrAudio_.reserve(pendingAsrAudio_.size() + ev.pcm.size());
+            for (int16_t sample : ev.pcm) {
+                pendingAsrAudio_.push_back(static_cast<float>(sample) * kInt16ToFloat);
+            }
+
+            if (pendingAsrAudio_.size() >= static_cast<size_t>(kChunkSamples)) {
+                asrEngine_->FeedAudio(pendingAsrAudio_.data(), pendingAsrAudio_.size());
+                pendingAsrAudio_.clear();
+            }
+            break;
+
+        case SpeechEventType::End:
+            if (asrEngine_) {
+                if (!pendingAsrAudio_.empty()) {
+                    asrEngine_->FeedAudio(pendingAsrAudio_.data(), pendingAsrAudio_.size());
+                    pendingAsrAudio_.clear();
+                }
+                asrEngine_->Stop();
+                FCITX_DEBUG() << "[voice-input:asr] SpeechEvent End -> Stop()";
+            }
+            break;
+
+        case SpeechEventType::Cancel:
+            pendingAsrAudio_.clear();
+            if (asrEngine_) {
+                asrEngine_->Stop();
+                FCITX_DEBUG() << "[voice-input:asr] SpeechEvent Cancel -> Stop()";
+            }
+            break;
         }
-
-        asrEngine_->Start();
-        asrEngine_->FeedAudio(floatPcm.data(), floatPcm.size());
-        asrEngine_->Stop();
     }
 }
 

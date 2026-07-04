@@ -20,12 +20,13 @@
 
 </div>
 
-**fcitx5-voice-input** is a Fcitx5 addon for voice input. Captures audio via PulseAudio (or PipeWire fallback), detects speech segments with Silero ONNX VAD, and transcribes via OpenAI-compatible API.
+**fcitx5-voice-input** is a Fcitx5 addon for voice input. Captures audio via PulseAudio (or PipeWire fallback), detects speech segments with Silero ONNX VAD, and transcribes via OpenAI-compatible API or Volcengine Doubao streaming ASR.
 
 ## Features
 
-- Voice input (OpenAI Whisper API / compatible services)
+- Voice input (OpenAI Whisper API / compatible services, or Volcengine Doubao streaming ASR)
 - Silero ONNX VAD for automatic speech segmentation (no push-to-talk required)
+- Real-time partial transcript update during speech (requires Volcengine backend)
 - Queue-based pipeline: Audio Capture → VAD → ASR → EventDispatcher → commit
 - Graphical configuration via `fcitx5-configtool`
 - Smart delayed stop on window switching
@@ -46,31 +47,76 @@ See [Build](#build) below.
 
 After installation, open `fcitx5-configtool`, find **Voice Input** in the Input Method list and add it.
 
-Then open the Addon config for **VoiceInput** and set:
+Then open the Addon config for **VoiceInput**:
+
+#### Main Config
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `ASRBackend` | ASR backend | `openai` |
-| `OpenAIEndpoint` | API endpoint URL | `https://api.openai.com/v1` |
-| `OpenAIApiKey` | API Key | **(required)** |
-| `OpenAIModel` | Model name | `whisper-1` |
-| `OpenAILanguage` | Output language, empty for auto | (empty) |
-| `AudioSource` | Input device, empty for auto | (empty) |
-| `VADThreshold` | VAD sensitivity (0-100), higher = less sensitive | `50` |
+| `ActiveBackend` | ASR backend | `openai` |
+| `VADThreshold` | VAD sensitivity (0-100), higher = less sensitive | `20` |
 | `SilenceThresholdMs` | Silence duration to end utterance (ms) | `800` |
+| `StartFrames` | Consecutive speech frames to trigger onset | `2` |
+| `PreRollMs` | Audio before onset to include (ms) | `300` |
+| `MinSpeechMs` | Minimum utterance duration (ms) | `300` |
+| `MaxSpeechMs` | Maximum utterance duration (ms) | `30000` |
 
-**API Key**: Fill in your API Key in `OpenAIApiKey`. Compatible with any OpenAI-format service:
+Select your backend from the `ActiveBackend` dropdown, then click the gear button ⚙ to open that backend's config page.
+
+#### OpenAI Backend (sub-config)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `BaseUrl` | API base URL | `https://api.openai.com/v1` |
+| `ApiKey` | API Key | **(required)** |
+| `Model` | Model name | `whisper-1` |
+| `Language` | Output language | `auto` (English/中文) |
+| `LLMEnabled` | LLM post-processing | `false` |
+| `LLMModel` | Post-processing LLM model | (empty) |
+| `LLMSystemPrompt` | Post-processing system prompt | (empty) |
+| `LLMStream` | LLM streaming output | `true` |
+| `AutoCommit` | Auto-commit when no LLM | `true` |
+
+Set `ActiveBackend=openai`, click the gear button, and fill in your API Key. Compatible with any OpenAI-format service:
 
 - [OpenAI](https://platform.openai.com/) — `https://api.openai.com/v1`
 - [Groq](https://console.groq.com/) — `https://api.groq.com/openai/v1`
 - [SiliconFlow](https://cloud.siliconflow.com) — `https://api.siliconflow.com/v1`
 
+#### Volcengine Doubao Backend (sub-config)
+
+Set `ActiveBackend=volcengine`, click the gear button to open the Volcengine config page.
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `Endpoint` | WebSocket endpoint | `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async` |
+| `AuthMode` | Auth mode: `api_key` or `app_access_key` | `api_key` |
+| `ApiKey` | API Key (new console) | **(required for api_key mode)** |
+| `AppKey` | App Key (legacy console) | **(required for app_access_key mode)** |
+| `AccessKey` | Access Token (legacy console) | **(required for app_access_key mode)** |
+| `ResourceId` | Resource ID | `volc.seedasr.sauc.duration` |
+| `ChunkMs` | Audio chunk size per packet (ms) | `200` |
+| `EnableITN` | Enable ITN text normalization | `true` |
+| `EnablePunc` | Enable punctuation | `true` |
+| `EnableDDC` | Enable DDC smoothing | `false` |
+| `EnableNonstream` | Enable second-pass recognition | `true` |
+| `EndWindowMs` | Server-side end-of-speech window (ms) | `800` |
+
+Volcengine authentication requires a resource purchased from the [Volcengine console](https://console.volcengine.com/). The Resource ID depends on your model and purchase plan:
+
+- Model 2.0 hourly: `volc.seedasr.sauc.duration`
+- Model 2.0 concurrency: `volc.seedasr.sauc.concurrent`
+- Model 1.0 hourly: `volc.bigasr.sauc.duration`
+- Model 1.0 concurrency: `volc.bigasr.sauc.concurrent`
+
+**Troubleshooting:** If recognition fails, check the addon log for `X-Tt-Logid` and provide it to Volcengine support.
+
 ### 3. How to Use
 
 1. Switch to **Voice Input** IME
 2. Start speaking — VAD automatically detects speech and records
-3. Stop speaking (default 800ms silence timeout) — audio is sent for ASR
-4. Recognition result is committed automatically
+3. With the **Volcengine** backend, partial recognition text appears in the preedit area in real-time as you speak
+4. Stop speaking (default 800ms silence timeout) — final recognition result is committed
 5. Stay in Voice Input mode and continue speaking for consecutive recognition
 
 When switching windows, the plugin delays stop by 200ms. Quick switch-back cancels the stop, avoiding unnecessary restarts.
@@ -83,12 +129,13 @@ When switching windows, the plugin delays stop by 200ms. Quick switch-back cance
 - `libpulse-simple` — PulseAudio capture (preferred)
 - `libpipewire-0.3` — PipeWire capture (fallback)
 - `jsoncpp` — JSON parsing
-- `libcurl` — HTTP client (required for OpenAI ASR)
+- `libcurl` — HTTP/WebSocket client (>= 7.86.0, required for ASR)
+- `zlib` — Gzip compression (required for Volcengine backend)
 - `onnxruntime` — Silero VAD ONNX Runtime
 
-> **Arch Linux:** `sudo pacman -S fcitx5 pulseaudio pipewire jsoncpp curl onnxruntime-cpu`
+> **Arch Linux:** `sudo pacman -S fcitx5 pulseaudio pipewire jsoncpp curl onnxruntime-cpu zlib`
 >
-> **Debian/Ubuntu:** `sudo apt install fcitx5 libpulse-dev libpipewire-0.3-dev libjsoncpp-dev libcurl4-openssl-dev libonnxruntime-dev`
+> **Debian/Ubuntu:** `sudo apt install fcitx5 libpulse-dev libpipewire-0.3-dev libjsoncpp-dev libcurl4-openssl-dev libonnxruntime-dev zlib1g-dev`
 
 ### Build Steps
 
@@ -118,7 +165,7 @@ sudo cmake --install build --prefix /usr
 
 ## Notes
 
-- **API Key Security**: API key is stored in plain text in `~/.config/fcitx5/conf/voiceinput.conf`. Ensure proper file permissions
+- **API Key Security**: API keys are stored in plain text in `~/.config/fcitx5/conf/voiceinput-openai.conf` and `~/.config/fcitx5/conf/voiceinput-volcengine.conf`. Ensure proper file permissions
 - **Network Required**: OpenAI backend requires internet. Local ASR can be added via the AsrEngine interface
 - **Audio Device**: Auto-selects system default input. To specify a device, choose from the `AudioSource` dropdown. Only input sources are listed (no Monitor sources)
 - **VAD Model**: The Silero VAD model is distributed via git submodule (`third_party/silero-vad/`) and copied to the install directory at build time. Run `git submodule update --init --recursive` before building
@@ -129,7 +176,9 @@ sudo cmake --install build --prefix /usr
 ## Architecture Overview
 
 ```
-Audio Capture Thread → FrameQueue → VAD Worker Thread → UtteranceQueue → ASR Worker Thread → ResultQueue → EventDispatcher → commitString
+Audio Capture Thread → FrameQueue → VAD Worker Thread → SpeechEventQueue → ASR Worker Thread → ResultQueue → EventDispatcher → commitString
+
+SpeechEvent types: Begin (speech onset) → Audio (32ms frames, batched to 200ms by Pipeline) → End (silence) / Cancel (too short)
 ```
 
 Three worker threads + main thread, connected by `ThreadSafeQueue`. See [ARCHITECTURE.md](ARCHITECTURE.md) for details.

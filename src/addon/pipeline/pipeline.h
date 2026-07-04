@@ -6,7 +6,7 @@
 #include <string>
 #include <thread>
 
-#include "config/config.h"
+#include "config/voiceinput-config.h"
 #include "capture/audio_capture.h"
 #include "vad/vad.h"
 #include "asr/asr_engine.h"
@@ -51,7 +51,7 @@ private:
 
     // Queues
     ThreadSafeQueue<AudioFrame> frameQueue_;
-    ThreadSafeQueue<Utterance> utteranceQueue_;
+    ThreadSafeQueue<SpeechEvent> speechEventQueue_;
     ThreadSafeQueue<AsrResult> resultQueue_;
 
     // Workers
@@ -60,6 +60,9 @@ private:
 
     // Capture
     std::unique_ptr<AudioCapture> capture_;
+
+    // ASR streaming batching
+    std::vector<float> pendingAsrAudio_;
 
     // ASR
     std::unique_ptr<AsrEngine> asrEngine_;

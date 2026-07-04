@@ -47,8 +47,14 @@ pkg_check_modules(PULSE REQUIRED libpulse-simple libpulse)
 # JSON parsing
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 
-# HTTP client (for OpenAI-compatible ASR)
+# HTTP/WebSocket client (for cloud ASR backends)
 find_package(CURL REQUIRED)
+if(CURL_VERSION_STRING VERSION_LESS "7.86.0")
+    message(FATAL_ERROR "Volcengine WebSocket ASR requires libcurl >= 7.86.0; found ${CURL_VERSION_STRING}")
+endif()
+
+# Gzip compression (for Volcengine WebSocket ASR)
+find_package(ZLIB REQUIRED)
 
 # Silero VAD via ONNX Runtime (the only VAD backend)
 set(ENABLE_SILERO_VAD ON)
@@ -101,13 +107,13 @@ set(ADDON_SOURCES
     src/addon/vad/silero_vad.cpp
     src/addon/pipeline/pipeline.cpp
     src/addon/asr/openai_asr.cpp
+    src/addon/asr/volcengine_asr.cpp
     src/addon/llm/llm_client.cpp
 )
 
 set(ADDON_HEADERS
     src/addon/engine.h
     src/addon/types.h
-    src/addon/config/config.h
     src/addon/config/voiceinput-config.h
     src/addon/capture/audio_capture.h
     src/addon/capture/pipewire_capture.h
@@ -116,6 +122,7 @@ set(ADDON_HEADERS
     src/addon/vad/silero_vad.h
     src/addon/asr/asr_engine.h
     src/addon/asr/openai_asr.h
+    src/addon/asr/volcengine_asr.h
     src/addon/llm/llm_client.h
     src/addon/pipeline/pipeline.h
     src/addon/utils/audio_buffer.h
@@ -145,6 +152,7 @@ target_link_libraries(voice-input-addon PRIVATE
     ${JSONCPP_LIBRARIES}
     ${ONNXRUNTIME_LIBRARIES}
     CURL::libcurl
+    ZLIB::ZLIB
 )
 
 target_compile_definitions(voice-input-addon PRIVATE

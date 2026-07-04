@@ -17,6 +17,7 @@
 #include "engine.h"
 
 #include "asr/openai_asr.h"
+#include "asr/volcengine_asr.h"
 #include "llm/llm_client.h"
 
 namespace fcitx {
@@ -35,16 +36,54 @@ VoiceInputEngine::~VoiceInputEngine() {
 
 void VoiceInputEngine::reloadConfig() {
     readAsIni(config_, "conf/voiceinput.conf");
+    readAsIni(openaiConfig_, "conf/voiceinput-openai.conf");
+    readAsIni(volcengineConfig_, "conf/voiceinput-volcengine.conf");
+    FCITX_INFO() << "[voice-input] reloadConfig: backend="
+                 << *config_.activeBackend;
 }
 
 void VoiceInputEngine::setConfig(const RawConfig& rawConfig) {
     config_.load(rawConfig, true);
+    FCITX_INFO() << "[voice-input] setConfig: backend="
+                 << *config_.activeBackend;
 
     bool saved = safeSaveAsIni(config_, "conf/voiceinput.conf");
     FCITX_INFO() << "[voice-input] setConfig saved=" << saved;
 
     if (initialized_) {
         pipeline_->SetConfig(config_);
+        ReloadActiveAsrClient();
+    }
+}
+
+const Configuration* VoiceInputEngine::getSubConfig(
+    const std::string& path) const {
+    FCITX_INFO() << "[voice-input] getSubConfig: path=" << path;
+    if (path == "asr/openai") {
+        return &openaiConfig_;
+    }
+    if (path == "asr/volcengine") {
+        return &volcengineConfig_;
+    }
+    FCITX_WARN() << "[voice-input] getSubConfig: unknown path=" << path;
+    return nullptr;
+}
+
+void VoiceInputEngine::setSubConfig(const std::string& path,
+                                    const RawConfig& rawConfig) {
+    FCITX_INFO() << "[voice-input] setSubConfig: path=" << path;
+    if (path == "asr/openai") {
+        openaiConfig_.load(rawConfig, true);
+        safeSaveAsIni(openaiConfig_, "conf/voiceinput-openai.conf");
+        FCITX_INFO() << "[voice-input] Saved openai sub-config";
+    } else if (path == "asr/volcengine") {
+        volcengineConfig_.load(rawConfig, true);
+        safeSaveAsIni(volcengineConfig_, "conf/voiceinput-volcengine.conf");
+        FCITX_INFO() << "[voice-input] Saved volcengine sub-config";
+    }
+
+    if (initialized_) {
+        ReloadActiveAsrClient();
     }
 }
 
@@ -185,11 +224,20 @@ void VoiceInputEngine::PollResults() {
                                   << " pendingUid=" << pendingPreeditUtteranceId_;
                 }
             } else {
-                bool llmActive = config_.llmEnabled.value()
-                              && !config_.llmModel.value().empty();
+                bool llmActive = openaiConfig_.llmEnabled.value()
+                              && !openaiConfig_.llmModel.value().empty();
                 FCITX_INFO() << "[voice-input] Preedit: uid=" << result.utteranceId
                              << " text=\"" << result.text << "\""
                              << " llmActive=" << llmActive;
+
+                if (result.isPartial) {
+                    activeIc_->inputPanel().setPreedit(Text(result.text));
+                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+                    statusText_ = result.text;
+                    activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+                    continue;
+                }
+
                 if (llmActive) {
                     activeIc_->inputPanel().setPreedit(Text(result.text));
                     activeIc_->inputPanel().setAuxDown(Text(_("修正中...")));
@@ -198,8 +246,10 @@ void VoiceInputEngine::PollResults() {
                     activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
                     pendingPreeditText_ = result.text;
                     pendingPreeditUtteranceId_ = result.utteranceId;
-                } else if (config_.autoCommit.value()) {
+                } else if (openaiConfig_.autoCommit.value()) {
                     activeIc_->commitString(result.text);
+                    activeIc_->inputPanel().reset();
+                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
                     SetStatus(_("语音输入就绪"));
                     pendingPreeditText_.clear();
                     pendingPreeditUtteranceId_ = 0;
@@ -255,6 +305,64 @@ std::string VoiceInputEngine::subModeLabelImpl(const InputMethodEntry& entry,
     return {};
 }
 
+std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
+    auto backend = *config_.activeBackend;
+    FCITX_INFO() << "[voice-input] CreateAsrEngine: backend=" << backend;
+    auto asrConfig = AsrEngine::Config{};
+    std::unique_ptr<AsrEngine> asr;
+
+    if (backend == "volcengine") {
+        asrConfig.apiEndpoint = *volcengineConfig_.endpoint;
+        asrConfig.apiKey = *volcengineConfig_.apiKey;
+        asrConfig.authMode = *volcengineConfig_.authMode;
+        asrConfig.appKey = *volcengineConfig_.appKey;
+        asrConfig.accessKey = *volcengineConfig_.accessKey;
+        asrConfig.resourceId = *volcengineConfig_.resourceId;
+        asrConfig.modelName = "bigmodel";
+        asrConfig.chunkMs = *volcengineConfig_.chunkMs;
+        asrConfig.enableItN = *volcengineConfig_.enableITN;
+        asrConfig.enablePunc = *volcengineConfig_.enablePunc;
+        asrConfig.enableDdc = *volcengineConfig_.enableDDC;
+        asrConfig.enableNonstream = *volcengineConfig_.enableNonstream;
+        asrConfig.endWindowMs = *volcengineConfig_.endWindowMs;
+        FCITX_INFO() << "[voice-input] Volcengine config: endpoint="
+                     << asrConfig.apiEndpoint
+                     << " apiKey=" << (asrConfig.apiKey.empty() ? "(empty)" : "***");
+        asr = std::make_unique<VolcengineStreamingAsrEngine>();
+    } else {
+        asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
+        asrConfig.apiKey = *openaiConfig_.apiKey;
+        asrConfig.modelName = *openaiConfig_.model;
+        auto language = *openaiConfig_.language;
+        if (language == "auto") {
+            language.clear();
+        }
+        asrConfig.language = language;
+        FCITX_INFO() << "[voice-input] OpenAI config: endpoint="
+                     << asrConfig.apiEndpoint
+                     << " model=" << asrConfig.modelName;
+        asr = std::make_unique<OpenaiCompatAsrEngine>();
+    }
+
+    if (asr->Init(asrConfig)) {
+        FCITX_INFO() << "[voice-input] ASR init OK: " << asr->Name();
+        return asr;
+    }
+
+    FCITX_WARN() << "[voice-input] ASR init failed: " << backend;
+    return nullptr;
+}
+
+void VoiceInputEngine::ReloadActiveAsrClient() {
+    auto asr = CreateAsrEngine();
+    if (asr) {
+        pipeline_->SetAsrEngine(std::move(asr));
+        FCITX_INFO() << "[voice-input] ASR client replaced";
+    } else {
+        FCITX_WARN() << "[voice-input] ASR client NOT replaced (init failed)";
+    }
+}
+
 void VoiceInputEngine::InitializeIfNeeded() {
     if (initialized_) return;
     initialized_ = true;
@@ -281,32 +389,18 @@ void VoiceInputEngine::InitializeIfNeeded() {
 
     pipeline_->Init(config_);
 
-    auto asrConfig = AsrEngine::Config{};
-    asrConfig.apiEndpoint = config_.openaiEndpoint.value();
-    asrConfig.apiKey = config_.openaiApiKey.value();
-    asrConfig.modelName = config_.openaiModel.value();
-    asrConfig.language = config_.openaiLanguage.value();
-
-    auto asr = std::make_unique<OpenaiCompatAsrEngine>();
-    if (asr->Init(asrConfig)) {
-        pipeline_->SetAsrEngine(std::move(asr));
-        FCITX_INFO() << "[voice-input] Using OpenAI-compatible ASR: "
-                     << config_.openaiEndpoint.value()
-                     << " model=" << config_.openaiModel.value();
-    } else {
-        FCITX_WARN() << "[voice-input] OpenAI ASR init failed";
-    }
+    ReloadActiveAsrClient();
 
     // LLM post-processing
-    bool llmEnabled = config_.llmEnabled.value();
-    std::string llmModel = config_.llmModel.value();
-    pipeline_->SetLLMStream(config_.llmStream.value());
+    bool llmEnabled = openaiConfig_.llmEnabled.value();
+    std::string llmModel = openaiConfig_.llmModel.value();
+    pipeline_->SetLLMStream(openaiConfig_.llmStream.value());
     if (llmEnabled && !llmModel.empty()) {
         auto llmConfig = LLMClient::Config{};
-        llmConfig.endpoint = config_.openaiEndpoint.value();
-        llmConfig.apiKey = config_.openaiApiKey.value();
+        llmConfig.endpoint = *openaiConfig_.baseUrl;
+        llmConfig.apiKey = *openaiConfig_.apiKey;
         llmConfig.model = llmModel;
-        llmConfig.systemPrompt = config_.llmSystemPrompt.value();
+        llmConfig.systemPrompt = *openaiConfig_.llmSystemPrompt;
 
         auto llm = std::make_unique<LLMClient>(std::move(llmConfig));
         pipeline_->SetLLMClient(std::move(llm));
