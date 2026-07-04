@@ -209,20 +209,17 @@ void Pipeline::Stop() {
         asrThread_.reset();
     }
 
-    // Cancel active session
+    // Cancel active session and let reaper clean up in background
     if (activeSession_) {
         activeSession_->Cancel();
         reaper_->Add(std::move(activeSession_));
         activeSessionId_ = 0;
     }
 
-    // Cancel all engine sessions
+    // Cancel all engine sessions (old ones will be cleaned by reaper)
     if (asrEngine_) {
         asrEngine_->CancelAllSessions();
     }
-
-    // Drain all reaper sessions
-    reaper_->DrainAll();
 
     if (capture_) {
         capture_.reset();
@@ -259,8 +256,6 @@ void Pipeline::Abort() {
     if (asrEngine_) {
         asrEngine_->CancelAllSessions();
     }
-
-    reaper_->DrainAll();
 
     // Clear queues
     AudioFrame f;
