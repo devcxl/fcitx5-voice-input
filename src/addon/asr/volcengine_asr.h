@@ -8,27 +8,28 @@
 #include <vector>
 
 #include "asr_engine.h"
+#include "asr_session.h"
 #include "utils/thread_safe_queue.h"
 
 namespace fcitx {
 
-class VolcengineStreamingAsrEngine : public AsrEngine {
+class VolcengineAsrSession : public AsrSession {
 public:
-    VolcengineStreamingAsrEngine();
-    ~VolcengineStreamingAsrEngine() override;
+    VolcengineAsrSession(const AsrEngine::Config& config,
+                         AsrSession::ResultCallback resultCb,
+                         AsrSession::ErrorCallback errorCb,
+                         uint64_t sessionId);
+    ~VolcengineAsrSession() override;
 
-    VolcengineStreamingAsrEngine(const VolcengineStreamingAsrEngine&) = delete;
-    VolcengineStreamingAsrEngine& operator=(const VolcengineStreamingAsrEngine&) = delete;
-
-    bool Init(const Config& config) override;
-    void Start() override;
     void FeedAudio(const float* pcm, size_t frames) override;
-    void Stop() override;
-    const char* Name() const override { return "volcengine"; }
+    void End() override;
+    void Cancel() override;
+    void JoinWithTimeout(std::chrono::milliseconds timeout) override;
 
 private:
     void WorkerLoop();
 
+    // Config snapshot
     std::string endpoint_;
     std::string authMode_;
     std::string apiKey_;
@@ -45,8 +46,16 @@ private:
 
     ThreadSafeQueue<std::vector<int16_t>> audioChunks_;
     std::unique_ptr<std::thread> workerThread_;
-    std::atomic<bool> cancelled_{false};
-    std::atomic<bool> finished_{false};
+};
+
+class VolcengineAsrEngine : public AsrEngine {
+public:
+    bool Init(const Config& config) override;
+    std::shared_ptr<AsrSession> StartSession() override;
+    const char* Name() const override { return "volcengine"; }
+
+private:
+    Config config_;
 };
 
 } // namespace fcitx

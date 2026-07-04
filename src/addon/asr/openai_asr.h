@@ -7,48 +7,44 @@
 #include <string>
 
 #include "asr_engine.h"
+#include "asr_session.h"
 
 namespace fcitx {
 
-/**
- * ASR engine for OpenAI Whisper API and compatible providers
- * (Groq, Together AI, DeepSeek, etc.).
- *
- * User configures the endpoint, API key, and model name at runtime.
- * Audio is sent as a WAV file via multipart/form-data POST request.
- */
-class OpenaiCompatAsrEngine : public AsrEngine {
+class OpenaiAsrSession : public AsrSession {
 public:
-    OpenaiCompatAsrEngine();
-    ~OpenaiCompatAsrEngine() override;
+    OpenaiAsrSession(const AsrEngine::Config& config,
+                     AsrSession::ResultCallback resultCb,
+                     AsrSession::ErrorCallback errorCb,
+                     uint64_t sessionId);
+    ~OpenaiAsrSession() override;
 
-    OpenaiCompatAsrEngine(const OpenaiCompatAsrEngine&) = delete;
-    OpenaiCompatAsrEngine& operator=(const OpenaiCompatAsrEngine&) = delete;
-
-    bool Init(const Config& config) override;
-    void Start() override;
     void FeedAudio(const float* pcm, size_t frames) override;
-    void Stop() override;
-    const char* Name() const override { return "openai-compat"; }
+    void End() override;
+    void Cancel() override;
+    void JoinWithTimeout(std::chrono::milliseconds timeout) override;
 
 private:
-    void TranscribeWorker();
-
-    // HTTP POST multipart/form-data to the API endpoint
+    void TranscribeWorker(std::vector<float> pcm);
     std::string DoHttpRequest(const std::vector<uint8_t>& wavData);
 
-    // Config
     std::string apiEndpoint_;
     std::string apiKey_;
     std::string modelName_;
     std::string language_;
-
-    // Audio buffer (accumulated during recording)
     std::vector<float> pcmBuffer_;
-
-    // Thread management
+    std::mutex bufferMutex_;
     std::unique_ptr<std::thread> workerThread_;
-    std::atomic<bool> cancelled_{false};
+};
+
+class OpenaiAsrEngine : public AsrEngine {
+public:
+    bool Init(const Config& config) override;
+    std::shared_ptr<AsrSession> StartSession() override;
+    const char* Name() const override { return "openai-compat"; }
+
+private:
+    Config config_;
 };
 
 } // namespace fcitx

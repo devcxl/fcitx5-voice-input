@@ -328,7 +328,7 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         FCITX_INFO() << "[voice-input] Volcengine config: endpoint="
                      << asrConfig.apiEndpoint
                      << " apiKey=" << (asrConfig.apiKey.empty() ? "(empty)" : "***");
-        asr = std::make_unique<VolcengineStreamingAsrEngine>();
+        asr = std::make_unique<VolcengineAsrEngine>();
     } else {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
         asrConfig.apiKey = *openaiConfig_.apiKey;
@@ -341,7 +341,7 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         FCITX_INFO() << "[voice-input] OpenAI config: endpoint="
                      << asrConfig.apiEndpoint
                      << " model=" << asrConfig.modelName;
-        asr = std::make_unique<OpenaiCompatAsrEngine>();
+        asr = std::make_unique<OpenaiAsrEngine>();
     }
 
     if (asr->Init(asrConfig)) {

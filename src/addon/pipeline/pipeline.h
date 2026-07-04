@@ -5,11 +5,14 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "config/voiceinput-config.h"
 #include "capture/audio_capture.h"
 #include "vad/vad.h"
 #include "asr/asr_engine.h"
+#include "asr/asr_session.h"
+#include "asr/session_reaper.h"
 #include "llm/llm_client.h"
 #include "types.h"
 #include "utils/thread_safe_queue.h"
@@ -34,20 +37,18 @@ public:
     void SetVadStatusCallback(VADWorker::VadStatusCallback cb);
     void SetGeneration(uint64_t gen) { generation_.store(gen); }
 
-    // Lifecycle
     void Start();
     void Stop();
     void Abort();
     bool IsRunning() const { return running_.load(); }
 
-    // Main thread polls this
     ThreadSafeQueue<AsrResult>& ResultQueue() { return resultQueue_; }
 
     void SetConfig(const VoiceInputConfig& config);
 
 private:
     bool StartCapture();
-    void AsrWorkerLoop();
+    void AsrDispatcherLoop();
 
     // Queues
     ThreadSafeQueue<AudioFrame> frameQueue_;
@@ -61,11 +62,14 @@ private:
     // Capture
     std::unique_ptr<AudioCapture> capture_;
 
+    // ASR session management
+    std::unique_ptr<AsrEngine> asrEngine_;
+    std::shared_ptr<AsrSession> activeSession_;
+    uint64_t activeSessionId_{0};
+    std::unique_ptr<SessionReaper> reaper_;
+
     // ASR streaming batching
     std::vector<float> pendingAsrAudio_;
-
-    // ASR
-    std::unique_ptr<AsrEngine> asrEngine_;
 
     // LLM
     std::unique_ptr<LLMClient> llmClient_;
