@@ -16,9 +16,11 @@ struct AudioFrame {
     std::array<int16_t, kWindowSize> pcm{};
 };
 
-struct Utterance {
-    int64_t start_ms = 0;
-    int64_t end_ms = 0;
+enum class SpeechEventType { Begin, Audio, End, Cancel };
+
+struct SpeechEvent {
+    SpeechEventType type = SpeechEventType::Audio;
+    int64_t timestamp_ms = 0;
     std::vector<int16_t> pcm;
 };
 
@@ -27,6 +29,7 @@ struct AsrResult {
     int64_t start_ms = 0;
     int64_t end_ms = 0;
     uint64_t generation = 0;
+    uint64_t sessionId = 0;
     uint64_t utteranceId = 0;
     bool isLLMRefined = false;
     bool isPartial = false;

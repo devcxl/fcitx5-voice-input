@@ -26,6 +26,7 @@ runs:
           gettext \
           libjsoncpp-dev \
           libcurl4-openssl-dev \
+          zlib1g-dev \
           dpkg-dev
 
     - name: Install ONNX Runtime

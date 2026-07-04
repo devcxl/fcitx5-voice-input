@@ -13,6 +13,7 @@
 #include <fcitx/instance.h>
 
 #include "config/voiceinput-config.h"
+#include "asr/asr_engine.h"
 #include "pipeline/pipeline.h"
 #include "types.h"
 
@@ -37,6 +38,10 @@ public:
     void setConfig(const RawConfig& rawConfig) override;
     void reloadConfig() override;
 
+    const Configuration* getSubConfig(const std::string& path) const override;
+    void setSubConfig(const std::string& path,
+                      const RawConfig& rawConfig) override;
+
     std::string subModeLabelImpl(const InputMethodEntry& entry,
                                  InputContext& ic) override;
 
@@ -46,12 +51,16 @@ private:
     void PollResults();
     void ClearUI();
     void SetStatus(const std::string& text);
+    std::unique_ptr<AsrEngine> CreateAsrEngine();
+    void ReloadActiveAsrClient();
 
     Instance* instance_;
     std::unique_ptr<Pipeline> pipeline_;
     EventDispatcher eventDispatcher_;
     std::unique_ptr<EventSourceTime> delayedStopEvent_;
     VoiceInputConfig config_;
+    OpenAIAsrConfig openaiConfig_;
+    VolcengineAsrConfig volcengineConfig_;
 
     InputContext* activeIc_ = nullptr;
     std::atomic<uint64_t> activeGeneration_{0};

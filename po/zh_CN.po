@@ -3,29 +3,35 @@ msgstr ""
 "Language: zh_CN\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
-msgid "Voice Input"
-msgstr "语音"
+msgid "OpenAI Compatible"
+msgstr "OpenAI 兼容"
 
-msgid "ASR Backend"
-msgstr "语音识别后端"
+msgid "Volcengine Doubao"
+msgstr "火山引擎豆包"
 
-msgid "OpenAI API Endpoint"
-msgstr "OpenAI API 地址"
+msgid "API Key"
+msgstr "API 密钥"
 
-msgid "OpenAI API Key"
-msgstr "OpenAI API 密钥"
+msgid "App Key + Access Key"
+msgstr "App 密钥 + Access 密钥"
+
+msgid "Default (Auto)"
+msgstr "默认（自动）"
+
+msgid "接口地址"
+msgstr "接口地址"
+
+msgid "API 密钥"
+msgstr "API 密钥"
 
 msgid "语音模型"
 msgstr "语音模型"
 
-msgid "Output Language"
+msgid "输出语言"
 msgstr "输出语言"
 
-msgid "VAD Threshold (%)"
-msgstr "语音检测阈值 (%)"
-
-msgid "Silence Threshold (ms)"
-msgstr "静音检测阈值 (毫秒)"
+msgid "LLM 后处理"
+msgstr "LLM 后处理"
 
 msgid "后处理 LLM 模型"
 msgstr "后处理 LLM 模型"
@@ -33,8 +39,68 @@ msgstr "后处理 LLM 模型"
 msgid "后处理系统提示词"
 msgstr "后处理系统提示词"
 
+msgid "LLM 流式输出"
+msgstr "LLM 流式输出"
+
+msgid "无 LLM 时自动上屏"
+msgstr "无 LLM 时自动上屏"
+
+msgid "WebSocket 地址"
+msgstr "WebSocket 地址"
+
+msgid "认证模式"
+msgstr "认证模式"
+
+msgid "App 密钥"
+msgstr "App 密钥"
+
+msgid "Access 密钥"
+msgstr "Access 密钥"
+
+msgid "资源 ID"
+msgstr "资源 ID"
+
+msgid "音频分片 (毫秒)"
+msgstr "音频分片 (毫秒)"
+
+msgid "ITN 逆文本标准化"
+msgstr "ITN 逆文本标准化"
+
+msgid "标点符号"
+msgstr "标点符号"
+
+msgid "语义顺滑"
+msgstr "语义顺滑"
+
+msgid "二次识别"
+msgstr "二次识别"
+
+msgid "判停窗口 (毫秒)"
+msgstr "判停窗口 (毫秒)"
+
+msgid "当前 ASR 后端"
+msgstr "当前 ASR 后端"
+
+msgid "语音检测阈值 (%)"
+msgstr "语音检测阈值 (%)"
+
+msgid "静音检测阈值 (毫秒)"
+msgstr "静音检测阈值 (毫秒)"
+
 msgid "语音输入就绪"
 msgstr "语音输入就绪"
+
+msgid "启动帧数"
+msgstr "启动帧数"
+
+msgid "预卷时长 (毫秒)"
+msgstr "预卷时长 (毫秒)"
+
+msgid "最短语音时长 (毫秒)"
+msgstr "最短语音时长 (毫秒)"
+
+msgid "最长语音时长 (毫秒)"
+msgstr "最长语音时长 (毫秒)"
 
 msgid "修正中..."
 msgstr "修正中..."
@@ -42,11 +108,5 @@ msgstr "修正中..."
 msgid "正在录音中..."
 msgstr "正在录音中..."
 
-msgid "LLM Post-processing"
-msgstr "LLM 后处理"
-
-msgid "LLM Streaming"
-msgstr "LLM 流式输出"
-
-msgid "Auto-Commit when no LLM"
-msgstr "无 LLM 时自动上屏"
+msgid "Voice Input"
+msgstr "语音"

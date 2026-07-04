@@ -15,7 +15,8 @@ using namespace std::chrono_literals;
 namespace fcitx {
 
 Pipeline::Pipeline()
-    : vadWorker_(std::make_unique<VADWorker>()) {}
+    : vadWorker_(std::make_unique<VADWorker>())
+    , reaper_(std::make_unique<SessionReaper>()) {}
 
 Pipeline::~Pipeline() {
     Abort();
@@ -30,14 +31,22 @@ void Pipeline::Init(const VoiceInputConfig& config) {
     vadConfig.silenceThreshold =
         vadConfig.speechThreshold * 0.7f;
     vadConfig.endSilenceMs = config_.silenceThresholdMs.value();
+    vadConfig.startFrames = config_.startFrames.value();
+    vadConfig.preRollMs = config_.preRollMs.value();
+    vadConfig.minSpeechMs = config_.minSpeechMs.value();
+    vadConfig.maxSpeechMs = config_.maxSpeechMs.value();
 
     FCITX_INFO() << "[voice-input] Init:"
                  << " vadThreshold=" << config_.vadThreshold.value()
-                 << "% silenceThresholdMs=" << config_.silenceThresholdMs.value();
+                 << "% silenceThresholdMs=" << config_.silenceThresholdMs.value()
+                 << " startFrames=" << config_.startFrames.value()
+                 << " preRollMs=" << config_.preRollMs.value()
+                 << " minSpeechMs=" << config_.minSpeechMs.value()
+                 << " maxSpeechMs=" << config_.maxSpeechMs.value();
 
     vadWorker_->SetConfig(vadConfig);
     vadWorker_->SetFrameQueue(&frameQueue_);
-    vadWorker_->SetUtteranceQueue(&utteranceQueue_);
+    vadWorker_->SetSpeechEventQueue(&speechEventQueue_);
 }
 
 void Pipeline::SetConfig(const VoiceInputConfig& config) {
@@ -49,6 +58,10 @@ void Pipeline::SetConfig(const VoiceInputConfig& config) {
     vadConfig.silenceThreshold =
         vadConfig.speechThreshold * 0.7f;
     vadConfig.endSilenceMs = config_.silenceThresholdMs.value();
+    vadConfig.startFrames = config_.startFrames.value();
+    vadConfig.preRollMs = config_.preRollMs.value();
+    vadConfig.minSpeechMs = config_.minSpeechMs.value();
+    vadConfig.maxSpeechMs = config_.maxSpeechMs.value();
     vadWorker_->SetConfig(vadConfig);
 }
 
@@ -60,25 +73,26 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
     asrEngine_ = std::move(engine);
     if (asrEngine_) {
         asrEngine_->SetResultCallback(
-            [this](const std::string& text, bool isFinal) {
-                if (isFinal && !text.empty()) {
-                    uint64_t gen = generation_.load();
+            [this](const std::string& text, bool isFinal, uint64_t sid) {
+                uint64_t gen = generation_.load();
+
+                if (isFinal) {
+                    if (text.empty()) return;
+
                     uint64_t uid = ++utteranceCounter_;
 
-                    // Drain stale LLM-refined leftovers from previous utterance
                     AsrResult stale;
                     while (resultQueue_.TryPop(stale)) {
                         if (stale.isLLMRefined) {
                             FCITX_DEBUG() << "[voice-input] Drained stale LLM result: "
-                                         << "uid=" << stale.utteranceId
-                                         << " expect=" << uid;
+                                         << "uid=" << stale.utteranceId;
                         }
                     }
 
-                    // Push raw ASR result immediately
                     AsrResult rawResult;
                     rawResult.text = text;
                     rawResult.generation = gen;
+                    rawResult.sessionId = sid;
                     rawResult.utteranceId = uid;
                     rawResult.isLLMRefined = false;
                     FCITX_INFO() << "[voice-input] ASR raw: uid=" << uid
@@ -89,42 +103,33 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                         resultCb_(text);
                     }
 
-                    // If LLM is configured, process and push refined result
                     if (llmClient_) {
                         FCITX_DEBUG() << "[voice-input] LLM refine started"
-                                      << " uid=" << uid << " gen=" << gen
-                                      << " stream=" << llmStream_;
+                                     << " uid=" << uid << " gen=" << gen
+                                     << " stream=" << llmStream_;
                         if (llmStream_) {
                             llmClient_->ProcessStream(text,
-                                // onToken: push partial refined result
-                                [this, uid, gen](const std::string& partial) {
+                                [this, uid, gen, sid](const std::string& partial) {
                                     AsrResult partialResult;
                                     partialResult.text = partial;
                                     partialResult.generation = gen;
+                                    partialResult.sessionId = sid;
                                     partialResult.utteranceId = uid;
                                     partialResult.isLLMRefined = true;
                                     partialResult.isPartial = true;
-                                    FCITX_DEBUG() << "[voice-input] LLM partial: uid="
-                                                  << uid << " text=\"" << partial << "\"";
                                     resultQueue_.Push(std::move(partialResult));
-                                    if (resultCb_) {
-                                        resultCb_(partial);
-                                    }
+                                    if (resultCb_) resultCb_(partial);
                                 },
-                                // onComplete: push final refined result
-                                [this, uid, gen](const std::string& fullText) {
+                                [this, uid, gen, sid](const std::string& fullText) {
                                     AsrResult finalResult;
                                     finalResult.text = fullText;
                                     finalResult.generation = gen;
+                                    finalResult.sessionId = sid;
                                     finalResult.utteranceId = uid;
                                     finalResult.isLLMRefined = true;
                                     finalResult.isPartial = false;
-                                    FCITX_INFO() << "[voice-input] LLM final: uid="
-                                                 << uid << " text=\"" << fullText << "\"";
                                     resultQueue_.Push(std::move(finalResult));
-                                    if (resultCb_) {
-                                        resultCb_(fullText);
-                                    }
+                                    if (resultCb_) resultCb_(fullText);
                                 });
                         } else {
                             std::string processed = llmClient_->Process(text);
@@ -132,21 +137,28 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                                 AsrResult refinedResult;
                                 refinedResult.text = processed;
                                 refinedResult.generation = gen;
+                                refinedResult.sessionId = sid;
                                 refinedResult.utteranceId = uid;
                                 refinedResult.isLLMRefined = true;
-                                FCITX_INFO() << "[voice-input] LLM refined push: uid="
-                                             << uid << " text=\"" << processed << "\"";
                                 resultQueue_.Push(std::move(refinedResult));
-                                if (resultCb_) {
-                                    resultCb_(processed);
-                                }
-                            } else {
-                                FCITX_DEBUG() << "[voice-input] LLM refine skipped"
-                                              << " (empty result) uid=" << uid;
+                                if (resultCb_) resultCb_(processed);
                             }
                         }
                     }
+                } else if (!text.empty()) {
+                    AsrResult partial;
+                    partial.text = text;
+                    partial.generation = gen;
+                    partial.sessionId = sid;
+                    partial.isLLMRefined = false;
+                    partial.isPartial = true;
+                    resultQueue_.Push(std::move(partial));
+                    if (resultCb_) resultCb_(text);
                 }
+            });
+        asrEngine_->SetErrorCallback(
+            [this](const std::string& error) {
+                FCITX_ERROR() << "[voice-input] ASR error: " << error;
             });
     }
 }
@@ -176,7 +188,7 @@ void Pipeline::Start() {
     vadWorker_->Start();
 
     running_ = true;
-    asrThread_ = std::make_unique<std::thread>(&Pipeline::AsrWorkerLoop, this);
+    asrThread_ = std::make_unique<std::thread>(&Pipeline::AsrDispatcherLoop, this);
 
     FCITX_INFO() << "[voice-input] Pipeline started";
 }
@@ -197,15 +209,26 @@ void Pipeline::Stop() {
         asrThread_.reset();
     }
 
-    if (asrEngine_) {
-        asrEngine_->Stop();
+    // Cancel active session
+    if (activeSession_) {
+        activeSession_->Cancel();
+        reaper_->Add(std::move(activeSession_));
+        activeSessionId_ = 0;
     }
+
+    // Cancel all engine sessions
+    if (asrEngine_) {
+        asrEngine_->CancelAllSessions();
+    }
+
+    // Drain all reaper sessions
+    reaper_->DrainAll();
 
     if (capture_) {
         capture_.reset();
     }
 
-    // Drain remaining results (commit via resultCb_ if still valid)
+    // Drain remaining results
     AsrResult r;
     while (resultQueue_.TryPop(r)) {}
 
@@ -227,21 +250,28 @@ void Pipeline::Abort() {
         asrThread_.reset();
     }
 
-    if (asrEngine_) {
-        asrEngine_->Stop();
+    if (activeSession_) {
+        activeSession_->Cancel();
+        reaper_->Add(std::move(activeSession_));
+        activeSessionId_ = 0;
     }
+
+    if (asrEngine_) {
+        asrEngine_->CancelAllSessions();
+    }
+
+    reaper_->DrainAll();
 
     // Clear queues
     AudioFrame f;
     while (frameQueue_.TryPop(f)) {}
-    Utterance u;
-    while (utteranceQueue_.TryPop(u)) {}
+    SpeechEvent se;
+    while (speechEventQueue_.TryPop(se)) {}
     AsrResult r;
     while (resultQueue_.TryPop(r)) {}
 }
 
 bool Pipeline::StartCapture() {
-    // PulseAudio first (also works with pipewire-pulse)
     capture_ = std::make_unique<PulseAudioCapture>();
     capture_->SetFrameQueue(&frameQueue_);
 
@@ -250,7 +280,6 @@ bool Pipeline::StartCapture() {
         return true;
     }
 
-    // Fallback to native PipeWire
     FCITX_WARN() << "[voice-input] PulseAudio failed, falling back to PipeWire";
     capture_ = std::make_unique<PipeWireCapture>();
     capture_->SetFrameQueue(&frameQueue_);
@@ -265,30 +294,77 @@ bool Pipeline::StartCapture() {
     return false;
 }
 
-void Pipeline::AsrWorkerLoop() {
+void Pipeline::AsrDispatcherLoop() {
     while (running_) {
-        Utterance u;
-        if (!utteranceQueue_.TryPop(u)) {
-            std::this_thread::sleep_for(10ms);
+        SpeechEvent ev;
+        if (!speechEventQueue_.TryPop(ev)) {
+            std::this_thread::sleep_for(5ms);
             continue;
         }
 
-        if (u.pcm.empty() || !asrEngine_) continue;
+        switch (ev.type) {
+        case SpeechEventType::Begin:
+            if (!asrEngine_) break;
+            // Cancel current session if still active
+            if (activeSession_) {
+                activeSession_->Cancel();
+                reaper_->Add(std::move(activeSession_));
+                activeSessionId_ = 0;
+            }
+            // Start new session
+            activeSession_ = asrEngine_->StartSession();
+            if (activeSession_) {
+                activeSessionId_ = activeSession_->GetState()->sessionId;
+                FCITX_DEBUG() << "[voice-input:asr] Begin -> session="
+                             << activeSessionId_;
+            }
+            pendingAsrAudio_.clear();
+            break;
 
-        float durSec = static_cast<float>(u.pcm.size()) / kSampleRate;
-        FCITX_INFO() << "[voice-input:asr] Processing utterance: "
-                     << u.pcm.size() << " samples (" << durSec << "s)";
+        case SpeechEventType::Audio:
+            if (!activeSession_ || ev.pcm.empty()) break;
 
-        // Convert int16 → float32
-        std::vector<float> floatPcm(u.pcm.size());
-        static constexpr float kInt16ToFloat = 1.0f / 32768.0f;
-        for (size_t i = 0; i < u.pcm.size(); ++i) {
-            floatPcm[i] = static_cast<float>(u.pcm[i]) * kInt16ToFloat;
+            pendingAsrAudio_.reserve(pendingAsrAudio_.size() + ev.pcm.size());
+            for (int16_t sample : ev.pcm) {
+                pendingAsrAudio_.push_back(
+                    static_cast<float>(sample) * (1.0f / 32768.0f));
+            }
+
+            // Batch to ~200ms chunks
+            static constexpr int kChunkSamples = kSampleRate * 200 / 1000;
+            if (pendingAsrAudio_.size() >= static_cast<size_t>(kChunkSamples)) {
+                activeSession_->FeedAudio(
+                    pendingAsrAudio_.data(), pendingAsrAudio_.size());
+                pendingAsrAudio_.clear();
+            }
+            break;
+
+        case SpeechEventType::End:
+            if (activeSession_) {
+                if (!pendingAsrAudio_.empty()) {
+                    activeSession_->FeedAudio(
+                        pendingAsrAudio_.data(), pendingAsrAudio_.size());
+                    pendingAsrAudio_.clear();
+                }
+                activeSession_->End();
+                FCITX_DEBUG() << "[voice-input:asr] End -> session="
+                             << activeSessionId_;
+                reaper_->Add(std::move(activeSession_));
+                activeSessionId_ = 0;
+            }
+            break;
+
+        case SpeechEventType::Cancel:
+            if (activeSession_) {
+                activeSession_->Cancel();
+                FCITX_DEBUG() << "[voice-input:asr] Cancel -> session="
+                             << activeSessionId_;
+                reaper_->Add(std::move(activeSession_));
+                activeSessionId_ = 0;
+            }
+            pendingAsrAudio_.clear();
+            break;
         }
-
-        asrEngine_->Start();
-        asrEngine_->FeedAudio(floatPcm.data(), floatPcm.size());
-        asrEngine_->Stop();
     }
 }
 
