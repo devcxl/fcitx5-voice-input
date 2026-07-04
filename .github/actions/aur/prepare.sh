@@ -4,11 +4,12 @@ set -euo pipefail
 PKG="fcitx5-voice-input"
 TAG="${GITHUB_REF_NAME}"
 
-# Derive version: use tag if it's a release tag, otherwise use SHA
+# Derive version: use tag if it's a release tag, otherwise use git SHA.
+# pkgver only allows: alphanumeric, period, underscore, plus.
 if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     VER="${TAG#v}"
 else
-    VER="0.0.0-$(git rev-parse --short HEAD)"
+    VER="0.0.0+r$(git rev-parse --short HEAD)"
 fi
 
 mkdir -p dist/aur/src
