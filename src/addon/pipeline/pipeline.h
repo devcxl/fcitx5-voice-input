@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "config/voiceinput-config.h"
@@ -66,6 +67,7 @@ private:
     std::unique_ptr<AsrEngine> asrEngine_;
     std::shared_ptr<AsrSession> activeSession_;
     uint64_t activeSessionId_{0};
+    std::unordered_map<uint64_t, uint64_t> sessionGenerationMap_;
     std::unique_ptr<SessionReaper> reaper_;
 
     // ASR streaming batching

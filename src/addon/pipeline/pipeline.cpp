@@ -74,10 +74,16 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
     if (asrEngine_) {
         asrEngine_->SetResultCallback(
             [this](const std::string& text, bool isFinal, uint64_t sid) {
-                uint64_t gen = generation_.load();
+                // Look up generation captured at session start
+                auto it = sessionGenerationMap_.find(sid);
+                if (it == sessionGenerationMap_.end()) return;
+                uint64_t gen = it->second;
 
                 if (isFinal) {
-                    if (text.empty()) return;
+                    if (text.empty()) {
+                        sessionGenerationMap_.erase(sid);
+                        return;
+                    }
 
                     uint64_t uid = ++utteranceCounter_;
 
@@ -145,6 +151,7 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                             }
                         }
                     }
+                    sessionGenerationMap_.erase(sid);
                 } else if (!text.empty()) {
                     AsrResult partial;
                     partial.text = text;
@@ -228,6 +235,7 @@ void Pipeline::Stop() {
     // Drain remaining results
     AsrResult r;
     while (resultQueue_.TryPop(r)) {}
+    sessionGenerationMap_.clear();
 
     FCITX_INFO() << "[voice-input] Pipeline stopped";
 }
@@ -302,6 +310,7 @@ void Pipeline::AsrDispatcherLoop() {
             if (!asrEngine_) break;
             // Cancel current session if still active
             if (activeSession_) {
+                sessionGenerationMap_.erase(activeSessionId_);
                 activeSession_->Cancel();
                 reaper_->Add(std::move(activeSession_));
                 activeSessionId_ = 0;
@@ -310,8 +319,10 @@ void Pipeline::AsrDispatcherLoop() {
             activeSession_ = asrEngine_->StartSession();
             if (activeSession_) {
                 activeSessionId_ = activeSession_->GetState()->sessionId;
+                sessionGenerationMap_[activeSessionId_] = generation_.load();
                 FCITX_DEBUG() << "[voice-input:asr] Begin -> session="
-                             << activeSessionId_;
+                             << activeSessionId_
+                             << " gen=" << sessionGenerationMap_[activeSessionId_];
             }
             pendingAsrAudio_.clear();
             break;
