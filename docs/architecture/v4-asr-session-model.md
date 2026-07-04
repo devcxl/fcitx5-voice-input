@@ -1,6 +1,7 @@
-# fcitx5-voice-input 架构设计 v4
+# fcitx5-voice-input 架构设计 v4.1
 
-> **状态:** 提案文档。对应代码位于 feature/volcengine-streaming-asr 分支。
+> **状态:** 提案文档（经审查修订版）。
+> **审查:** docs/reviews/2026-07-05-architecture-review.md
 > **上一版:** [ARCHITECTURE.md](/ARCHITECTURE.md) (v3)
 
 ---
@@ -9,10 +10,11 @@
 
 | 原则 | 含义 |
 |------|------|
-| **Pipeline 从不阻塞** | 所有 I/O（HTTP/WS/本地推理）跑在引擎自有线程上，Pipeline 是纯事件分发器 |
-| **会话即对象** | 每句语音是一个 `AsrSession`，有明确的创建/Feed/结束生命周期，不跟引擎绑定 |
-| **接口表达语义，不表达协议** | `AsrSession` 只有 `FeedAudio`/`End`/`Cancel`，不知道什么是 WS、HTTP、本地解码 |
-| **有限资源边界** | 所有异步线程有硬超时保障，不会变成僵尸 |
+| **Pipeline 从不阻塞** | 所有 I/O 跑在引擎自有线程上，Pipeline 只做事件分发 |
+| **会话即对象** | 每句语音是一个 `AsrSession`，有明确生命周期，不跟引擎绑死 |
+| **接口表达语义，不表达协议** | `AsrSession` 只有 `FeedAudio`/`End`/`Cancel`，不知道 WS、HTTP、本地解码 |
+| **有限资源边界** | 线程有上限 + 超时兜底，不出现僵尸线程 |
+| **所有权清晰** | Pipeline 用 `shared_ptr` 持有 Session，Engine 用 `weak_ptr` 追踪，绝不悬空 |
 
 ---
 
@@ -24,7 +26,6 @@
 v3（当前）:
 ┌────────────────────────────────────────────────────────────────────┐
 │ ASR Worker Loop (单线程)                                            │
-│                                                                    │
 │  while running:                                                    │
 │    event = speechEventQueue_.Pop()                                 │
 │    switch event.type:                                              │
@@ -46,166 +47,60 @@ v3（当前）:
 │                                ←─ join 返回，才能处理下一句       │
 └────────────────────────────────────────────────────────────────────┘
 
-v4（提案）:
+v4.1（提案）:
 ┌────────────────────────────────────────────────────────────────────┐
 │ ASR Event Dispatcher (单线程，永不阻塞)                             │
-│                                                                    │
 │  while running:                                                    │
 │    event = speechEventQueue_.Pop()                                 │
 │    switch event.type:                                              │
 │      Begin:                                                        │
+│        if activeSession_:                                          │
+│          activeSession_->Cancel()                                  │
+│          drainingSessions_.push(std::move(activeSession_))         │
 │        activeSession_ = asrEngine_->StartSession()                 │
-│        │  (内部 cancel 旧会话 + 创建新 Session，立即返回)          │
-│        ▼                                                           │
+│        // 立即返回，新 WS 握手在后台                                │
 │      Audio:                                                        │
 │        if activeSession_:                                          │
-│          activeSession_->FeedAudio(data)  ──→ 入队引擎内部队列     │
+│          activeSession_->FeedAudio(data)                           │
 │      End:                                                          │
 │        if activeSession_:                                          │
-│          activeSession_->End()          ──→ 设标志+push空块        │
-│          activeSession_.reset()                                    │
-│          │   (旧线程后台自行处理 WS 收尾 + resultCb_ 回调)         │
-│          ▼                                                         │
+│          activeSession_->End()    // 立即返回                       │
+│          drainingSessions_.push(std::move(activeSession_))         │
 │      Cancel:                                                       │
 │        if activeSession_:                                          │
-│          activeSession_->Cancel()       ──→ 设 cancelled_          │
-│          activeSession_.reset()                                    │
+│          activeSession_->Cancel()  // 立即返回                      │
+│          drainingSessions_.push(std::move(activeSession_))         │
 │                                                                    │
-│  ←─ dispatch 线程永远不 join，下一秒事件来时线程空闲                │
+│  // drainingSessions_ 由 SessionReaper 线程处理: join + 清理       │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-### ASR 引擎接口对比
+### 生命周期对比
 
 ```
-v3: AsrEngine 同时承担工厂 + 会话职责
-┌──────────────────────────────────────────────┐
-│                  AsrEngine                    │
-│  Start() → FeedAudio() → Stop()              │
-│  ↑              ↑              ↑              │
-│  │              │              └ 等待 join     │
-│  │              └ 入队列（非阻塞）              │
-│  └ 创建线程（非阻塞）                           │
-│  一个对象 = 一个会话 = 一个 WS 连接            │
-│  无法复用连接                                  │
-└──────────────────────────────────────────────┘
+v3:
+Pipeline ─→ unique_ptr<AsrEngine>
+                │
+                └─ Start() → 创建线程
+                   FeedAudio()
+                   Stop() → join() → 线程结束     ← 同步等
+                              │
+                              └ 线程结束后 Pipeline 才能继续
 
-v4: 工厂与会话分离
-┌──────────────────────────────────────────────┐
-│                  AsrEngine                    │  ← 全局单例
-│  Init(config)                                 │
-│  StartSession() → unique_ptr<AsrSession>      │
-│  CancelSession()                              │
-│                                      │       │
-│                  ┌───────────────────┘       │
-│                  ▼                           │
-│  ┌─────────────────────────────┐             │
-│  │      ConnectionPool         │             │
-│  │  ┌─────┐  ┌─────┐  ┌─────┐│             │
-│  │  │Conn1│  │Conn2│  │Conn3││             │
-│  │  └─────┘  └─────┘  └─────┘│             │
-│  │  空闲超时 3s → 自动关闭    │             │
-│  └─────────────────────────────┘             │
-│              │                               │
-│              ▼                               │
-│  ┌──────────────────────────────┐            │
-│  │         AsrSession           │            │  ← 每句话一个
-│  │  FeedAudio(pcm) → 入队列      │            │
-│  │  End() → 发结束帧 + 读结果    │            │
-│  │  Cancel() → 设取消标志        │            │
-│  │  析构时归还连接到池子         │            │
-│  └──────────────────────────────┘            │
-└──────────────────────────────────────────────┘
+v4.1:
+Pipeline ─→ shared_ptr<AsrSession> activeSession_
+                │
+                ├─ StartSession() → shared_ptr → 新线程跑
+                ├─ FeedAudio() → 入队
+                ├─ End() → 设标志，立即回 ← 不等
+                ├─ Cancel() → 设标志，立即回  ← 不等
+                │
+                └ SessionReaper → join + 析构     ← 后台等
+
+Engine ─→ weak_ptr<AsrSession> 追踪活跃 Session
+                │
+                └─ CancelAllSessions(): 遍历 weak_ptr.lock() → Cancel()
 ```
-
-### 连续说话场景对比
-
-```
-v3（阻塞）:
-时间线
-t=0  VAD Begin → asr->Start() → WS 握手
-t=1  VAD Audio → FeedAudio → WS 发音频
-t=3  VAD End   → asr->Stop() → join() ← 开始阻塞
-                                          │
-t=3.1  VAD Begin (第二句)                  │
-        speechEventQueue_.Push(Begin)      │
-        ↑ VAD 线程推入队列 OK               │
-        ↓ ASR Worker 线程卡在 join()       │
-        Begin 在队列里等着没人消费          │
-                                          │
-t=8  WS 最终响应到达                       │
-     join() 返回 ← 阻塞 5s                │
-     ASR Worker 终于空闲                   │
-     → pop 第二句的 Begin                  │
-     → 用户体验:"我第二句话没识别到"        │
-
-v4（非阻塞）:
-时间线
-t=0  VAD Begin → asr->StartSession() → WS 握手
-t=1  VAD Audio → session->FeedAudio() → WS 发音频
-t=3  VAD End   → session->End() + session.reset()
-                ↑ 立即返回，dispatch 线程空闲
-t=3.1  VAD Begin (第二句)
-        asr->StartSession()
-        │ 内部 cancel 旧 WS 会话（设 cancelled_）
-        │ 创建新 Session → 新 WS 握手
-        │ 立即返回 dispatch 线程
-        │
-t=4  VAD Audio → 第二句 FeedAudio
-t=5  VAD End → 第二句 End
-     旧 WS 线程:
-       检测到 cancelled_ → 关闭连接 → 线程退出
-     新 WS 线程:
-       发送最终结果 → resultCb_ → commit
-```
-
-### 资源利用率对比
-
-| 维度 | v3 | v4 |
-|------|----|----|
-| Pipeline 线程阻塞 | 是，每句 join 等 WS | 否，End() 立即返回 |
-| WS 连接复用时 | 不可复用，每句新建 | 可复用，连接池+空闲超时 |
-| 线程峰值 | 2（1 pipeline + 1 WS） | 可控（连接池大小） |
-| 线程泄漏风险 | 无（join 保证结束） | 有（依赖超时兜底），但可观测 |
-| 队列背压 | 无界 | 有界 + 丢弃策略 |
-| 新增后端成本 | 改 AsrEngine 子类 + 改 Pipeline 逻辑 | 只加 AsrSession 子类 + AsrEngine 子类，Pipeline 零改动 |
-
----
-
-## 整体架构
-
-```
-Fcitx5 进程 (voice-input-addon.so)
-│
-├── [主线程] Fcitx5 事件循环
-│   ├── activate/deactivate → pipeline.Start/Stop
-│   ├── PollResults → commitString
-│   └── setConfig → 热更新
-│
-├── [捕获线程] PulseAudio/PipeWire → AudioFrame → FrameQueue
-│
-├── [VAD 线程] FrameQueue → Silero ONNX → SpeechEvent (Begin/Audio/End/Cancel)
-│
-├── [ASR 分发线程] SpeechEvent → AsrSession (非阻塞)
-│   ├── Begin   → asrEngine->StartSession() → 返回 unique_ptr<AsrSession>
-│   ├── Audio   → session->FeedAudio(pcm, frames)
-│   ├── End     → session->End()
-│   └── Cancel  → session->Cancel()
-│
-└── [ASR 引擎自有线程] (每句语音可能有独立线程)
-    ├── OpenAI:  HTTP POST worker (积累→发送→等待→回调)
-    ├── Volcengine: WS worker (握手→流式发送→接收→回调)
-    └── 未来: 本地解码器线程 / 其他 WS 客户端线程
-```
-
-**关键变化（对比 v3）：**
-
-| v3 | v4 |
-|----|----|
-| `AsrEngine` + `Start/FeedAudio/Stop` 绑死在一起 | `AsrEngine` 工厂 + `AsrSession` 独立会话对象 |
-| Pipeline 阻塞在 `Stop()` → `join()` | Pipeline 只调 `End()`/`Cancel()`，永不阻塞 |
-| 线程生命周期混合管理（Pipeline 创建、引擎 join） | 每个 `AsrSession` 自管理线程，超时兜底 |
-| 队列无界 | 队列有界（待实现） |
 
 ---
 
@@ -214,51 +109,59 @@ Fcitx5 进程 (voice-input-addon.so)
 ### AsrSession — 一句话的抽象
 
 ```cpp
-/// 一次语音识别会话，对应 VAD 检测到的一句话。
-/// FeedAudio / End / Cancel 必须线程安全，可从 Pipeline 分发线程调用。
-class AsrSession {
+/// 一次语音识别会话。FeedAudio / End / Cancel 必须线程安全。
+/// 实现必须启用 enable_shared_from_this，worker 线程捕获 shared_ptr<State>，
+/// 绝不捕获裸 this。
+class AsrSession : public std::enable_shared_from_this<AsrSession> {
 public:
-    virtual ~AsrSession() = default;
+    struct State {
+        std::atomic<bool> cancelled{false};
+        std::atomic<bool> finished{false};
+        uint64_t sessionId{0};
+    };
 
-    /// 送入音频数据（16kHz mono F32）。
-    /// 非阻塞：内部缓冲或推入队列，异步处理。
+    virtual ~AsrSession();
+
     virtual void FeedAudio(const float* pcm, size_t frames) = 0;
 
-    /// 标记语音结束。永不阻塞。
-    /// 引擎内部启动最终识别流程，完成后通过 resultCb_ 回调。
+    /// 标记语音结束，启动最终识别流程。永不阻塞。
+    /// 结果通过 resultCb_ 回调，回调参数携带 sessionId。
     virtual void End() = 0;
 
-    /// 强制取消当前会话。永不阻塞。
-    /// 用于：新话语开始时旧会话未结束 / deactivate / backend 切换。
-    /// 引擎需保证有限时间内（CURLOPT_TIMEOUT）线程自行退出。
+    /// 强制取消。永不阻塞。
+    /// 设 cancelled 标志 + 主动 close socket + 设短超时轮询。
+    /// 线程在有限时间内自行退出，由 Reaper 线程 join。
     virtual void Cancel() = 0;
+
+    /// 获取共享状态（用于 Engine 追踪 + Reaper 判断）
+    std::shared_ptr<State> GetState() const { return state_; }
+
+    /// 用于 Reaper 线程 join
+    virtual void JoinWithTimeout(std::chrono::milliseconds timeout) = 0;
+
+protected:
+    std::shared_ptr<State> state_ = std::make_shared<State>();
+    ResultCallback resultCb_;
 };
 ```
 
 ### AsrEngine — 会话工厂
 
 ```cpp
-/// ASR 后端引擎，全局单例（由 Pipeline 持有）。
-/// 生命周期：Init → (StartSession / CancelSession)* → 析构。
 class AsrEngine {
 public:
-    struct Config {
-        std::string modelName;
-        std::string apiEndpoint;
-        std::string apiKey;
-        // ... 各后端私有配置 ...
-    };
+    virtual ~AsrEngine();
 
-    /// 初始化引擎，加载配置。可多次调用以热更新。
-    /// 调用时若有活跃会话，应先 CancelSession。
     virtual bool Init(const Config& config) = 0;
 
-    /// 创建新的识别会话。返回的 Session 处于"待 Feed 音频"状态。
-    /// 若有未结束的旧会话，内部自动 Cancel（不阻塞调用方）。
-    virtual std::unique_ptr<AsrSession> StartSession() = 0;
+    /// 创建新会话。返回 shared_ptr，内部用 weak_ptr 追踪。
+    /// 若当前有活跃会话未结束，内部自动 Cancel（不阻塞）。
+    /// 超过 maxActiveSessions 限制时，取消最旧会话。
+    virtual std::shared_ptr<AsrSession> StartSession() = 0;
 
-    /// 取消所有活跃会话。用于 deactivate / backend 切换。
-    virtual void CancelSession() = 0;
+    /// 取消所有由本 Engine 创建的活跃 Session。
+    /// 用于 deactivate / backend 切换 / 配置热更新前。
+    virtual void CancelAllSessions() = 0;
 
     virtual const char* Name() const = 0;
 
@@ -268,42 +171,38 @@ public:
 protected:
     ResultCallback resultCb_;
     ErrorCallback errorCb_;
+
+    std::mutex sessionsMutex_;
+    std::unordered_map<uint64_t, std::weak_ptr<AsrSession>> sessions_;
+    uint64_t nextSessionId_{1};
+    size_t maxActiveSessions_{3};
 };
 ```
 
-### Pipeline — 纯事件分发器
+### SessionReaper — 会话回收器
 
-Pipeline 不再创建/管理 ASR 线程，只做事件路由：
+```cpp
+/// 独立线程，负责 join 已 End/Cancel 的 Session，释放资源。
+/// 避免 Pipeline 线程被阻塞，也避免 main 线程析构时 detach。
+///
+/// Pipeline 将已结束的 Session 移入 drainingSessions_，
+/// Reaper 在其后台线程中 JoinWithTimeout，完成后移除。
+class SessionReaper {
+public:
+    SessionReaper();
+    ~SessionReaper();
 
-```
-while (running_) {
-    SpeechEvent ev = speechEventQueue_.Pop();  // 阻塞等待
-    switch (ev.type) {
-    case Begin:
-        // 旧会话自动取消（后端内部处理）
-        activeSession_ = asrEngine_->StartSession();
-        break;
+    void Add(std::shared_ptr<AsrSession> session);
 
-    case Audio:
-        if (activeSession_)
-            activeSession_->FeedAudio(ev.pcm.data(), ev.pcm.size());
-        break;
+    /// 回收所有剩余 Session（析构时调用）
+    void DrainAll();
 
-    case End:
-        if (activeSession_) {
-            activeSession_->End();       // 永不阻塞
-            activeSession_.reset();      // 释放句柄，旧线程后台自行结束
-        }
-        break;
-
-    case Cancel:
-        if (activeSession_) {
-            activeSession_->Cancel();    // 永不阻塞
-            activeSession_.reset();
-        }
-        break;
-    }
-}
+private:
+    void ReaperLoop();
+    std::thread thread_;
+    ThreadSafeQueue<std::shared_ptr<AsrSession>> reapQueue_;
+    std::atomic<bool> running_{false};
+};
 ```
 
 ---
@@ -311,46 +210,63 @@ while (running_) {
 ## 线程模型
 
 ```
-                  ┌──────────────────────┐
-                  │    Pipeline 线程      │  ← 只做事件分发，从不 I/O
-                  │  (ASR Event Loop)    │
-                  └──────┬───────┬───────┘
-                         │       │
-                  Begin/End     Audio
-                         │       │
-                         ▼       ▼
-                  ┌──────────────────┐
-                  │  AsrSession 实现  │  ← 引擎自有线程
-                  │  (HTTP/WS/本地)   │
-                  └────────┬─────────┘
-                           │
-                     回调 resultCb_
-                           │
-                           ▼
-                  ┌──────────────────┐
-                  │   ResultQueue    │  → PollResults → commitString
-                  └──────────────────┘
+主线程 (Fcitx5 事件循环)
+  │  PollResults → commitString (带 sessionId 过滤)
+  │
+事件分发线程 (ASR Event Dispatcher)
+  │  消费 SpeechEvent → 调用 Session 方法（永不 I/O）
+  │
+Session 线程 (每个 Session 一个)
+  │  HTTP/WS I/O，完成后 resultCb_
+  │
+SessionReaper 线程
+  │  后台 join 已结束的 Session，清理资源
+  │
+  └─ 所有线程都是有限生命周期 + 超时兜底
 ```
 
-### 线程保障
+### 超时保障
 
-| 线程 | 功能 | 阻塞点 |
-|------|------|--------|
-| 主线程 | Fcitx5 事件循环、PollResults | 无 I/O 阻塞 |
-| 捕获线程 | 读取音频硬件 | PulseAudio `pa_simple_read` / PipeWire 回调 |
-| VAD 线程 | Silero ONNX 推理 | ONNX Runtime `Run()`（<1ms/帧） |
-| ASR 分发线程 | 消费 SpeechEvent，调用 Session 方法 | `speechEventQueue_.Pop()` 等待 |
-| Session 线程 | HTTP/WS I/O、本地推理 | `curl_easy_perform` / `ws_recv` |
+| 后端 | 参数 | 确保 |
+|------|------|------|
+| OpenAI | `CURLOPT_TIMEOUT=10s`, `CONNECTTIMEOUT=5s` | 网络请求 10s 内结束 |
+| Volcengine | `CURLOPT_TIMEOUT=15s`, `CONNECTTIMEOUT=5s`, recv 轮询 ≤500ms | 线程 15s 内退出 |
+| Cancel | 主动 `curl_easy_cleanup` + close socket | 不再阻塞在 recv |
 
-### 超时保障（必须实现）
+### 线程上限
 
-每个 `AsrSession` 的自有线程必须设置硬超时，确保 `Cancel()` 后有限退出：
+| 类型 | 上限 | 超限策略 |
+|------|------|----------|
+| 活跃 Session | 3 | 取消最旧的 Session |
+| draining Session | 8 | 阻塞 Pipeline（罕见，仅 Reaper 积压时） |
 
-| 后端 | 超时参数 |
-|------|----------|
-| OpenAI | `CURLOPT_TIMEOUT=10s`, `CURLOPT_CONNECTTIMEOUT=5s` |
-| Volcengine | `CURLOPT_TIMEOUT=15s`, `CURLOPT_CONNECTTIMEOUT=5s`, recv 内循环 1s 超时 |
-| 本地 ASR | 每帧推理 <10ms，无需额外超时 |
+---
+
+## 结果过滤
+
+每个 `AsrResult` 携带 `sessionId`，Pipeline 在 commit 前按 session 过滤：
+
+```cpp
+struct AsrResult {
+    uint64_t generation;      // 同 v3，过滤 activate/deactivate 过期
+    uint64_t sessionId;       // 新增，过滤 cancelled session 的残留结果
+    uint64_t utteranceId;
+    std::string text;
+    bool isLLMRefined;
+    bool isPartial;
+};
+```
+
+commit 逻辑：
+
+```cpp
+// 只有当前 activeSession_ 对应 sessionId 的结果才 commit
+if (result.sessionId != activeSessionId_) {
+    FCITX_DEBUG() << "Dropped stale result from session "
+                  << result.sessionId;
+    return;
+}
+```
 
 ---
 
@@ -361,117 +277,146 @@ Capture → [FrameQueue] → VAD → [SpeechEventQueue] → Pipeline → [Result
           Bounded(512)          Bounded(64)                     Bounded(128)
 ```
 
-所有队列有界，超载时丢弃最旧数据：
+### SpeechEventQueue 满时策略
 
-| 队列 | 容量 | 满时策略 | 理由 |
-|------|------|----------|------|
-| `FrameQueue` | 512 帧 (16s) | 丢弃最旧 | 音频实时，旧帧无意义 |
-| `SpeechEventQueue` | 64 事件 | 丢弃最旧 | VAD 是实时的，积压意味着用户早已停止说话 |
-| `ResultQueue` | 128 结果 | 丢弃最旧 | 只有最新结果有价值 |
+普通 FIFO 丢弃对语音事件不安全。改为事件感知策略：
+
+| 事件 | 队列满策略 |
+|------|-----------|
+| `Begin` | 保留。先插入隐式 `Cancel` 通知当前 Session |
+| `Audio` | 丢弃最旧的 Audio 帧（可接受，VAD 是实时的） |
+| `End` | **必须保留**。丢失 End 会导致 Session 永不结束 |
+| `Cancel` | **必须保留，优先级最高**。丢失 Cancel 会导致旧 Session 残留 |
+
+实现：`SpeechEventQueue` 内部维护两个优先级子队列，`End`/`Cancel` 走高优先级通道，`Audio` 可丢。
 
 ---
 
-## 如何扩展一个新后端
-
-加一个新 ASR 后端 = 两个类：
-
-### 步骤
-
-1. **创建 `AsrSession` 子类** — 实现 `FeedAudio/End/Cancel`
-2. **创建 `AsrEngine` 子类** — 实现 `Init/StartSession/CancelSession`
-
-### 示例：Azure Speech WS
+## Pipeline 伪代码（完整版）
 
 ```cpp
-// azure_asr_session.h
-class AzureAsrSession : public AsrSession {
-    void FeedAudio(const float* pcm, size_t frames) override;
-    void End() override;    // 发结束帧，等最终结果（不阻塞调用方）
-    void Cancel() override; // 设 cancelled_ + close WS（5s 超时兜底）
-private:
-    void WorkerLoop();
-    CURL* curl_ = nullptr;
-    std::thread workerThread_;
-    std::atomic<bool> cancelled_{false};
-    ThreadSafeQueue<std::vector<int16_t>> audioQueue_;
-};
+void Pipeline::AsrDispatcherLoop() {
+    while (running_) {
+        SpeechEvent ev = speechEventQueue_.Pop();
+        switch (ev.type) {
 
-// azure_asr_engine.h
-class AzureAsrEngine : public AsrEngine {
-    bool Init(const Config& config) override;
-    std::unique_ptr<AsrSession> StartSession() override {
-        CancelSession();  // 取消旧会话
-        return std::make_unique<AzureAsrSession>(config_, resultCb_);
+        case Begin:
+            // 取消当前会话
+            if (activeSession_) {
+                activeSession_->Cancel();
+                reaper_->Add(std::move(activeSession_));
+            }
+            // 创建新会话
+            activeSession_ = asrEngine_->StartSession();
+            activeSessionId_ = activeSession_->GetState()->sessionId;
+            break;
+
+        case Audio:
+            if (activeSession_) {
+                activeSession_->FeedAudio(ev.pcm.data(), ev.pcm.size());
+            }
+            break;
+
+        case End:
+            if (activeSession_) {
+                activeSession_->End();
+                reaper_->Add(std::move(activeSession_));
+                activeSessionId_ = 0;
+            }
+            break;
+
+        case Cancel:
+            if (activeSession_) {
+                activeSession_->Cancel();
+                reaper_->Add(std::move(activeSession_));
+                activeSessionId_ = 0;
+            }
+            break;
+        }
     }
-    void CancelSession() override;
-};
-```
-
-### 注册
-
-引擎实例化在 `engine.cpp` 的 `CreateAsrEngine()` 中根据 `activeBackend` 选择：
-
-```cpp
-if (backend == "azure") {
-    asr = std::make_unique<AzureAsrEngine>();
-} else if (backend == "openai") {
-    asr = std::make_unique<OpenaiCompatAsrEngine>();
 }
 ```
 
-后端列表在 `AsrBackendAnnotation` 中注册 Enum + SubConfigPath。
+---
+
+## 状态迁移（配置热更新 & backend 切换）
+
+```
+用户修改配置
+    │
+    ▼
+setConfig(rawConfig)
+    │
+    ├─ 1. pausePipeline()    ← 停止事件分发，不释放资源
+    │       asrDispatcherRunning_ = false;
+    │       speechEventQueue_.Clear();
+    │
+    ├─ 2. CancelAllSessions()
+    │       asrEngine_->CancelAllSessions();
+    │       activeSession_.reset();
+    │       reaper_.DrainAll();    ← 等所有旧 Session 结束
+    │
+    ├─ 3. ReplaceAsrEngine()   ← 仅 backend 切换时
+    │       asrEngine_ = CreateAsrEngine();
+    │
+    ├─ 4. asrEngine_->Init(newConfig)
+    │
+    └─ 5. resumePipeline()
+            asrDispatcherRunning_ = true;
+```
 
 ---
 
-## 错误处理
+## 暂不实现的功能（v4.1 范围外）
 
-| 场景 | 行为 |
-|------|------|
-| Session `Cancel()` 后线程未退出（超时） | 日志 Error，析构时 `detach()` 释放资源（已知风险：curl 没有线程安全的中断） |
-| WS 连接失败 | `errorCb_` 通知 Pipeline，丢弃当前段，VAD 继续监听 |
-| HTTP 请求超时 | 同上 |
-| Init 失败（API Key 为空） | `CreateAsrEngine` 返回 nullptr，Pipeline 不启动 |
-| 队列满 | 丢弃最旧数据，日志 Warning |
-| VAD 模型加载失败 | Pipeline 不启动，日志 Error |
-
----
-
-## 目录结构（新增）
-
-```
-docs/
-├── architecture/               # ← 本文档位置
-│   └── v4-asr-session-model.md
-└── reviews/
-    └── 2026-07-05-architecture-review.md
-```
+| 功能 | 原因 | 未来版本 |
+|------|------|---------|
+| ConnectionPool（WS 连接复用） | WS 协议的 reset 语义不统一，引入状态污染风险 | v4.2 |
+| 每句一个 WS 连接 | 简单可靠，稳定后评估复用 | v4.1 ✅ |
+| 自动重试 | 先保证基础正确，再考虑可靠性 | v4.3 |
+| 本地 ASR sherpa-onnx | 接口已预留，实现待后续 | v5 |
 
 ---
 
 ## 从 v3 迁移路径
 
-### Phase 1: 接口对齐（目标：Pipeline 永不阻塞）
+### Phase 1: 接口定义 + 生命周期安全（P0）
 
-1. 新增 `AsrSession` 基类
-2. 改造 `VolcengineStreamingAsrEngine`：
-   - `StartSession()` 返回新的 `VolcengineAsrSession` 实例
-   - `CancelSession()` 遍历取消所有活跃会话
-3. 改造 `OpenaiCompatAsrEngine`：
-   - `StartSession()` 返回新的 `OpenaiAsrSession` 实例
-   - Session End 时启动 HTTP worker
-4. `Pipeline::AsrWorkerLoop` 改为纯分发模式
+1. 新增 `AsrSession` 基类（`shared_from_this` + `State` + `JoinWithTimeout`）
+2. 新增 `SessionReaper` 类
+3. `AsrEngine` 改为工厂模式，`StartSession()` 返回 `shared_ptr`
+4. Engine 内部 `weak_ptr` 追踪活跃 Session
+5. Pipeline 改用 `shared_ptr` + `drainingSessions_` + `SessionReaper`
+6. 所有 `resultCb_` 结果带 `sessionId`
 
 ### Phase 2: 资源保障
 
-5. 所有队列加容量上限
-6. Volcengine WS 加 5s recv 超时自检 `cancelled_`
-7. OpenAI HTTP 加 `CURLOPT_TIMEOUT`
+7. Volcengine recv 加 500ms 轮询超时 + Cancel 时 close socket
+8. 队列加容量上限 + 事件感知策略
+9. `maxActiveSessions=3` 限制
 
-### Phase 3: 可观测性
+### Phase 3: 配置热更新安全
 
-8. 每个 Session 加唯一 ID，贯穿日志
-9. Pipeline 健康状态 / 队列积压日志
+10. `pause/resume` Pipeline 状态
+11. `DrainAll` 等待旧 Session 结束
+12. 配置更新顺序: pause → cancel → drain → replace → init → resume
 
 ---
 
-*—— 架构设计 v4，反映 feature/volcengine-streaming-asr 分支的架构方向。*
+## 附录：审查中发现的 v4 问题及修复
+
+| # | 问题 | v4 原文 | v4.1 修复 |
+|---|------|---------|-----------|
+| 1 | UAF | `unique_ptr` + `reset()` 后线程还在访问 `this` | `shared_ptr` + `drainingSessions_` + Reaper |
+| 2 | 析构 `detach` 危险 | `Cancel()` 超时后直接 `detach()` | `JoinWithTimeout` + Reaper 线程统一回收 |
+| 3 | 所有权矛盾 | `unique_ptr` 给 Pipeline 但 Engine 又要取消 | `shared_ptr` + Engine 内部 `weak_ptr` 追踪 |
+| 4 | 取消后结果误提交 | 无 sessionId 过滤 | 所有 `AsrResult` 带 `sessionId`，commit 前检查 |
+| 5 | 队列丢弃不安全 | 统一"丢弃最旧" | 事件感知队列，`End`/`Cancel` 优先保留 |
+| 6 | 连接池过早 | 引入 ConnectionPool | 暂不实现，一句话一个 WS 连接 |
+| 7 | Cancel 只设标志不够 | 仅 `cancelled_ = true` | + 短超时轮询 + 主动 close socket + curl 超时 |
+| 8 | 线程峰值 | 无限制 | `maxActiveSessions=3` |
+| 9 | 热更新竞态 | `Init` 可多次调用 | pause → cancel → drain → replace → init → resume |
+
+---
+
+*—— 架构设计 v4.1，经审查修订。*
