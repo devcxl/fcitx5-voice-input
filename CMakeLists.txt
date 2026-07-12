@@ -224,6 +224,13 @@ install(FILES data/icons/fcitx_voiceinput.svg
     DESTINATION share/icons/hicolor/scalable/apps
 )
 
+# Multi-size PNG icons for classicui compatibility (GTK icon theme lookup)
+foreach(SIZE 16 22 24 32 48)
+    install(FILES data/icons/hicolor/${SIZE}x${SIZE}/apps/fcitx_voiceinput.png
+        DESTINATION share/icons/hicolor/${SIZE}x${SIZE}/apps
+    )
+endforeach()
+
 install(FILES data/inputmethod/voiceinput.conf
     DESTINATION share/fcitx5/inputmethod
 )
