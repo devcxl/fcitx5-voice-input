@@ -220,6 +220,14 @@ install(FILES ${SILERO_VAD_MODEL_SOURCE}
     RENAME silero_vad.onnx
 )
 
+install(FILES data/icons/fcitx_voiceinput.svg
+    DESTINATION share/icons/hicolor/scalable/apps
+)
+
+install(FILES data/inputmethod/voiceinput.conf
+    DESTINATION share/fcitx5/inputmethod
+)
+
 # ─── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTS)
     enable_testing()
