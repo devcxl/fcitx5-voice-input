@@ -5,6 +5,7 @@ GeneralName[zh_CN]=语音输入
 Comment=Fcitx5 voice input addon with ASR via OpenAI-compatible API
 Comment[zh_CN]=通过 OpenAI 兼容 API 实现的语音输入
 Category=InputMethod
+OnDemand=True
 Configurable=True
 Type=SharedLibrary
 Library=voice-input-addon
