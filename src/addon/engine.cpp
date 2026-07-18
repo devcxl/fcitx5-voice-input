@@ -270,8 +270,6 @@ void VoiceInputEngine::SetStatus(const std::string& text) {
     eventDispatcher_.schedule([this, text]() {
         statusText_ = text;
         if (activeIc_) {
-            activeIc_->inputPanel().setAuxDown(Text(text));
-            activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
             activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
         }
     });
@@ -379,6 +377,7 @@ void VoiceInputEngine::InitializeIfNeeded() {
                 eventDispatcher_.schedule([this]() {
                     if (!activeIc_) return;
                     activeIc_->inputPanel().setPreedit(Text(" "));
+                    activeIc_->inputPanel().setAuxDown(Text(_("正在录音中...")));
                     activeIc_->updateUserInterface(
                         UserInterfaceComponent::InputPanel);
                 });
