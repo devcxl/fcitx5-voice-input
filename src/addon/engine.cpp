@@ -270,6 +270,8 @@ void VoiceInputEngine::SetStatus(const std::string& text) {
     eventDispatcher_.schedule([this, text]() {
         statusText_ = text;
         if (activeIc_) {
+            activeIc_->inputPanel().setAuxDown(Text(text));
+            activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
             activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
         }
     });
@@ -331,6 +333,7 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
         asrConfig.apiKey = *openaiConfig_.apiKey;
         asrConfig.modelName = *openaiConfig_.model;
+        asrConfig.apiMode = *openaiConfig_.apiMode;
         auto language = *openaiConfig_.language;
         if (language == "auto") {
             language.clear();
@@ -377,7 +380,6 @@ void VoiceInputEngine::InitializeIfNeeded() {
                 eventDispatcher_.schedule([this]() {
                     if (!activeIc_) return;
                     activeIc_->inputPanel().setPreedit(Text(" "));
-                    activeIc_->inputPanel().setAuxDown(Text(_("正在录音中...")));
                     activeIc_->updateUserInterface(
                         UserInterfaceComponent::InputPanel);
                 });

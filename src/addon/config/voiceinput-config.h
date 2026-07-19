@@ -76,6 +76,9 @@ FCITX_CONFIGURATION(OpenAIAsrConfig,
 
     Option<bool> autoCommit{
         this, "AutoCommit", _("无 LLM 时自动上屏"), true};
+
+    Option<std::string> apiMode{
+        this, "ApiMode", _("API 模式 (whisper/chat)"), "whisper"};
 );
 
 FCITX_CONFIGURATION(VolcengineAsrConfig,
