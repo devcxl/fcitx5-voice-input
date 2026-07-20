@@ -31,6 +31,7 @@ private:
     std::string apiKey_;
     std::string modelName_;
     std::string language_;
+    std::string apiMode_;
     std::vector<float> pcmBuffer_;
     std::mutex bufferMutex_;
     std::unique_ptr<std::thread> workerThread_;

@@ -331,6 +331,7 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
         asrConfig.apiKey = *openaiConfig_.apiKey;
         asrConfig.modelName = *openaiConfig_.model;
+        asrConfig.apiMode = *openaiConfig_.apiMode;
         auto language = *openaiConfig_.language;
         if (language == "auto") {
             language.clear();

@@ -60,6 +60,26 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     return size * nmemb;
 }
 
+// Base64 encode
+static const char b64table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+;
+
+std::string Base64Encode(const uint8_t* data, size_t len) {
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = (static_cast<uint32_t>(data[i]) << 16)
+                   | (i + 1 < len ? static_cast<uint32_t>(data[i + 1]) << 8 : 0)
+                   | (i + 2 < len ? static_cast<uint32_t>(data[i + 2]) : 0);
+        out.push_back(b64table[(v >> 18) & 0x3F]);
+        out.push_back(b64table[(v >> 12) & 0x3F]);
+        out.push_back(i + 1 < len ? b64table[(v >> 6) & 0x3F] : '=');
+        out.push_back(i + 2 < len ? b64table[v & 0x3F] : '=');
+    }
+    return out;
+}
+
 std::string BuildMultipartBody(const std::vector<uint8_t>& wavData,
                                const std::string& model,
                                const std::string& language,
@@ -105,6 +125,7 @@ OpenaiAsrSession::OpenaiAsrSession(const AsrEngine::Config& config,
     apiKey_ = config.apiKey;
     modelName_ = config.modelName.empty() ? "whisper-1" : config.modelName;
     language_ = config.language;
+    apiMode_ = config.apiMode.empty() ? "whisper" : config.apiMode;
 
     FCITX_DEBUG() << "[voice-input:openai] Init session=" << sessionId
                  << " endpoint=" << apiEndpoint_
@@ -167,14 +188,13 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     // Build WAV
     std::vector<uint8_t> wavData = FloatPcmToWav(pcm.data(), pcm.size());
 
+    bool isChatMode = (apiMode_ == "chat");
+
     std::string endpoint = apiEndpoint_;
     if (!endpoint.empty() && endpoint.back() != '/') {
         endpoint += '/';
     }
-    endpoint += "audio/transcriptions";
-
-    std::string boundary = "----VoiceInputFormBoundary" + std::to_string(time(nullptr));
-    std::string multipartBody = BuildMultipartBody(wavData, modelName_, language_, boundary);
+    endpoint += isChatMode ? "chat/completions" : "audio/transcriptions";
 
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -183,17 +203,58 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
         return;
     }
 
-    std::string contentType = "Content-Type: multipart/form-data; boundary=" + boundary;
-
     struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, contentType.c_str());
+    std::string postData;
+    std::string contentType;
 
-    std::string response;
+    if (isChatMode) {
+        // ── Bailian/Chat 模式 ──
+        // WAV → base64 data URI
+        std::string b64 = Base64Encode(wavData.data(), wavData.size());
+        std::string dataUri = "data:audio/wav;base64," + b64;
+
+        // Build JSON payload
+        Json::Value msgContent;
+        msgContent["type"] = "input_audio";
+        msgContent["input_audio"]["data"] = dataUri;
+
+        Json::Value userMsg;
+        userMsg["role"] = "user";
+        userMsg["content"].append(msgContent);
+
+        Json::Value body;
+        body["model"] = modelName_;
+        body["messages"].append(userMsg);
+        body["stream"] = false;
+
+        Json::Value asrOpts;
+        asrOpts["enable_itn"] = true;
+        if (!language_.empty() && language_ != "auto") {
+            body["asr_options"]["language"] = language_;
+        }
+        body["asr_options"] = asrOpts;
+
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        postData = Json::writeString(builder, body);
+
+        contentType = "Content-Type: application/json";
+        headers = curl_slist_append(headers, contentType.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(postData.size()));
+    } else {
+        // ── Whisper 模式 ──
+        std::string boundary = "----VoiceInputFormBoundary" + std::to_string(time(nullptr));
+        std::string multipartBody = BuildMultipartBody(wavData, modelName_, language_, boundary);
+        contentType = "Content-Type: multipart/form-data; boundary=" + boundary;
+        headers = curl_slist_append(headers, contentType.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, multipartBody.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(multipartBody.size()));
+    }
+
     curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, multipartBody.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(multipartBody.size()));
 
     if (!apiKey_.empty()) {
         std::string authHeader = "Authorization: Bearer " + apiKey_;
@@ -201,6 +262,7 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     }
 
+    std::string response;
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
@@ -229,7 +291,19 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
         Json::Value json;
         Json::Reader reader;
         if (reader.parse(response, json)) {
-            text = json.get("text", json.get("error", Json::Value(""))).asString();
+            if (isChatMode) {
+                // Chat mode: choices[0].message.content
+                const auto& choices = json["choices"];
+                if (choices.isArray() && choices.size() > 0) {
+                    text = choices[0]["message"]["content"].asString();
+                }
+                if (text.empty()) {
+                    text = json.get("error", Json::Value(""))["message"].asString();
+                }
+            } else {
+                // Whisper mode: response.text
+                text = json.get("text", json.get("error", Json::Value(""))).asString();
+            }
         }
     } catch (...) {
         // ignore parse errors

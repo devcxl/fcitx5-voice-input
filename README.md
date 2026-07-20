@@ -71,6 +71,7 @@ Select your backend from the `ActiveBackend` dropdown, then click the gear butto
 | `ApiKey` | API Key | **(required)** |
 | `Model` | Model name | `whisper-1` |
 | `Language` | Output language | `auto` (English/中文) |
+| `ApiMode` | API mode: `whisper` (standard Whisper API) or `chat` (DashScope Chat Completions) | `whisper` |
 | `LLMEnabled` | LLM post-processing | `false` |
 | `LLMModel` | Post-processing LLM model | (empty) |
 | `LLMSystemPrompt` | Post-processing system prompt | (empty) |
@@ -82,6 +83,16 @@ Set `ActiveBackend=openai`, click the gear button, and fill in your API Key. Com
 - [OpenAI](https://platform.openai.com/) — `https://api.openai.com/v1`
 - [Groq](https://console.groq.com/) — `https://api.groq.com/openai/v1`
 - [SiliconFlow](https://cloud.siliconflow.com) — `https://api.siliconflow.com/v1`
+- [Alibaba Cloud DashScope](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference) — `https://dashscope.aliyuncs.com/compatible-mode/v1`
+
+  **Note:** DashScope's `qwen3-asr-flash` model uses Chat Completions API instead of the standard Whisper API. Set `ApiMode=chat` when using this provider.
+  ```
+  BaseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1
+  ApiKey=your_dashscope_api_key
+  Model=qwen3-asr-flash
+  ApiMode=chat
+  Language=zh
+  ```
 
 #### Volcengine Doubao Backend (sub-config)
 

@@ -27,6 +27,7 @@ public:
         std::string apiEndpoint;
         std::string apiKey;
         std::string language = "zh";
+        std::string apiMode = "whisper";     // "whisper" or "chat"
 
         // Volcengine Doubao streaming ASR (cloud)
         std::string authMode;
