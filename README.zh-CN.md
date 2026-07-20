@@ -71,6 +71,7 @@
 | `ApiKey` | API Key | **（必填）** |
 | `Model` | 模型名 | `whisper-1` |
 | `Language` | 输出语言 | `auto`（English/中文） |
+| `ApiMode` | API 模式：`whisper`（标准 Whisper API）或 `chat`（百炼 Chat Completions） | `whisper` |
 | `LLMEnabled` | LLM 后处理 | `false` |
 | `LLMModel` | 后处理 LLM 模型 | （空） |
 | `LLMSystemPrompt` | 后处理系统提示词 | （空） |
@@ -82,6 +83,17 @@
 - [OpenAI](https://platform.openai.com/) — `https://api.openai.com/v1`
 - [Groq](https://console.groq.com/) — `https://api.groq.com/openai/v1`
 - [硅基流动 (SiliconFlow)](https://siliconflow.cn/) — `https://api.siliconflow.cn/v1`
+- [阿里云百炼 (DashScope)](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference) — `https://dashscope.aliyuncs.com/compatible-mode/v1`
+
+  **注意：** 阿里云百炼使用的 `qwen3-asr-flash` 模型不走标准的 Whisper API，需要通过 Chat Completions 接口调用。使用时需将 `ApiMode` 设为 `chat`，并补充对应的 DashScope API Key。配置示例：
+  ```
+  BaseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1
+  ApiKey=your_dashscope_api_key
+  Model=qwen3-asr-flash
+  ApiMode=chat
+  Language=zh
+  ```
+  百炼 ASR 的具体接口文档请参考[阿里云官方文档](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference)。
 
 #### 火山引擎豆包后端（子配置）
 
