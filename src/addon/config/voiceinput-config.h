@@ -46,6 +46,16 @@ struct OpenaiLanguageAnnotation : public EnumAnnotation {
     }
 };
 
+struct ApiModeAnnotation : public EnumAnnotation {
+    void dumpDescription(RawConfig &config) const {
+        EnumAnnotation::dumpDescription(config);
+        config.setValueByPath("Enum/0", "whisper");
+        config.setValueByPath("EnumI18n/0", _("Standard Whisper API"));
+        config.setValueByPath("Enum/1", "chat");
+        config.setValueByPath("EnumI18n/1", _("Chat Completions"));
+    }
+};
+
 FCITX_CONFIGURATION(OpenAIAsrConfig,
     Option<std::string> baseUrl{
         this, "BaseUrl", _("接口地址"),
@@ -77,8 +87,10 @@ FCITX_CONFIGURATION(OpenAIAsrConfig,
     Option<bool> autoCommit{
         this, "AutoCommit", _("无 LLM 时自动上屏"), true};
 
-    Option<std::string> apiMode{
-        this, "ApiMode", _("API 模式 (whisper/chat)"), "whisper"};
+    Option<std::string, NoConstrain<std::string>,
+           DefaultMarshaller<std::string>, ApiModeAnnotation>
+        apiMode{
+            this, "ApiMode", _("API 模式"), "whisper"};
 );
 
 FCITX_CONFIGURATION(VolcengineAsrConfig,
