@@ -39,6 +39,18 @@
 
 ### 1. Installation
 
+#### AUR (Arch Linux)
+
+```bash
+yay -S fcitx5-voice-input
+# or
+paru -S fcitx5-voice-input
+# or build manually
+git clone https://aur.archlinux.org/fcitx5-voice-input.git
+cd fcitx5-voice-input
+makepkg -si
+```
+
 #### Build from source
 
 See [Build](#build) below.
