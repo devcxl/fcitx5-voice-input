@@ -81,6 +81,12 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
 
                 if (isFinal) {
                     if (text.empty()) {
+                        AsrResult errorResult;
+                        errorResult.generation = gen;
+                        errorResult.sessionId = sid;
+                        errorResult.isError = true;
+                        resultQueue_.Push(std::move(errorResult));
+                        if (resultCb_) resultCb_(text);
                         sessionGenerationMap_.erase(sid);
                         return;
                     }
