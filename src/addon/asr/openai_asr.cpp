@@ -205,6 +205,7 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
 
     struct curl_slist* headers = nullptr;
     std::string postData;
+    std::string multipartBody;
     std::string contentType;
 
     if (isChatMode) {
@@ -244,12 +245,21 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(postData.size()));
     } else {
         // ── Whisper 模式 ──
+        // language=auto 不发送（SiliconFlow 等端点严格校验，未知/非法字段会 400）
+        const std::string language = (language_ == "auto") ? "" : language_;
         std::string boundary = "----VoiceInputFormBoundary" + std::to_string(time(nullptr));
-        std::string multipartBody = BuildMultipartBody(wavData, modelName_, language_, boundary);
+        multipartBody = BuildMultipartBody(wavData, modelName_, language, boundary);
         contentType = "Content-Type: multipart/form-data; boundary=" + boundary;
         headers = curl_slist_append(headers, contentType.c_str());
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, multipartBody.c_str());
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(multipartBody.size()));
+
+        FCITX_DEBUG() << "[voice-input:openai] Request endpoint=" << endpoint
+                       << " model=" << modelName_
+                       << " language=" << (language_.empty() ? "auto" : language_)
+                       << " audio_frames=" << pcm.size()
+                       << " wav_bytes=" << wavData.size()
+                       << " body_size=" << multipartBody.size();
     }
 
     curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
@@ -270,6 +280,13 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
 
     CURLcode res = curl_easy_perform(curl);
+
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+    FCITX_DEBUG() << "[voice-input:openai] Response HTTP=" << httpCode
+                   << " body_len=" << response.size()
+                   << " body=[" << response << "]";
+
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
