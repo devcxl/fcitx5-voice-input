@@ -185,7 +185,7 @@ void VoiceInputEngine::PollResults() {
     auto& queue = pipeline_->ResultQueue();
     AsrResult result;
     while (queue.TryPop(result)) {
-        bool valid = !result.text.empty()
+        bool valid = (!result.text.empty() || result.isError)
                   && result.generation != 0
                   && activeGeneration_.load() == result.generation
                   && activeIc_ != nullptr;
@@ -197,9 +197,18 @@ void VoiceInputEngine::PollResults() {
                      << " uid=" << result.utteranceId
                      << " pendingUid=" << pendingPreeditUtteranceId_
                      << " refined=" << result.isLLMRefined
+                     << " error=" << result.isError
                      << " valid=" << valid;
 
         if (valid) {
+            if (result.isError) {
+                FCITX_WARN() << "[voice-input] PollResult: ASR error uid="
+                             << result.utteranceId;
+                activeIc_->inputPanel().reset();
+                activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+                SetStatus(_("语音识别失败"));
+                continue;
+            }
             if (result.isLLMRefined) {
                 if (result.isPartial) {
                     // Streaming partial: update preedit in-place
