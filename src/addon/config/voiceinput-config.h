@@ -53,6 +53,8 @@ struct ApiModeAnnotation : public EnumAnnotation {
         config.setValueByPath("EnumI18n/0", _("Standard Whisper API"));
         config.setValueByPath("Enum/1", "chat");
         config.setValueByPath("EnumI18n/1", _("Chat Completions"));
+        config.setValueByPath("Enum/2", "realtime");
+        config.setValueByPath("EnumI18n/2", _("GPT Realtime (Streaming)"));
     }
 };
 
@@ -91,6 +93,10 @@ FCITX_CONFIGURATION(OpenAIAsrConfig,
            DefaultMarshaller<std::string>, ApiModeAnnotation>
         apiMode{
             this, "ApiMode", _("API 模式"), "whisper"};
+
+    Option<int, IntConstrain> commitIntervalMs{
+        this, "CommitIntervalMs", _("实时提交间隔 (毫秒)"), 5000,
+        IntConstrain(1000, 30000)};
 );
 
 FCITX_CONFIGURATION(VolcengineAsrConfig,
