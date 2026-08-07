@@ -392,8 +392,8 @@ void RealtimeAsrSession::WorkerLoop() {
         FCITX_DEBUG() << "[voice-input:realtime] Cancelled session=" << sid;
         return;
     }
-    if (!gotFinal || currentTranscript.empty()) {
-        // 无最终结果：以空 final 触发 pipeline 错误/清理分支
+    if (!gotFinal) {
+        // 未收到最终转录（连接断开/失败）：以空 final 触发 pipeline 错误/清理分支
         if (cb) cb("", true, sid);
     }
 }
