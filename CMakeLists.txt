@@ -107,9 +107,11 @@ set(ADDON_SOURCES
     src/addon/vad/silero_vad.cpp
     src/addon/pipeline/pipeline.cpp
     src/addon/asr/openai_asr.cpp
+    src/addon/asr/realtime_asr.cpp
     src/addon/asr/volcengine_asr.cpp
     src/addon/asr/asr_engine.cpp
     src/addon/asr/session_reaper.cpp
+    src/addon/asr/utils/base64.cpp
     src/addon/llm/llm_client.cpp
 )
 
@@ -126,11 +128,13 @@ set(ADDON_HEADERS
     src/addon/asr/asr_session.h
     src/addon/asr/session_reaper.h
     src/addon/asr/openai_asr.h
+    src/addon/asr/realtime_asr.h
     src/addon/asr/volcengine_asr.h
     src/addon/llm/llm_client.h
     src/addon/pipeline/pipeline.h
     src/addon/utils/audio_buffer.h
     src/addon/utils/thread_safe_queue.h
+    src/addon/asr/utils/base64.h
 )
 
 # ─── Library ──────────────────────────────────────────────────────────────────

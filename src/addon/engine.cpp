@@ -17,6 +17,7 @@
 #include "engine.h"
 
 #include "asr/openai_asr.h"
+#include "asr/realtime_asr.h"
 #include "asr/volcengine_asr.h"
 #include "llm/llm_client.h"
 
@@ -341,6 +342,7 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         asrConfig.apiKey = *openaiConfig_.apiKey;
         asrConfig.modelName = *openaiConfig_.model;
         asrConfig.apiMode = *openaiConfig_.apiMode;
+        asrConfig.commitIntervalMs = *openaiConfig_.commitIntervalMs;
         auto language = *openaiConfig_.language;
         if (language == "auto") {
             language.clear();
@@ -348,8 +350,13 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         asrConfig.language = language;
         FCITX_INFO() << "[voice-input] OpenAI config: endpoint="
                      << asrConfig.apiEndpoint
-                     << " model=" << asrConfig.modelName;
-        asr = std::make_unique<OpenaiAsrEngine>();
+                     << " model=" << asrConfig.modelName
+                     << " apiMode=" << asrConfig.apiMode;
+        if (asrConfig.apiMode == "realtime") {
+            asr = std::make_unique<RealtimeAsrEngine>();
+        } else {
+            asr = std::make_unique<OpenaiAsrEngine>();
+        }
     }
 
     if (asr->Init(asrConfig)) {

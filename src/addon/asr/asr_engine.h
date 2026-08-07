@@ -27,7 +27,10 @@ public:
         std::string apiEndpoint;
         std::string apiKey;
         std::string language = "zh";
-        std::string apiMode = "whisper";     // "whisper" or "chat"
+        std::string apiMode = "whisper";     // "whisper" or "chat" or "realtime"
+
+        // OpenAI Realtime (streaming): periodic commit interval for long speech
+        int commitIntervalMs = 5000;
 
         // Volcengine Doubao streaming ASR (cloud)
         std::string authMode;
