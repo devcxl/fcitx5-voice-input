@@ -23,22 +23,22 @@ constexpr int kAppendChunkSamples = 2400; // ~100ms @24k 音频推送粒度（�
 
 enum class RecvStatus { Ok, Again, Closed, Error };
 
-// 16k float → 24k float 线性插值（比例 3/2）。每 2 个源样本插出 3 个目标样本。
+// 16k → 24k 线性插值（比例 3/2）。输出样本数 = floor(1.5 * N)。
+// 对每个输出下标 j，其对应的源位置 pos = j * 2/3，在相邻源样本间线性插值。
 void Upsample16kTo24k(const std::vector<float>& in, std::vector<float>& out) {
     out.clear();
-    out.reserve(in.size() * 3 / 2 + 2);
-    if (in.size() < 2) {
-        for (float s : in) out.push_back(s);
-        return;
-    }
-    for (size_t i = 0; i + 1 < in.size(); ++i) {
+    if (in.empty()) return;
+    size_t outCount = in.size() * 3 / 2;
+    if (outCount == 0) return;
+    out.reserve(outCount);
+    for (size_t j = 0; j < outCount; ++j) {
+        double pos = j * (2.0 / 3.0);
+        size_t i = static_cast<size_t>(pos);
+        double frac = pos - static_cast<double>(i);
         float a = in[i];
-        float b = in[i + 1];
-        out.push_back(a);                    // t=0/3
-        out.push_back(a + (b - a) * 2.0f / 3.0f); // t=2/3
-        out.push_back(a + (b - a) * 1.0f / 3.0f); // t=1/3（插值顺序交错）
+        float b = (i + 1 < in.size()) ? in[i + 1] : a;  // 末端 clamp
+        out.push_back(a + static_cast<float>((b - a) * frac));
     }
-    out.push_back(in.back());
 }
 
 std::string JsonToString(const Json::Value& json) {
@@ -127,6 +127,13 @@ RealtimeAsrSession::RealtimeAsrSession(const AsrEngine::Config& config,
     language_ = config.language;
     commitIntervalMs_ = std::clamp(config.commitIntervalMs, 1000, 30000);
 
+    if (apiKey_.empty()) {
+        state_->finished = true;
+        if (errorCb_) errorCb_("OpenAI API key not configured");
+        if (resultCb_) resultCb_("", true, state_->sessionId);
+        return;
+    }
+
     FCITX_DEBUG() << "[voice-input:realtime] Init session=" << sessionId
                   << " endpoint=" << endpoint_;
 }
@@ -211,7 +218,7 @@ void RealtimeAsrSession::WorkerLoop() {
 
     bool gotFinal = false;
     std::string currentTranscript;
-    std::string lastCommittedTranscript;
+    std::vector<int16_t> pending24k;  // 提升到连接循环外，重连时保留未发送缓冲
 
     // 连接循环：处理首次连接 + 断线/30min 重连（保持同一 sessionId）
     for (int attempt = 0; attempt < kMaxReconnectAttempts && !gotFinal; ++attempt) {
@@ -262,7 +269,6 @@ void RealtimeAsrSession::WorkerLoop() {
 
         auto sessionStart = std::chrono::steady_clock::now();
         auto lastCommitTime = sessionStart;
-        std::vector<int16_t> pending24k;
 
         // 处理服务端事件
         auto handleServer = [&](std::chrono::milliseconds timeout) {
@@ -285,8 +291,19 @@ void RealtimeAsrSession::WorkerLoop() {
                     if (cb && !currentTranscript.empty()) cb(currentTranscript, false, sid);
                 } else if (type == "conversation.item.input_audio_transcription.completed") {
                     std::string transcript = json.get("transcript", "").asString();
-                    currentTranscript.clear();
-                    if (cb && !transcript.empty()) cb(transcript, true, sid);
+                    bool end = state_->finished;
+                    if (end) {
+                        // VAD End 已触发 → 最终结果，上报 final 并结束会话
+                        if (cb && !transcript.empty()) cb(transcript, true, sid);
+                        currentTranscript.clear();
+                        gotFinal = true;
+                        return false;
+                    } else {
+                        // 周期 commit 产生的中间转录 → 作为增量 partial 刷新 preedit
+                        // （pipeline 契约：每个会话仅一个 final，此处不得上报 final）
+                        if (cb && !transcript.empty()) cb(transcript, false, sid);
+                        currentTranscript.clear();
+                    }
                 } else if (type == "conversation.item.input_audio_transcription.failed") {
                     if (ecb) ecb("Transcription failed");
                     currentTranscript.clear();
@@ -392,6 +409,11 @@ std::shared_ptr<AsrSession> RealtimeAsrEngine::StartSession() {
     uint64_t sid;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
+        // 清理过期 weak_ptr，避免长期运行 map 无限增长
+        for (auto it = sessions_.begin(); it != sessions_.end(); ) {
+            if (it->second.expired()) it = sessions_.erase(it);
+            else ++it;
+        }
         sid = nextSessionId_++;
     }
 

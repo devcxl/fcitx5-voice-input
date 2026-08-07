@@ -100,9 +100,13 @@ RealtimeAsrSession.resultCb_(delta, false, sid)        // isFinal=false
 
 **周期性兜底（长句无停顿）**：
 - 对 `gpt-live-transcribe`（支持真连续 delta），worker 循环中**无需 commit 也能持续收到 delta**，实时增量天然满足。
-- 对 `gpt-realtime-whisper`（无 server_vad、需手动 commit 才出结果），长句不中断则拿不到增量。因此 worker 内置**周期性 commit 兜底**（如每 5s 发一次 `input_audio_buffer.commit`），保证长句也能持续出结果；代价是切分语义（词准确率略降），作为可调项。
+- 对 `gpt-realtime-whisper`（无 server_vad、需手动 commit 才出结果），长句不中断则拿不到增量。因此 worker 内置**周期性 commit 兜底**（如每 5s 发一次 `input_audio_buffer.commit`），保证长句也能持续出结果。
 
-**实现**：worker 发送循环里记录「距上次 commit 的时长」，超过 `commitIntervalMs`（配置，默认 5000ms）且当前有累积音频时自动 commit；VAD End 的 commit 覆盖最终段。对 live-transcribe 可将兜底视为纯增量刷新。
+**pipeline 单-final 契约（实现约束）**：pipeline 的 `SetAsrEngine` 回调在收到任意 `isFinal=true` 后会 `sessionGenerationMap_.erase(sid)`，其后该会话所有结果被丢弃。因此**每个会话只能上报一次 final**：
+- **只有 VAD End 触发的 `.completed` 上报 final**（`isFinal=true`）。
+- **周期性 commit 产生的 `.completed` 一律作为增量 partial 上报**（`isFinal=false`，仅刷新 preedit，不上屏）。这是审查（2026-08-07）修正的关键点，避免首个周期 commit 后后续结果全被丢弃。
+
+**实现**：worker 发送循环里记录「距上次 commit 的时长」，超过 `commitIntervalMs`（配置，默认 5000ms）且当前有累积音频时自动 commit；`.completed` 事件到达时按 `state_->finished` 判断：已 End → final，否则 → partial。对 live-transcribe 可将兜底视为纯增量刷新。
 
 ### 2.6 配置项设计 —— 复用 apiMode，新增枚举值
 
