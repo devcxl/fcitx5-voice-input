@@ -83,7 +83,8 @@ makepkg -si
 | `ApiKey` | API Key | **（必填）** |
 | `Model` | 模型名 | `whisper-1` |
 | `Language` | 输出语言 | `auto`（English/中文） |
-| `ApiMode` | API 模式：`whisper`（标准 Whisper API）或 `chat`（百炼 Chat Completions） | `whisper` |
+| `ApiMode` | API 模式：`whisper`（标准 Whisper API）、`chat`（百炼 Chat Completions）或 `realtime`（GPT Realtime 流式实时转录） | `whisper` |
+| `CommitIntervalMs` | Realtime 模式下的周期性提交间隔 (ms)，长句无停顿也能持续出增量 | `5000` |
 | `LLMEnabled` | LLM 后处理 | `false` |
 | `LLMModel` | 后处理 LLM 模型 | （空） |
 | `LLMSystemPrompt` | 后处理系统提示词 | （空） |
@@ -106,6 +107,16 @@ makepkg -si
   Language=zh
   ```
   百炼 ASR 的具体接口文档请参考[阿里云官方文档](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference)。
+
+  **Realtime 流式实时转录（可选）：** 将 `ApiMode` 设为 `realtime`，即可通过 OpenAI Realtime 转录会话实现**边说边出**增量识别结果（实时刷入候选框 preedit，说话结束提交上屏）。使用 OpenAI 官方账号时，模型推荐 `gpt-live-transcribe`（官方推荐，真正连续增量）或 `gpt-realtime-whisper`（兼容备选）。配置示例：
+  ```
+  BaseUrl=https://api.openai.com/v1
+  ApiKey=your_openai_api_key
+  Model=gpt-live-transcribe
+  ApiMode=realtime
+  Language=zh
+  ```
+  **注意：** Realtime 模式需要支持 WebSocket 的连接端点，且 `gpt-live-transcribe` / `gpt-realtime-whisper` 需付费 Tier 账号（Free 不支持）。音频以 24kHz 发送（插件会自动将采集的 16kHz 重采样到 24kHz）。
 
 #### 火山引擎豆包后端（子配置）
 

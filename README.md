@@ -83,7 +83,8 @@ Select your backend from the `ActiveBackend` dropdown, then click the gear butto
 | `ApiKey` | API Key | **(required)** |
 | `Model` | Model name | `whisper-1` |
 | `Language` | Output language | `auto` (English/中文) |
-| `ApiMode` | API mode: `whisper` (standard Whisper API) or `chat` (DashScope Chat Completions) | `whisper` |
+| `ApiMode` | API mode: `whisper` (standard Whisper API), `chat` (DashScope Chat Completions) or `realtime` (GPT Realtime streaming transcription) | `whisper` |
+| `CommitIntervalMs` | Periodic commit interval (ms) in realtime mode; keeps emitting partials for long speech with no pauses | `5000` |
 | `LLMEnabled` | LLM post-processing | `false` |
 | `LLMModel` | Post-processing LLM model | (empty) |
 | `LLMSystemPrompt` | Post-processing system prompt | (empty) |
@@ -105,6 +106,16 @@ Set `ActiveBackend=openai`, click the gear button, and fill in your API Key. Com
   ApiMode=chat
   Language=zh
   ```
+
+  **GPT Realtime streaming (optional):** Set `ApiMode=realtime` to transcribe incrementally (partials update the preedit live, final commits on speech end) via the OpenAI Realtime transcription session. With an OpenAI account, use `gpt-live-transcribe` (recommended, true continuous deltas) or `gpt-realtime-whisper` (compatible alternative).
+  ```
+  BaseUrl=https://api.openai.com/v1
+  ApiKey=your_openai_api_key
+  Model=gpt-live-transcribe
+  ApiMode=realtime
+  Language=zh
+  ```
+  **Note:** Realtime mode requires a WebSocket-capable endpoint, and `gpt-live-transcribe` / `gpt-realtime-whisper` need a paid-tier account (Free is not supported). Audio is sent at 24kHz (the addon automatically upsamples the captured 16kHz).
 
 #### Volcengine Doubao Backend (sub-config)
 
