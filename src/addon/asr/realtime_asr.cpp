@@ -217,6 +217,7 @@ void RealtimeAsrSession::WorkerLoop() {
     };
 
     bool gotFinal = false;
+    bool endCommitSent = false;      // End commit 是否已发出（决定最终 item 判定）
     std::string fullTranscript;      // 会话级累积文本（整句，preedit 显示的依据）
     std::string currentTranscript;   // 当前 item 的 delta 累积
     std::vector<int16_t> pending24k;  // 提升到连接循环外，重连时保留未发送缓冲
@@ -271,6 +272,7 @@ void RealtimeAsrSession::WorkerLoop() {
         auto sessionStart = std::chrono::steady_clock::now();
         auto lastCommitTime = sessionStart;
         bool appendedSinceCommit = false;  // 自上次 commit 后是否 append 过音频
+        int commitsInFlight = 0;           // 在途 commit 数（重连后新连接重新计数）
 
         // 处理服务端事件
         auto handleServer = [&](std::chrono::milliseconds timeout) {
@@ -297,16 +299,19 @@ void RealtimeAsrSession::WorkerLoop() {
                     }
                 } else if (type == "conversation.item.input_audio_transcription.completed") {
                     std::string transcript = json.get("transcript", "").asString();
-                    bool end = state_->finished;
+                    // 判定这是否最终 item：End commit 已发出 且 在途 commit 只剩这一个
+                    // （WS 事件有序保证旧周期 item 的 completed 先于最终 item 到达）
+                    bool isFinalItem = endCommitSent && commitsInFlight <= 1;
+                    if (commitsInFlight > 0) --commitsInFlight;
                     fullTranscript += transcript;
-                    if (end) {
-                        // VAD End 已触发 → 最终结果（整句累积），上报 final 并结束会话
+                    if (isFinalItem) {
+                        // 最终结果（整句累积），上报 final 并结束会话
                         if (cb && !fullTranscript.empty()) cb(fullTranscript, true, sid);
                         currentTranscript.clear();
                         gotFinal = true;
                         return false;
                     } else {
-                        // 周期 commit 产生的中间转录 → 累加到整句后作为 partial 刷新 preedit
+                        // 周期 commit（或在途旧 item）产生的转录 → 累加后作为 partial 刷新 preedit
                         // （pipeline 契约：每个会话仅一个 final，此处不得上报 final）
                         if (cb && !fullTranscript.empty()) cb(fullTranscript, false, sid);
                         currentTranscript.clear();
@@ -336,6 +341,8 @@ void RealtimeAsrSession::WorkerLoop() {
                     pending24k.clear();
                 }
                 SendWebSocketText(curl, buildCommitEvent(), state_->cancelled);
+                endCommitSent = true;
+                ++commitsInFlight;
                 auto deadline = std::chrono::steady_clock::now() + 30s;
                 while (!state_->cancelled && !gotFinal &&
                        std::chrono::steady_clock::now() < deadline) {
@@ -362,9 +369,13 @@ void RealtimeAsrSession::WorkerLoop() {
             auto elapsedSinceCommit = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - lastCommitTime).count();
             if (appendedSinceCommit && elapsedSinceCommit >= commitIntervalMs_) {
-                SendWebSocketText(curl, buildCommitEvent(), state_->cancelled);
+                if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                    reconnectNeeded = true;
+                    break;
+                }
                 lastCommitTime = now;
                 appendedSinceCommit = false;
+                ++commitsInFlight;
             }
 
             // 推送足够粒度的音频
@@ -388,6 +399,7 @@ void RealtimeAsrSession::WorkerLoop() {
             if (sessionAge >= kSessionMaxDuration.count()) {
                 FCITX_WARN() << "[voice-input:realtime] 30min session limit, reconnect";
                 SendWebSocketText(curl, buildCommitEvent(), state_->cancelled);
+                ++commitsInFlight;
                 reconnectNeeded = true;
                 break;
             }
@@ -402,6 +414,9 @@ void RealtimeAsrSession::WorkerLoop() {
         if (state_->cancelled || gotFinal) break;
         if (reconnectNeeded) {
             FCITX_WARN() << "[voice-input:realtime] Reconnecting session=" << sid;
+            // 重连后是全新服务端会话，旧 item 的 delta 上下文已失效：
+            // 清掉当前 item 半截累积，避免 preedit 显示幽灵残文（fullTranscript 保留）
+            currentTranscript.clear();
             std::this_thread::sleep_for(1s);
             continue;
         }
