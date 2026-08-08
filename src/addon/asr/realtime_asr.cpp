@@ -338,15 +338,18 @@ void RealtimeAsrSession::WorkerLoop() {
                 if (!pending24k.empty() && !state_->cancelled) {
                     if (!SendWebSocketText(curl, buildAppendEvent(pending24k), state_->cancelled)) {
                         FCITX_ERROR() << "[voice-input:realtime] End flush failed session=" << sid;
+                        // 兜底 final 后经统一清理路径退出（break → CloseWebSocket + cleanup）
                         if (cb) cb(fullTranscript, true, sid);
-                        return;
+                        gotFinal = true;
+                        break;
                     }
                     pending24k.clear();
                 }
                 if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
                     FCITX_ERROR() << "[voice-input:realtime] End commit failed session=" << sid;
                     if (cb) cb(fullTranscript, true, sid);
-                    return;
+                    gotFinal = true;
+                    break;
                 }
                 endCommitSent = true;
                 ++commitsInFlight;
@@ -356,9 +359,11 @@ void RealtimeAsrSession::WorkerLoop() {
                     if (!handleServer(50ms)) { gotFinal = true; break; }
                 }
                 if (!gotFinal && !state_->cancelled) {
-                    // 30s 超时仍未收到最终 completed → 以已累积文本兜底 final
+                    // 30s 超时仍未收到最终 completed → 以已累积文本兜底 final，
+                    // 并置 gotFinal 结束会话（否则 for 循环会重连后空转挂死）
                     FCITX_WARN() << "[voice-input:realtime] End wait timeout session=" << sid;
                     if (cb) cb(fullTranscript, true, sid);
+                    gotFinal = true;
                 }
                 break;
             }
@@ -410,10 +415,11 @@ void RealtimeAsrSession::WorkerLoop() {
                 std::chrono::steady_clock::now() - sessionStart).count();
             if (sessionAge >= kSessionMaxDuration.count() && appendedSinceCommit) {
                 FCITX_WARN() << "[voice-input:realtime] 30min session limit, reconnect";
-                if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                if (SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                    ++commitsInFlight;
+                } else {
                     FCITX_ERROR() << "[voice-input:realtime] 30min commit failed session=" << sid;
                 }
-                ++commitsInFlight;
                 reconnectNeeded = true;
                 break;
             }
