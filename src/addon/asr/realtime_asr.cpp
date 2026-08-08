@@ -319,6 +319,7 @@ void RealtimeAsrSession::WorkerLoop() {
                 } else if (type == "conversation.item.input_audio_transcription.failed") {
                     if (ecb) ecb("Transcription failed");
                     currentTranscript.clear();
+                    if (commitsInFlight > 0) --commitsInFlight;  // 保持与 completed 一致的计数
                 }
                 // 其他事件（response.*/error 等）忽略
             }
