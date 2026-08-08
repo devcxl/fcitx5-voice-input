@@ -332,21 +332,33 @@ void RealtimeAsrSession::WorkerLoop() {
 
             if (hasChunk && chunk.empty() && state_->finished) {
                 // 语音结束：先把 pending24k 剩余音频全部 flush（不足 chunk 粒度也发，
-                // 否则 commit 后尾部音频丢失），再提交最终段
+                // 否则 commit 后尾部音频丢失），再提交最终段。
+                // 语音已结束，任何发送失败/超时都不重连（重连后空 chunk 已消费、End 分支
+                // 不会重试），直接以已累积文本兜底 final 退出。
                 if (!pending24k.empty() && !state_->cancelled) {
                     if (!SendWebSocketText(curl, buildAppendEvent(pending24k), state_->cancelled)) {
-                        reconnectNeeded = true;
-                        break;
+                        FCITX_ERROR() << "[voice-input:realtime] End flush failed session=" << sid;
+                        if (cb) cb(fullTranscript, true, sid);
+                        return;
                     }
                     pending24k.clear();
                 }
-                SendWebSocketText(curl, buildCommitEvent(), state_->cancelled);
+                if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                    FCITX_ERROR() << "[voice-input:realtime] End commit failed session=" << sid;
+                    if (cb) cb(fullTranscript, true, sid);
+                    return;
+                }
                 endCommitSent = true;
                 ++commitsInFlight;
                 auto deadline = std::chrono::steady_clock::now() + 30s;
                 while (!state_->cancelled && !gotFinal &&
                        std::chrono::steady_clock::now() < deadline) {
                     if (!handleServer(50ms)) { gotFinal = true; break; }
+                }
+                if (!gotFinal && !state_->cancelled) {
+                    // 30s 超时仍未收到最终 completed → 以已累积文本兜底 final
+                    FCITX_WARN() << "[voice-input:realtime] End wait timeout session=" << sid;
+                    if (cb) cb(fullTranscript, true, sid);
                 }
                 break;
             }
@@ -393,12 +405,14 @@ void RealtimeAsrSession::WorkerLoop() {
                 // 若在 append 后刷新，持续说话时周期 commit 将永远不会触发。
             }
 
-            // 30min 会话上限：强制 commit + 重连
+            // 30min 会话上限：强制 commit + 重连（仅当有待 commit 音频时）
             auto sessionAge = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - sessionStart).count();
-            if (sessionAge >= kSessionMaxDuration.count()) {
+            if (sessionAge >= kSessionMaxDuration.count() && appendedSinceCommit) {
                 FCITX_WARN() << "[voice-input:realtime] 30min session limit, reconnect";
-                SendWebSocketText(curl, buildCommitEvent(), state_->cancelled);
+                if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                    FCITX_ERROR() << "[voice-input:realtime] 30min commit failed session=" << sid;
+                }
                 ++commitsInFlight;
                 reconnectNeeded = true;
                 break;
