@@ -1,10 +1,19 @@
 #include <string>
+#include <sys/stat.h>
 
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/eventdispatcher.h>
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/i18n.h>
 #include <fcitx-utils/log.h>
+// Ubuntu 24.04 等旧发行版的 fcitx5 仅有弃用的 standardpath.h，
+// 新版（fcitx5 >= 5.1.x）提供 standardpaths.h，条件编译兼容两者
+#if __has_include(<fcitx-utils/standardpaths.h>)
+#include <fcitx-utils/standardpaths.h>
+#define VOICE_INPUT_HAS_STANDARDPATHS
+#else
+#include <fcitx-utils/standardpath.h>
+#endif
 #include <fcitx/addonfactory.h>
 #include <fcitx/addoninstance.h>
 #include <fcitx/addonmanager.h>
@@ -22,6 +31,40 @@
 #include "llm/llm_client.h"
 
 namespace fcitx {
+
+namespace {
+
+// 配置文件可能含 API Key 等敏感凭据，保存后收紧为仅所有者可读写
+void RestrictConfigFilePermissions(const std::string& relativePath) {
+#ifdef VOICE_INPUT_HAS_STANDARDPATHS
+    auto configDir = StandardPaths::global().userDirectory(StandardPathsType::Config);
+    std::string fullPath = (configDir / relativePath).string();
+#else
+    auto configDir = StandardPath::global().userDirectory(StandardPath::Type::Config);
+    std::string fullPath = configDir + "/" + relativePath;
+#endif
+    if (::chmod(fullPath.c_str(), S_IRUSR | S_IWUSR) != 0) {
+        FCITX_WARN() << "[voice-input] Failed to set 0600 permissions on "
+                     << fullPath;
+    }
+}
+
+// 端点走明文协议且非本机回环时，API Key 将明文传输，给出醒目警告
+bool EndpointUsesPlaintext(const std::string& endpoint) {
+    if (endpoint.empty()) return false;
+    if (endpoint.rfind("https://", 0) == 0 || endpoint.rfind("wss://", 0) == 0)
+        return false;
+    if (endpoint.rfind("http://", 0) == 0 || endpoint.rfind("ws://", 0) == 0) {
+        if (endpoint.find("localhost") != std::string::npos ||
+            endpoint.find("127.0.0.1") != std::string::npos ||
+            endpoint.find("[::1]") != std::string::npos)
+            return false;
+        return true;
+    }
+    return false;
+}
+
+} // namespace
 
 VoiceInputEngine::VoiceInputEngine(Instance* instance)
     : instance_(instance), pipeline_(std::make_unique<Pipeline>()) {
@@ -49,6 +92,7 @@ void VoiceInputEngine::setConfig(const RawConfig& rawConfig) {
                  << *config_.activeBackend;
 
     bool saved = safeSaveAsIni(config_, "conf/voiceinput.conf");
+    RestrictConfigFilePermissions("conf/voiceinput.conf");
     FCITX_INFO() << "[voice-input] setConfig saved=" << saved;
 
     if (initialized_) {
@@ -76,10 +120,12 @@ void VoiceInputEngine::setSubConfig(const std::string& path,
     if (path == "asr/openai") {
         openaiConfig_.load(rawConfig, true);
         safeSaveAsIni(openaiConfig_, "conf/voiceinput-openai.conf");
+        RestrictConfigFilePermissions("conf/voiceinput-openai.conf");
         FCITX_INFO() << "[voice-input] Saved openai sub-config";
     } else if (path == "asr/volcengine") {
         volcengineConfig_.load(rawConfig, true);
         safeSaveAsIni(volcengineConfig_, "conf/voiceinput-volcengine.conf");
+        RestrictConfigFilePermissions("conf/voiceinput-volcengine.conf");
         FCITX_INFO() << "[voice-input] Saved volcengine sub-config";
     }
 
@@ -168,10 +214,10 @@ void VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
 
 void VoiceInputEngine::OnAsrResult(const std::string& text) {
     uint64_t generation = sessionGeneration_.load();
-    FCITX_INFO() << "[voice-input] OnAsrResult: text='"
-                 << text.substr(0, 30) << "'"
-                 << " sessionGen=" << generation
-                 << " activeGen=" << activeGeneration_.load();
+    // 语音转写内容属敏感个人信息，仅记录长度而非内容
+    FCITX_DEBUG() << "[voice-input] OnAsrResult: len=" << text.size()
+                  << " sessionGen=" << generation
+                  << " activeGen=" << activeGeneration_.load();
     eventDispatcher_.schedule([this, generation]() {
         if (generation == 0 || activeGeneration_.load() != generation) {
             FCITX_INFO() << "[voice-input] PollResults skipped: gen="
@@ -220,8 +266,9 @@ void VoiceInputEngine::PollResults() {
                         activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
                     }
                 } else if (result.utteranceId == pendingPreeditUtteranceId_) {
-                    FCITX_INFO() << "[voice-input] LLM commit: uid=" << result.utteranceId
-                                 << " text=\"" << result.text << "\"";
+                    FCITX_DEBUG() << "[voice-input] LLM commit: uid="
+                                  << result.utteranceId
+                                  << " len=" << result.text.size();
                     activeIc_->commitString(result.text);
                     activeIc_->inputPanel().reset();
                     activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
@@ -236,8 +283,8 @@ void VoiceInputEngine::PollResults() {
             } else {
                 bool llmActive = openaiConfig_.llmEnabled.value()
                               && !openaiConfig_.llmModel.value().empty();
-                FCITX_INFO() << "[voice-input] Preedit: uid=" << result.utteranceId
-                             << " text=\"" << result.text << "\""
+                FCITX_DEBUG() << "[voice-input] Preedit: uid=" << result.utteranceId
+                             << " len=" << result.text.size()
                              << " llmActive=" << llmActive;
 
                 if (result.isPartial) {
@@ -321,6 +368,11 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
 
     if (backend == "volcengine") {
         asrConfig.apiEndpoint = *volcengineConfig_.endpoint;
+        if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {
+            FCITX_WARN() << "[voice-input] Volcengine endpoint is not TLS, "
+                         << "API credentials will be sent in plaintext: "
+                         << asrConfig.apiEndpoint;
+        }
         asrConfig.apiKey = *volcengineConfig_.apiKey;
         asrConfig.authMode = *volcengineConfig_.authMode;
         asrConfig.appKey = *volcengineConfig_.appKey;
@@ -339,6 +391,11 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         asr = std::make_unique<VolcengineAsrEngine>();
     } else {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
+        if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {
+            FCITX_WARN() << "[voice-input] OpenAI endpoint is not TLS, "
+                         << "API credentials will be sent in plaintext: "
+                         << asrConfig.apiEndpoint;
+        }
         asrConfig.apiKey = *openaiConfig_.apiKey;
         asrConfig.modelName = *openaiConfig_.model;
         asrConfig.apiMode = *openaiConfig_.apiMode;

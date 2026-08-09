@@ -149,8 +149,6 @@ std::string LLMClient::Process(const std::string& text) {
                  << " input=" << text.size() << " chars"
                  << " body=" << bodyStr.size() << " bytes";
 
-    FCITX_DEBUG() << "[voice-input:llm] Request body:\n" << bodyStr;
-
     // HTTP request
     auto tStart = std::chrono::steady_clock::now();
 
@@ -243,10 +241,8 @@ std::string LLMClient::Process(const std::string& text) {
                  << " elapsed=" << elapsedMs << "ms"
                  << " output=" << result.size() << " chars";
 
-    FCITX_DEBUG() << "[voice-input:llm] Response body:\n" << response;
-
-    FCITX_DEBUG() << "[voice-input:llm] Done: raw=\"" << text
-                 << "\" → out=\"" << result << "\"";
+    FCITX_DEBUG() << "[voice-input:llm] Done: raw=" << text.size()
+                 << " chars → out=" << result.size() << " chars";
     return result;
 }
 
@@ -352,8 +348,7 @@ void LLMClient::ProcessStream(const std::string& text,
     }
 
     FCITX_DEBUG() << "[voice-input:llm:stream] Done: elapsed=" << elapsedMs << "ms"
-                 << " accumulated=" << ctx.accumulated.size() << " chars"
-                 << " \"" << ctx.accumulated << "\"";
+                 << " accumulated=" << ctx.accumulated.size() << " chars";
 }
 
 } // namespace fcitx

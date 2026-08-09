@@ -52,10 +52,11 @@ private:
     bool StartCapture();
     void AsrDispatcherLoop();
 
-    // Queues
-    ThreadSafeQueue<AudioFrame> frameQueue_;
-    ThreadSafeQueue<SpeechEvent> speechEventQueue_;
-    ThreadSafeQueue<AsrResult> resultQueue_;
+    // Queues（带容量上限：超限丢最旧，防止异常路径下内存无界增长）
+    // 1024 帧 ≈ 32s 音频缓冲；256 事件 ≈ 256 段语音；128 结果
+    ThreadSafeQueue<AudioFrame> frameQueue_{1024};
+    ThreadSafeQueue<SpeechEvent> speechEventQueue_{256};
+    ThreadSafeQueue<AsrResult> resultQueue_{128};
 
     // Workers
     std::unique_ptr<VADWorker> vadWorker_;
