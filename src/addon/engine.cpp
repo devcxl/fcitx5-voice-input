@@ -6,7 +6,14 @@
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/i18n.h>
 #include <fcitx-utils/log.h>
+// Ubuntu 24.04 等旧发行版的 fcitx5 仅有弃用的 standardpath.h，
+// 新版（fcitx5 >= 5.1.x）提供 standardpaths.h，条件编译兼容两者
+#if __has_include(<fcitx-utils/standardpaths.h>)
 #include <fcitx-utils/standardpaths.h>
+#define VOICE_INPUT_HAS_STANDARDPATHS
+#else
+#include <fcitx-utils/standardpath.h>
+#endif
 #include <fcitx/addonfactory.h>
 #include <fcitx/addoninstance.h>
 #include <fcitx/addonmanager.h>
@@ -29,8 +36,13 @@ namespace {
 
 // 配置文件可能含 API Key 等敏感凭据，保存后收紧为仅所有者可读写
 void RestrictConfigFilePermissions(const std::string& relativePath) {
+#ifdef VOICE_INPUT_HAS_STANDARDPATHS
     auto configDir = StandardPaths::global().userDirectory(StandardPathsType::Config);
     std::string fullPath = (configDir / relativePath).string();
+#else
+    auto configDir = StandardPath::global().userDirectory(StandardPath::Type::Config);
+    std::string fullPath = configDir + "/" + relativePath;
+#endif
     if (::chmod(fullPath.c_str(), S_IRUSR | S_IWUSR) != 0) {
         FCITX_WARN() << "[voice-input] Failed to set 0600 permissions on "
                      << fullPath;
