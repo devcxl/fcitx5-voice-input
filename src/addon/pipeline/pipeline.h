@@ -3,6 +3,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -64,10 +65,12 @@ private:
     std::unique_ptr<AudioCapture> capture_;
 
     // ASR session management
-    std::unique_ptr<AsrEngine> asrEngine_;
+    std::shared_ptr<AsrEngine> asrEngine_;
     std::shared_ptr<AsrSession> activeSession_;
     uint64_t activeSessionId_{0};
     std::unordered_map<uint64_t, uint64_t> sessionGenerationMap_;
+    std::mutex sessionMapMutex_;   // 保护 sessionGenerationMap_（worker/ASR/主线程三方）
+    std::mutex engineMutex_;       // 保护 asrEngine_ 指针替换与使用
     std::unique_ptr<SessionReaper> reaper_;
 
     // ASR streaming batching
@@ -80,7 +83,10 @@ private:
     // State
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> generation_{0};
-    uint64_t utteranceCounter_{0};
+    std::atomic<uint64_t> utteranceCounter_{0};
+    // 回调守卫：Abort 后置 false，引擎 worker 线程的异步回调据此丢弃
+    std::shared_ptr<std::atomic<bool>> resultGuard_ =
+        std::make_shared<std::atomic<bool>>(true);
 
     // Config
     VoiceInputConfig config_;

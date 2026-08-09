@@ -20,6 +20,13 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     return total;
 }
 
+// 进度回调：Cancel() 后中断在途 HTTP 传输（返回非 0 中止请求）
+int CancelProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t,
+                           curl_off_t) {
+    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
+    return cancelled->load() ? 1 : 0;
+}
+
 // Extract "text" field from a JSON response.
 // Returns empty string on parse failure or missing field.
 std::string ExtractJsonText(const std::string& content) {
@@ -169,6 +176,10 @@ std::string LLMClient::Process(const std::string& text) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+    // Cancel() 后中断在途传输
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancelled_);
 
     CURLcode res = curl_easy_perform(curl);
 
@@ -316,6 +327,10 @@ void LLMClient::ProcessStream(const std::string& text,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+    // Cancel() 后中断在途传输
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancelled_);
 
     CURLcode res = curl_easy_perform(curl);
 

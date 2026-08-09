@@ -5,6 +5,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -50,11 +51,14 @@ public:
 
 private:
     void WorkerLoop();
-    void ProcessFrame(const AudioFrame& frame, float probability);
-    void AppendPreRoll(const std::array<int16_t, kWindowSize>& pcm);
+    void ProcessFrame(const AudioFrame& frame, float probability,
+                      const Config& config);
+    void AppendPreRoll(const std::array<int16_t, kWindowSize>& pcm,
+                       size_t maxPreRollSamples);
     void ResetSession();
 
     Config config_;
+    std::mutex configMutex_;  // SetConfig（主线程）与 worker 线程快照隔离
 
     std::unique_ptr<SileroVad> silero_;
 

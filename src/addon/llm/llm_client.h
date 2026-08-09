@@ -1,7 +1,8 @@
 #pragma once
 
-#include <string>
+#include <atomic>
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace fcitx {
@@ -31,8 +32,12 @@ public:
                        std::function<void(const std::string&)> onToken,
                        std::function<void(const std::string&)> onComplete);
 
+    /// 取消在途请求：中断当前阻塞的 HTTP 传输，后续调用立即返回。
+    void Cancel() { cancelled_.store(true); }
+
 private:
     Config config_;
+    std::atomic<bool> cancelled_{false};
 };
 
 } // namespace fcitx
