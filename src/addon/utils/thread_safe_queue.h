@@ -10,11 +10,14 @@
  *
  * Used for passing audio chunks from capture thread to ASR thread,
  * and ASR results back to the main Fcitx5 event loop.
+ *
+ * maxSize > 0 时队列有容量上限：Push 超限丢弃最旧元素，避免消费者
+ * 异常/缓慢时内存无界增长。
  */
 template<typename T>
 class ThreadSafeQueue {
 public:
-    ThreadSafeQueue() = default;
+    explicit ThreadSafeQueue(size_t maxSize = 0) : maxSize_(maxSize) {}
 
     // Non-copyable
     ThreadSafeQueue(const ThreadSafeQueue&) = delete;
@@ -23,6 +26,9 @@ public:
     void Push(T value) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (maxSize_ > 0 && queue_.size() >= maxSize_) {
+                queue_.pop();  // 丢弃最旧元素（背压：新数据优先）
+            }
             queue_.push(std::move(value));
         }
         cv_.notify_one();
@@ -81,4 +87,5 @@ private:
     std::queue<T> queue_;
     std::condition_variable cv_;
     bool stopped_ = false;
+    size_t maxSize_ = 0;
 };

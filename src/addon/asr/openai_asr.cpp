@@ -282,8 +282,7 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     long httpCode = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
     FCITX_DEBUG() << "[voice-input:openai] Response HTTP=" << httpCode
-                   << " body_len=" << response.size()
-                   << " body=[" << response << "]";
+                   << " body_len=" << response.size();
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -333,8 +332,9 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     text.erase(0, text.find_first_not_of(" \t\n\r"));
     text.erase(text.find_last_not_of(" \t\n\r") + 1);
 
-    FCITX_INFO() << "[voice-input:openai] final session=" << state->sessionId
-                 << " \"" << text << "\"";
+    // 转写文本属敏感个人信息，降级为 DEBUG（默认 INFO 级别不落盘内容）
+    FCITX_DEBUG() << "[voice-input:openai] final session=" << state->sessionId
+                  << " \"" << text << "\"";
     if (resultCb_) resultCb_(text, true, state->sessionId);
 }
 

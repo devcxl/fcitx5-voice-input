@@ -61,6 +61,7 @@ private:
     std::mutex configMutex_;  // SetConfig（主线程）与 worker 线程快照隔离
 
     std::unique_ptr<SileroVad> silero_;
+    std::string loadedModelPath_;  // 已加载模型路径（模型缓存复用判断）
 
     ThreadSafeQueue<AudioFrame>* frameQueue_ = nullptr;
     ThreadSafeQueue<SpeechEvent>* speechEventQueue_ = nullptr;

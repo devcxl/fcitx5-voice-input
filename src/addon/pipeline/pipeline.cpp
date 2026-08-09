@@ -221,6 +221,13 @@ void Pipeline::Start() {
     while (resultQueue_.TryPop(stale)) {}
 
     vadWorker_->Start();
+    if (!vadWorker_->IsRunning()) {
+        // VAD 初始化失败（如模型缺失）：回滚 capture，避免无消费者推帧
+        FCITX_ERROR() << "[voice-input] VAD failed to start, aborting";
+        capture_->Stop();
+        capture_.reset();
+        return;
+    }
 
     running_ = true;
     asrThread_ = std::make_unique<std::thread>(&Pipeline::AsrDispatcherLoop, this);
@@ -270,9 +277,13 @@ void Pipeline::Stop() {
         capture_.reset();
     }
 
-    // Drain remaining results
+    // Drain remaining results and audio queues（避免下次 Start 消费残留帧产生幽灵转写）
     AsrResult r;
     while (resultQueue_.TryPop(r)) {}
+    AudioFrame f;
+    while (frameQueue_.TryPop(f)) {}
+    SpeechEvent se;
+    while (speechEventQueue_.TryPop(se)) {}
     {
         std::lock_guard<std::mutex> lock(sessionMapMutex_);
         sessionGenerationMap_.clear();

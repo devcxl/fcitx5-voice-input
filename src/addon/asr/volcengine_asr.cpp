@@ -31,6 +31,8 @@ constexpr uint8_t kCompressionGzip = 0x1;
 constexpr int kVolcengineSampleRate = 16000;
 constexpr int kVolcengineBigmodelSuccessCode = 20000000;
 constexpr int kVolcengineLegacySuccessCode = 1000;
+constexpr size_t kMaxFrameBytes = 16 * 1024 * 1024;        // 单帧 16MB
+constexpr size_t kMaxDecompressedBytes = 16 * 1024 * 1024; // gzip 解压累计 16MB
 
 enum class RecvStatus { Ok, Again, Closed, Error };
 
@@ -94,6 +96,13 @@ std::string GzipDecompress(const uint8_t* data, size_t size) {
             return {};
         }
         out.append(buffer.data(), buffer.size() - zs.avail_out);
+        // 限制累计解压输出，防止恶意/异常服务端耗尽内存
+        if (out.size() > kMaxDecompressedBytes) {
+            FCITX_WARN() << "[voice-input:volcengine] gzip output exceeds "
+                         << kMaxDecompressedBytes << " bytes";
+            inflateEnd(&zs);
+            return {};
+        }
     }
     inflateEnd(&zs);
     return out;
@@ -182,6 +191,12 @@ RecvStatus ReceiveWebSocketFrame(CURL* curl, std::vector<uint8_t>& frame) {
         }
         if (meta && (meta->flags & CURLWS_CLOSE)) return RecvStatus::Closed;
         if (!meta || !(meta->flags & CURLWS_BINARY)) continue;
+        // 限制单帧累计大小，防止恶意/异常服务端耗尽内存
+        if (frame.size() + received > kMaxFrameBytes) {
+            FCITX_ERROR() << "[voice-input:volcengine] WS frame exceeds "
+                          << kMaxFrameBytes << " bytes";
+            return RecvStatus::Error;
+        }
         frame.insert(frame.end(), buffer.begin(), buffer.begin() + received);
         if (meta->bytesleft == 0) return RecvStatus::Ok;
     }
@@ -287,7 +302,7 @@ VolcengineAsrSession::VolcengineAsrSession(const AsrEngine::Config& config,
                                            uint64_t sessionId) {
     state_->sessionId = sessionId;
     errorCb_ = std::move(errorCb);
-    audioChunks_ = std::make_shared<ThreadSafeQueue<std::vector<int16_t>>>();
+    audioChunks_ = std::make_shared<ThreadSafeQueue<std::vector<int16_t>>>(512);
 
     endpoint_ = config.apiEndpoint.empty()
                     ? "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
@@ -560,7 +575,9 @@ void VolcengineAsrSession::WorkerLoop() {
         if (cb) cb("", true, sid);
         return;
     }
-    FCITX_INFO() << "[voice-input:volcengine] final session=" << sid << " \"" << latestText << "\"";
+    // 转写文本属敏感个人信息，降级为 DEBUG（默认 INFO 级别不落盘内容）
+    FCITX_DEBUG() << "[voice-input:volcengine] final session=" << sid
+                  << " \"" << latestText << "\"";
     if (cb) cb(latestText, true, sid);
 }
 

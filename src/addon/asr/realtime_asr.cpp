@@ -20,6 +20,7 @@ namespace {
 constexpr int kSourceSampleRate = 16000;
 constexpr int kTargetSampleRate = 24000;  // OpenAI Realtime 要求 >= 24kHz
 constexpr int kAppendChunkSamples = 2400; // ~100ms @24k 音频推送粒度（含重采样后）
+constexpr size_t kMaxFrameBytes = 16 * 1024 * 1024;  // 单帧 16MB 上限
 
 enum class RecvStatus { Ok, Again, Closed, Error };
 
@@ -86,7 +87,15 @@ RecvStatus ReceiveTextFrame(CURL* curl, std::string& out) {
         }
         if (meta && (meta->flags & CURLWS_CLOSE)) return RecvStatus::Closed;
         bool isText = meta && (meta->flags & CURLWS_TEXT);
-        if (received > 0) out.append(buffer.data(), received);
+        if (received > 0) {
+            // 限制单帧累计大小，防止恶意/异常服务端耗尽内存
+            if (out.size() + received > kMaxFrameBytes) {
+                FCITX_ERROR() << "[voice-input:realtime] WS frame exceeds "
+                              << kMaxFrameBytes << " bytes";
+                return RecvStatus::Error;
+            }
+            out.append(buffer.data(), received);
+        }
         if (!meta || !isText) continue;
         if (meta->bytesleft == 0) return RecvStatus::Ok;
     }
@@ -110,7 +119,7 @@ RealtimeAsrSession::RealtimeAsrSession(const AsrEngine::Config& config,
                                        uint64_t sessionId) {
     state_->sessionId = sessionId;
     errorCb_ = std::move(errorCb);
-    audioChunks_ = std::make_shared<ThreadSafeQueue<std::vector<int16_t>>>();
+    audioChunks_ = std::make_shared<ThreadSafeQueue<std::vector<int16_t>>>(512);
 
     // 由 baseUrl（https://api.openai.com/v1）派生 wss 端点
     std::string base = config.apiEndpoint;

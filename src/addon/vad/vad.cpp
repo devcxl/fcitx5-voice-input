@@ -65,13 +65,18 @@ void VADWorker::SetVadStatusCallback(VadStatusCallback cb) {
 void VADWorker::Start() {
     if (running_) return;
 
-    // Init Silero
+    // Init Silero（跨会话缓存模型实例，避免每次切换输入法都在主线程
+    // 重建 ONNX Session 造成卡顿；模型路径变化时重建）
     std::string modelPath = config_.sileroModelPath.empty()
                                 ? DefaultSileroModelPath()
                                 : config_.sileroModelPath;
-    silero_ = std::make_unique<SileroVad>(modelPath);
+    if (!silero_ || loadedModelPath_ != modelPath) {
+        silero_ = std::make_unique<SileroVad>(modelPath);
+        loadedModelPath_ = modelPath;
+    }
     if (!silero_->IsReady()) {
         FCITX_ERROR() << "[voice-input:vadworker] SileroVad init failed";
+        silero_.reset();
         return;
     }
 
@@ -88,7 +93,7 @@ void VADWorker::Stop() {
         thread_->join();
     }
     thread_.reset();
-    silero_.reset();
+    // 保留 silero_：模型实例跨会话复用（见 Start）
     FCITX_INFO() << "[voice-input:vadworker] Stopped";
 }
 
