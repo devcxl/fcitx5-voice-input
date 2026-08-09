@@ -70,110 +70,132 @@ void Pipeline::SetLLMClient(std::unique_ptr<LLMClient> client) {
 }
 
 void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
-    asrEngine_ = std::move(engine);
-    if (asrEngine_) {
-        asrEngine_->SetResultCallback(
-            [this](const std::string& text, bool isFinal, uint64_t sid) {
-                // Look up generation captured at session start
+    std::shared_ptr<AsrEngine> enginePtr = std::move(engine);
+    if (!enginePtr) {
+        std::lock_guard<std::mutex> lock(engineMutex_);
+        asrEngine_ = nullptr;
+        return;
+    }
+    enginePtr->SetResultCallback(
+        [this, guard = resultGuard_](const std::string& text, bool isFinal,
+                                     uint64_t sid) {
+            // 会话 worker 线程可能晚于管线析构退出（reaper 超时 detach），
+            // 回调前检查守卫，避免访问已析构的 Pipeline。
+            if (!guard->load()) return;
+
+            // Look up generation captured at session start
+            uint64_t gen = 0;
+            {
+                std::lock_guard<std::mutex> lock(sessionMapMutex_);
                 auto it = sessionGenerationMap_.find(sid);
                 if (it == sessionGenerationMap_.end()) return;
-                uint64_t gen = it->second;
-
+                gen = it->second;
                 if (isFinal) {
-                    if (text.empty()) {
-                        AsrResult errorResult;
-                        errorResult.generation = gen;
-                        errorResult.sessionId = sid;
-                        errorResult.isError = true;
-                        resultQueue_.Push(std::move(errorResult));
-                        if (resultCb_) resultCb_(text);
-                        sessionGenerationMap_.erase(sid);
-                        return;
-                    }
-
-                    uint64_t uid = ++utteranceCounter_;
-
-                    AsrResult stale;
-                    while (resultQueue_.TryPop(stale)) {
-                        if (stale.isLLMRefined) {
-                            FCITX_DEBUG() << "[voice-input] Drained stale LLM result: "
-                                         << "uid=" << stale.utteranceId;
-                        }
-                    }
-
-                    AsrResult rawResult;
-                    rawResult.text = text;
-                    rawResult.generation = gen;
-                    rawResult.sessionId = sid;
-                    rawResult.utteranceId = uid;
-                    rawResult.isLLMRefined = false;
-                    FCITX_DEBUG() << "[voice-input] ASR raw: uid=" << uid
-                                 << " text=\"" << text << "\"";
-                    resultQueue_.Push(std::move(rawResult));
-
-                    if (resultCb_) {
-                        resultCb_(text);
-                    }
-
-                    if (llmClient_) {
-                        FCITX_DEBUG() << "[voice-input] LLM refine started"
-                                     << " uid=" << uid << " gen=" << gen
-                                     << " stream=" << llmStream_;
-                        if (llmStream_) {
-                            llmClient_->ProcessStream(text,
-                                [this, uid, gen, sid](const std::string& partial) {
-                                    AsrResult partialResult;
-                                    partialResult.text = partial;
-                                    partialResult.generation = gen;
-                                    partialResult.sessionId = sid;
-                                    partialResult.utteranceId = uid;
-                                    partialResult.isLLMRefined = true;
-                                    partialResult.isPartial = true;
-                                    resultQueue_.Push(std::move(partialResult));
-                                    if (resultCb_) resultCb_(partial);
-                                },
-                                [this, uid, gen, sid](const std::string& fullText) {
-                                    AsrResult finalResult;
-                                    finalResult.text = fullText;
-                                    finalResult.generation = gen;
-                                    finalResult.sessionId = sid;
-                                    finalResult.utteranceId = uid;
-                                    finalResult.isLLMRefined = true;
-                                    finalResult.isPartial = false;
-                                    resultQueue_.Push(std::move(finalResult));
-                                    if (resultCb_) resultCb_(fullText);
-                                });
-                        } else {
-                            std::string processed = llmClient_->Process(text);
-                            if (!processed.empty()) {
-                                AsrResult refinedResult;
-                                refinedResult.text = processed;
-                                refinedResult.generation = gen;
-                                refinedResult.sessionId = sid;
-                                refinedResult.utteranceId = uid;
-                                refinedResult.isLLMRefined = true;
-                                resultQueue_.Push(std::move(refinedResult));
-                                if (resultCb_) resultCb_(processed);
-                            }
-                        }
-                    }
                     sessionGenerationMap_.erase(sid);
-                } else if (!text.empty()) {
-                    AsrResult partial;
-                    partial.text = text;
-                    partial.generation = gen;
-                    partial.sessionId = sid;
-                    partial.isLLMRefined = false;
-                    partial.isPartial = true;
-                    resultQueue_.Push(std::move(partial));
-                    if (resultCb_) resultCb_(text);
                 }
-            });
-        asrEngine_->SetErrorCallback(
-            [this](const std::string& error) {
-                FCITX_ERROR() << "[voice-input] ASR error: " << error;
-            });
-    }
+            }
+
+            if (isFinal) {
+                if (text.empty()) {
+                    AsrResult errorResult;
+                    errorResult.generation = gen;
+                    errorResult.sessionId = sid;
+                    errorResult.isError = true;
+                    resultQueue_.Push(std::move(errorResult));
+                    if (resultCb_) resultCb_(text);
+                    return;
+                }
+
+                uint64_t uid = ++utteranceCounter_;
+
+                AsrResult stale;
+                while (resultQueue_.TryPop(stale)) {
+                    if (stale.isLLMRefined) {
+                        FCITX_DEBUG() << "[voice-input] Drained stale LLM result: "
+                                     << "uid=" << stale.utteranceId;
+                    }
+                }
+
+                AsrResult rawResult;
+                rawResult.text = text;
+                rawResult.generation = gen;
+                rawResult.sessionId = sid;
+                rawResult.utteranceId = uid;
+                rawResult.isLLMRefined = false;
+                FCITX_DEBUG() << "[voice-input] ASR raw: uid=" << uid
+                             << " text=\"" << text << "\"";
+                resultQueue_.Push(std::move(rawResult));
+
+                if (resultCb_) {
+                    resultCb_(text);
+                }
+
+                if (llmClient_) {
+                    FCITX_DEBUG() << "[voice-input] LLM refine started"
+                                 << " uid=" << uid << " gen=" << gen
+                                 << " stream=" << llmStream_;
+                    if (llmStream_) {
+                        llmClient_->ProcessStream(text,
+                            [this, guard, uid, gen,
+                             sid](const std::string& partial) {
+                                if (!guard->load()) return;
+                                AsrResult partialResult;
+                                partialResult.text = partial;
+                                partialResult.generation = gen;
+                                partialResult.sessionId = sid;
+                                partialResult.utteranceId = uid;
+                                partialResult.isLLMRefined = true;
+                                partialResult.isPartial = true;
+                                resultQueue_.Push(std::move(partialResult));
+                                if (resultCb_) resultCb_(partial);
+                            },
+                            [this, guard, uid, gen,
+                             sid](const std::string& fullText) {
+                                if (!guard->load()) return;
+                                AsrResult finalResult;
+                                finalResult.text = fullText;
+                                finalResult.generation = gen;
+                                finalResult.sessionId = sid;
+                                finalResult.utteranceId = uid;
+                                finalResult.isLLMRefined = true;
+                                finalResult.isPartial = false;
+                                resultQueue_.Push(std::move(finalResult));
+                                if (resultCb_) resultCb_(fullText);
+                            });
+                    } else {
+                        std::string processed = llmClient_->Process(text);
+                        if (!processed.empty()) {
+                            AsrResult refinedResult;
+                            refinedResult.text = processed;
+                            refinedResult.generation = gen;
+                            refinedResult.sessionId = sid;
+                            refinedResult.utteranceId = uid;
+                            refinedResult.isLLMRefined = true;
+                            resultQueue_.Push(std::move(refinedResult));
+                            if (resultCb_) resultCb_(processed);
+                        }
+                    }
+                }
+            } else if (!text.empty()) {
+                AsrResult partial;
+                partial.text = text;
+                partial.generation = gen;
+                partial.sessionId = sid;
+                partial.isLLMRefined = false;
+                partial.isPartial = true;
+                resultQueue_.Push(std::move(partial));
+                if (resultCb_) resultCb_(text);
+            }
+        });
+    enginePtr->SetErrorCallback(
+        [this, guard = resultGuard_](const std::string& error) {
+            if (!guard->load()) return;
+            FCITX_ERROR() << "[voice-input] ASR error: " << error;
+        });
+
+    // 先绑定回调再发布指针，ASR 线程随后在锁内取用，避免使用到未绑定的引擎
+    std::lock_guard<std::mutex> lock(engineMutex_);
+    asrEngine_ = std::move(enginePtr);
 }
 
 void Pipeline::SetResultCallback(ResultCallback cb) {
@@ -230,8 +252,18 @@ void Pipeline::Stop() {
     }
 
     // Cancel all engine sessions (old ones will be cleaned by reaper)
-    if (asrEngine_) {
-        asrEngine_->CancelAllSessions();
+    std::shared_ptr<AsrEngine> engine;
+    {
+        std::lock_guard<std::mutex> lock(engineMutex_);
+        engine = asrEngine_;
+    }
+    if (engine) {
+        engine->CancelAllSessions();
+    }
+
+    // 停止 LLM 后处理（中断在途请求）
+    if (llmClient_) {
+        llmClient_->Cancel();
     }
 
     if (capture_) {
@@ -241,7 +273,10 @@ void Pipeline::Stop() {
     // Drain remaining results
     AsrResult r;
     while (resultQueue_.TryPop(r)) {}
-    sessionGenerationMap_.clear();
+    {
+        std::lock_guard<std::mutex> lock(sessionMapMutex_);
+        sessionGenerationMap_.clear();
+    }
 
     FCITX_INFO() << "[voice-input] Pipeline stopped";
 }
@@ -267,8 +302,17 @@ void Pipeline::Abort() {
         activeSessionId_ = 0;
     }
 
-    if (asrEngine_) {
-        asrEngine_->CancelAllSessions();
+    std::shared_ptr<AsrEngine> engine;
+    {
+        std::lock_guard<std::mutex> lock(engineMutex_);
+        engine = asrEngine_;
+    }
+    if (engine) {
+        engine->CancelAllSessions();
+    }
+
+    if (llmClient_) {
+        llmClient_->Cancel();
     }
 
     // Clear queues
@@ -278,6 +322,9 @@ void Pipeline::Abort() {
     while (speechEventQueue_.TryPop(se)) {}
     AsrResult r;
     while (resultQueue_.TryPop(r)) {}
+
+    // 终态：回调守卫失效，引擎 worker 线程的异步回调全部丢弃
+    resultGuard_->store(false);
 }
 
 bool Pipeline::StartCapture() {
@@ -312,26 +359,40 @@ void Pipeline::AsrDispatcherLoop() {
         }
 
         switch (ev.type) {
-        case SpeechEventType::Begin:
-            if (!asrEngine_) break;
+        case SpeechEventType::Begin: {
+            // 取引擎局部引用：SetAsrEngine 可能随时替换指针，持锁拷贝保证
+            // StartSession 期间引擎对象存活
+            std::shared_ptr<AsrEngine> engine;
+            {
+                std::lock_guard<std::mutex> lock(engineMutex_);
+                engine = asrEngine_;
+            }
+            if (!engine) break;
             // Cancel current session if still active
             if (activeSession_) {
-                sessionGenerationMap_.erase(activeSessionId_);
+                {
+                    std::lock_guard<std::mutex> lock(sessionMapMutex_);
+                    sessionGenerationMap_.erase(activeSessionId_);
+                }
                 activeSession_->Cancel();
                 reaper_->Add(std::move(activeSession_));
                 activeSessionId_ = 0;
             }
             // Start new session
-            activeSession_ = asrEngine_->StartSession();
+            activeSession_ = engine->StartSession();
             if (activeSession_) {
                 activeSessionId_ = activeSession_->GetState()->sessionId;
-                sessionGenerationMap_[activeSessionId_] = generation_.load();
+                {
+                    std::lock_guard<std::mutex> lock(sessionMapMutex_);
+                    sessionGenerationMap_[activeSessionId_] = generation_.load();
+                }
                 FCITX_DEBUG() << "[voice-input:asr] Begin -> session="
                              << activeSessionId_
-                             << " gen=" << sessionGenerationMap_[activeSessionId_];
+                             << " gen=" << generation_.load();
             }
             pendingAsrAudio_.clear();
             break;
+        }
 
         case SpeechEventType::Audio:
             if (!activeSession_ || ev.pcm.empty()) break;

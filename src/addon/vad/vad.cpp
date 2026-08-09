@@ -22,6 +22,10 @@ int64_t NowMs() {
         .count();
 }
 
+size_t PreRollSamples(int preRollMs) {
+    return static_cast<size_t>(kSampleRate) * preRollMs / 1000;
+}
+
 } // namespace
 
 VADWorker::VADWorker() = default;
@@ -31,16 +35,19 @@ VADWorker::~VADWorker() {
 }
 
 void VADWorker::SetConfig(const Config& config) {
-    config_ = config;
+    {
+        std::lock_guard<std::mutex> lock(configMutex_);
+        config_ = config;
+    }
 
     FCITX_INFO() << "[voice-input:vadworker] Config:"
-                 << " speechThresh=" << config_.speechThreshold
-                 << " silenceThresh=" << config_.silenceThreshold
-                 << " startFrames=" << config_.startFrames
-                 << " preRollMs=" << config_.preRollMs
-                 << " endSilenceMs=" << config_.endSilenceMs
-                 << " minSpeechMs=" << config_.minSpeechMs
-                 << " maxSpeechMs=" << config_.maxSpeechMs;
+                 << " speechThresh=" << config.speechThreshold
+                 << " silenceThresh=" << config.silenceThreshold
+                 << " startFrames=" << config.startFrames
+                 << " preRollMs=" << config.preRollMs
+                 << " endSilenceMs=" << config.endSilenceMs
+                 << " minSpeechMs=" << config.minSpeechMs
+                 << " maxSpeechMs=" << config.maxSpeechMs;
 }
 
 void VADWorker::SetFrameQueue(ThreadSafeQueue<AudioFrame>* queue) {
@@ -94,28 +101,36 @@ void VADWorker::WorkerLoop() {
             continue;
         }
 
+        // 快照配置：SetConfig 可能在主线程并发改写 config_
+        Config config;
+        {
+            std::lock_guard<std::mutex> lock(configMutex_);
+            config = config_;
+        }
+
         float prob = silero_->Predict(frame.pcm.data(), frame.pcm.size());
         if (prob < 0.0f) {
             // Inference failed
             continue;
         }
 
-        ProcessFrame(frame, prob);
+        ProcessFrame(frame, prob, config);
     }
 }
 
-void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
-    bool speechStart = probability >= config_.speechThreshold;
-    bool speechKeep = probability >= config_.silenceThreshold;
+void VADWorker::ProcessFrame(const AudioFrame& frame, float probability,
+                             const Config& config) {
+    bool speechStart = probability >= config.speechThreshold;
+    bool speechKeep = probability >= config.silenceThreshold;
 
-    AppendPreRoll(frame.pcm);
+    AppendPreRoll(frame.pcm, PreRollSamples(config.preRollMs));
 
     if (state_ == State::Idle) {
         if (speechStart) {
             speechFrames_++;
-            if (speechFrames_ >= config_.startFrames) {
+            if (speechFrames_ >= config.startFrames) {
                 state_ = State::Speaking;
-                startMs_ = frame.timestamp_ms - config_.preRollMs;
+                startMs_ = frame.timestamp_ms - config.preRollMs;
 
                 SpeechEvent begin;
                 begin.type = SpeechEventType::Begin;
@@ -168,16 +183,16 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
     }
 
     int endSilenceFrames =
-        config_.endSilenceMs / kFrameMs;
+        config.endSilenceMs / kFrameMs;
     bool silenceEnd = silenceFrames_ >= endSilenceFrames;
 
-    int maxDurationMs = config_.maxSpeechMs;
+    int maxDurationMs = config.maxSpeechMs;
     bool tooLong =
         (lastSpeechMs_ - startMs_) >= maxDurationMs;
 
     if (silenceEnd || tooLong) {
         int durationMs = static_cast<int>((lastSpeechMs_ - startMs_));
-        if (durationMs >= config_.minSpeechMs) {
+        if (durationMs >= config.minSpeechMs) {
             SpeechEvent end;
             end.type = SpeechEventType::End;
             end.timestamp_ms = frame.timestamp_ms;
@@ -190,7 +205,7 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
             cancel.timestamp_ms = frame.timestamp_ms;
             if (speechEventQueue_) speechEventQueue_->Push(std::move(cancel));
             FCITX_DEBUG() << "[voice-input:vadworker] Utterance too short ("
-                          << durationMs << "ms < " << config_.minSpeechMs
+                          << durationMs << "ms < " << config.minSpeechMs
                           << "ms), cancelled";
         }
 
@@ -203,13 +218,11 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability) {
 }
 
 void VADWorker::AppendPreRoll(
-    const std::array<int16_t, kWindowSize>& pcm) {
+    const std::array<int16_t, kWindowSize>& pcm, size_t maxPreRollSamples) {
     for (auto sample : pcm) {
         preRoll_.push_back(sample);
     }
 
-    size_t maxPreRollSamples =
-        static_cast<size_t>(kSampleRate) * config_.preRollMs / 1000;
     while (preRoll_.size() > maxPreRollSamples) {
         preRoll_.pop_front();
     }

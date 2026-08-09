@@ -62,6 +62,13 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     return size * nmemb;
 }
 
+// 进度回调：会话被取消时中断在途 HTTP 传输（返回非 0 中止请求）
+int CancelProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t,
+                           curl_off_t) {
+    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
+    return cancelled->load() ? 1 : 0;
+}
+
 // Base64 编码已提取到 utils/base64.h，此处复用公共实现。
 
 std::string BuildMultipartBody(const std::vector<uint8_t>& wavData,
@@ -139,9 +146,12 @@ void OpenaiAsrSession::End() {
         if (pcmBuffer_.empty()) return;
         buffer.swap(pcmBuffer_);
     }
+    // 用 shared_from_this 保活会话：worker 线程可能因慢网络在 JoinWithTimeout
+    // 超时后被 detach，此时会话对象仍必须存活，否则成员访问构成 use-after-free。
+    auto self = std::static_pointer_cast<OpenaiAsrSession>(shared_from_this());
     workerThread_ = std::make_unique<std::thread>(
-        [this, buf = std::move(buffer)]() mutable {
-            TranscribeWorker(std::move(buf));
+        [self, buf = std::move(buffer)]() mutable {
+            self->TranscribeWorker(std::move(buf));
         });
 }
 
@@ -262,6 +272,10 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+    // Cancel() 后立即中断在途传输，避免 JoinWithTimeout 超时 detach
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &state->cancelled);
 
     CURLcode res = curl_easy_perform(curl);
 
