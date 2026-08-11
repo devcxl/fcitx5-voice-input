@@ -9,8 +9,6 @@
 #include <fcitx-utils/log.h>
 #include <pulse/error.h>
 
-using namespace std::chrono_literals;
-
 namespace fcitx {
 namespace {
 
@@ -112,20 +110,11 @@ void PulseAudioCapture::Stop() {
 
     running_ = false;
     if (captureThread_ && captureThread_->joinable()) {
-        // pa_simple_read 是同步阻塞调用，设备挂起/异常时可能长时间不返回。
-        // 先尝试快速 join；超时则释放流以唤醒阻塞中的 read（read 返回错误后
-        // 线程自行退出），避免 Stop 永久阻塞主线程。
-        auto deadline = std::chrono::steady_clock::now() + 500ms;
-        while (std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(5ms);
-            if (!captureThread_->joinable()) break;
-        }
-        if (captureThread_->joinable() && stream_) {
-            FCITX_WARN() << "[voice-input:pulse] Stop join timeout, "
-                         << "freeing stream to wake up blocking read";
-            pa_simple_free(stream_);
-            stream_ = nullptr;
-        }
+        // pa_simple_read 是同步阻塞调用，只能等线程退出后再释放流。
+        // 严禁在 join 前并发调用 pa_simple_free()：libpulse 对象不支持跨
+        // 线程并发访问，free 与阻塞中的 read 并发会构成 use-after-free/
+        // 堆损坏（曾引发 free(): invalid pointer 崩溃，见 PR #17）。
+        // 设备挂起时 Stop 可能因此阻塞——根治需改用 async API，见 issue。
         captureThread_->join();
         captureThread_.reset();
     }
