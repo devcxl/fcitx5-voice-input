@@ -3,12 +3,23 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <dlfcn.h>
 #include <thread>
 
 #include <spa/param/audio/format-utils.h>
 #include <fcitx-utils/log.h>
 
 namespace fcitx {
+namespace {
+
+// libpipewire 运行时库候选 soname（按优先级）。pipewire 0.3 系列为 .so.0；
+// 未来若 soname 变更（如 1.0），旧版本 addon 仍可尝试后续候选。
+constexpr const char* kPwLibCandidates[] = {
+    "libpipewire-0.3.so.0",
+    "libpipewire-1.0.so.0",
+};
+
+} // namespace
 
 PipeWireCapture::PipeWireCapture()
     : ringBuffer_(std::make_unique<AudioRingBuffer>(65536)) {}
@@ -17,14 +28,53 @@ PipeWireCapture::~PipeWireCapture() {
     Stop();
 }
 
+// dlopen 加载 libpipewire 并校验关键符号。
+// 返回 true 后所有 pw_* 调用均安全；失败则本后端不可用（Start 返回 false，
+// 由 pipeline 回退到其他后端），不影响 addon 本体加载。
+bool PipeWireCapture::LoadLib() {
+    if (pwLib_) return true;
+
+    for (const char* soname : kPwLibCandidates) {
+        void* handle = dlopen(soname, RTLD_NOW | RTLD_GLOBAL);
+        if (!handle) continue;
+
+        // 符号完整性校验：同名 soname 可能被错误实现/损坏库占用，
+        // 必须确认入口符号真实存在，否则后续调用会 undefined symbol 崩溃
+        if (!dlsym(handle, "pw_init")) {
+            FCITX_WARN() << "[voice-input:pw] " << soname
+                         << " loaded but pw_init missing: " << dlerror();
+            dlclose(handle);
+            continue;
+        }
+
+        pwLib_ = handle;
+        FCITX_INFO() << "[voice-input:pw] Runtime-loaded " << soname;
+        return true;
+    }
+
+    FCITX_WARN() << "[voice-input:pw] Failed to dlopen libpipewire: "
+                 << dlerror();
+    return false;
+}
+
+void PipeWireCapture::UnloadLib() {
+    if (pwLib_) {
+        dlclose(pwLib_);
+        pwLib_ = nullptr;
+    }
+}
+
 bool PipeWireCapture::Start() {
     if (running_) return true;
+
+    if (!LoadLib()) return false;
 
     pw_init(nullptr, nullptr);
 
     loop_ = pw_thread_loop_new("voice-input-capture", nullptr);
     if (!loop_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to create pw_thread_loop";
+        UnloadLib();
         return false;
     }
 
@@ -32,6 +82,7 @@ bool PipeWireCapture::Start() {
     if (!context_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to create pw_context";
         Cleanup(false);
+        UnloadLib();
         return false;
     }
 
@@ -39,6 +90,7 @@ bool PipeWireCapture::Start() {
     if (!core_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to connect pw_context";
         Cleanup(false);
+        UnloadLib();
         return false;
     }
 
@@ -55,6 +107,7 @@ bool PipeWireCapture::Start() {
     if (!stream_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to create pw_stream";
         Cleanup(false);
+        UnloadLib();
         return false;
     }
 
@@ -89,12 +142,14 @@ bool PipeWireCapture::Start() {
     if (connectResult < 0) {
         FCITX_ERROR() << "[voice-input:pw] pw_stream_connect failed: " << connectResult;
         Cleanup(false);
+        UnloadLib();
         return false;
     }
 
     if (pw_thread_loop_start(loop_) < 0) {
         FCITX_ERROR() << "[voice-input:pw] Failed to start pw_thread_loop";
         Cleanup(false);
+        UnloadLib();
         return false;
     }
 
@@ -118,6 +173,7 @@ void PipeWireCapture::Stop() {
     }
 
     Cleanup(true);
+    UnloadLib();
     running_ = false;
     FCITX_INFO() << "[voice-input:pw] Capture stopped";
 }

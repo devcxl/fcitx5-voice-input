@@ -19,10 +19,12 @@ docker build -t arch-builder "$(dirname "$0")"
 docker run --rm -v "${PWD}/${WORK_DIR}:/build" arch-builder
 
 # Extract result
-PKGFILE=$(ls "${WORK_DIR}"/*.pkg.tar.zst 2>/dev/null | head -1)
+PKGFILE=$(ls "${WORK_DIR}"/*.pkg.tar.zst 2>/dev/null | head -1 || true)
 if [ -n "${PKGFILE}" ]; then
   cp "${PKGFILE}" "${OUT_DIR}/"
   echo "pkgfile=${PKGFILE}" >> "${GITHUB_OUTPUT}"
 else
+  echo "::error::makepkg produced no .pkg.tar.zst — check AUR build logs"
   echo "pkgfile=" >> "${GITHUB_OUTPUT}"
+  exit 1
 fi

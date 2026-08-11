@@ -18,9 +18,10 @@ cmake --build build -j"$(nproc)"
 
 选项：`BUILD_TESTS`（目前无测试文件）。
 
-## 依赖（全部必需）
+## 依赖
 
-`fcitx5`（pkg-config 名 fcitx5 或 Fcitx5Core）、`pipewire-0.3`（libpipewire-0.3）、`libpulse-simple`、`jsoncpp`、`libcurl`（>= 7.86.0）、`zlib`、`onnxruntime`（Silero VAD）。
+必需：`fcitx5`（pkg-config 名 fcitx5 或 Fcitx5Core）、`jsoncpp`、`libcurl`（>= 7.86.0）、`zlib`、`onnxruntime`（Silero VAD）。
+可选（至少其一）：`pipewire-0.3`（libpipewire-0.3）、`libpulse-simple`。缺少任一录音后端时仅失去对应 capture 后端，addon 仍可构建；两个都缺则 CMake 报错。**运行时**两个库均为 dlopen 延迟加载（无链接期依赖），库升级/soname 变更不影响已安装 addon。
 
 克隆后需执行：`git submodule update --init --recursive`。
 
@@ -55,7 +56,8 @@ po/
 - **Addon 注册**: `FCITX_ADDON_FACTORY(VoiceInputAddonFactory)` — 必须在 `namespace fcitx` 外部
 - **禁止安装**: 除非用户明确要求 `cmake --install`，否则只构建不安装。勿动 `/usr`、`~/.local` 等路径。
 - **PipeWire 回调**: `on_process` 内 ≤100μs，只写 ring buffer，禁止阻塞/VAD/分配
-- **音频捕获后端**: 优先 PulseAudio（兼容 PulseAudio 和 pipewire-pulse），失败后 fallback 到 PipeWire 直连
+- **音频捕获后端**: 可选编译（CMake 宏 `HAVE_PULSEAUDIO`/`HAVE_PIPEWIRE`），优先 PulseAudio（兼容 PulseAudio 和 pipewire-pulse），失败后 fallback 到 PipeWire 直连；仅编译进来的后端可用
+- **录音库运行期加载（dlopen）**: libpulse-simple/libpipewire **不链接**（无 DT_NEEDED），由各 capture 的 `LoadLib()` 在 Start 时 dlopen（RTLD_NOW|RTLD_GLOBAL，候选 soname 列表 + 关键符号 dlsym 校验）。fcitx5 以 RTLD_LAZY 加载 addon（`Library=` 无 `export:` 前缀），未定义符号延迟到首次调用解析——首次调用必在 LoadLib 成功后，故安全。库缺失/soname 变更时后端优雅降级，addon 本体不受影响
 - **PipeWire**: on_process→ringbuffer(float32)→DrainLoop thread→int16 AudioFrame→FrameQueue
 - **Ring buffer**: `Clear()` 被故意省略（与 PipeWire 回调 data race），清空用 `Read()` drain 模式
 - **音频格式统一**: 16kHz mono, int16, 512 samples/window (32ms)
