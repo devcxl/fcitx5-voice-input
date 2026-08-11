@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0] - 2026-08-11
+
+### Added
+- OpenAI GPT-Realtime 流式实时转录（#10/#11）
+- 输入法图标 SVG + 多尺寸 PNG（#13）
+- 录音后端可选依赖：PipeWire/PulseAudio 任一缺失时仅失去对应后端，addon 仍可构建（#19）
+- 录音库运行期 dlopen 延迟加载：无链接期 DT_NEEDED 依赖，库升级/soname 变更不影响已安装 addon（#19）
+- DEB 包补齐 Depends/Recommends 依赖声明；CI 新增 build-no-pipewire 降级构建验证（#19）
+
+### Fixed
+- 修复会话线程 UAF 与多处数据竞争（#14/#15）
+- 日志降级、配置权限、停止路径与资源上限加固（#14/#16）
+- Realtime 引擎周期 commit 失效 / End 尾部音频丢失 / preedit 回退（#12）
+- 修复 PulseAudio Stop 跨线程 `pa_simple_free` 导致的 `free(): invalid pointer` 崩溃（#17）
+- 修复 classicui 不显示图标问题（#13）
+
+## [0.3.1] - 2026-07-14
+
+### Changed
+- 构建/安装脚本移至 `scripts/`
+
 ## [0.3.0] - 2026-07-13
 
 ### Added
