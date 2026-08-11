@@ -6,8 +6,12 @@
 #include <cmath>
 #include <thread>
 
+#ifdef HAVE_PIPEWIRE
 #include "capture/pipewire_capture.h"
+#endif
+#ifdef HAVE_PULSEAUDIO
 #include "capture/pulse_audio_capture.h"
+#endif
 #include "llm/llm_client.h"
 
 using namespace std::chrono_literals;
@@ -339,6 +343,7 @@ void Pipeline::Abort() {
 }
 
 bool Pipeline::StartCapture() {
+#ifdef HAVE_PULSEAUDIO
     capture_ = std::make_unique<PulseAudioCapture>();
     capture_->SetFrameQueue(&frameQueue_);
 
@@ -348,6 +353,10 @@ bool Pipeline::StartCapture() {
     }
 
     FCITX_WARN() << "[voice-input] PulseAudio failed, falling back to PipeWire";
+    capture_.reset();
+#endif
+
+#ifdef HAVE_PIPEWIRE
     capture_ = std::make_unique<PipeWireCapture>();
     capture_->SetFrameQueue(&frameQueue_);
 
@@ -356,8 +365,14 @@ bool Pipeline::StartCapture() {
         return true;
     }
 
-    FCITX_ERROR() << "[voice-input] Failed to start any capture backend";
+    FCITX_ERROR() << "[voice-input] PipeWire failed to start";
     capture_.reset();
+#endif
+
+#if !defined(HAVE_PULSEAUDIO) && !defined(HAVE_PIPEWIRE)
+    // CMake 已保证至少编译一个后端，此处仅作防御
+    FCITX_ERROR() << "[voice-input] No capture backend compiled in";
+#endif
     return false;
 }
 

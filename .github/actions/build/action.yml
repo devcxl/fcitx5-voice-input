@@ -6,6 +6,10 @@ inputs:
     description: CMake build type
     required: false
     default: Release
+  capture_pkgs:
+    description: apt packages for audio capture backends (override to simulate a missing backend)
+    required: false
+    default: "libpipewire-0.3-dev libspa-0.2-dev libpulse-dev"
 
 outputs:
   deb_path:
@@ -21,8 +25,7 @@ runs:
         sudo apt-get update -qq
         sudo apt-get install -y -qq \
           libfcitx5core-dev \
-          libpipewire-0.3-dev libspa-0.2-dev \
-          libpulse-dev \
+          ${{ inputs.capture_pkgs }} \
           gettext \
           libjsoncpp-dev \
           libcurl4-openssl-dev \
@@ -32,6 +35,8 @@ runs:
     - name: Install ONNX Runtime
       shell: bash
       run: |
+        # 固定版本：Ubuntu/Debian 官方仓库无 onnxruntime 包，只能从 upstream release 下载。
+        # 升级时同步修改此版本号（需与 ABI 兼容的运行时/打包依赖）。
         ONNX_VER=1.20.1
         ONNX_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VER}/onnxruntime-linux-x64-${ONNX_VER}.tgz"
         curl -fsSL "$ONNX_URL" -o /tmp/onnxruntime.tgz
