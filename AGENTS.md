@@ -57,7 +57,7 @@ po/
 - **禁止安装**: 除非用户明确要求 `cmake --install`，否则只构建不安装。勿动 `/usr`、`~/.local` 等路径。
 - **PipeWire 回调**: `on_process` 内 ≤100μs，只写 ring buffer，禁止阻塞/VAD/分配
 - **音频捕获后端**: 可选编译（CMake 宏 `HAVE_PULSEAUDIO`/`HAVE_PIPEWIRE`），优先 PulseAudio（兼容 PulseAudio 和 pipewire-pulse），失败后 fallback 到 PipeWire 直连；仅编译进来的后端可用
-- **录音库运行期加载（dlopen）**: libpulse-simple/libpipewire **不链接**（无 DT_NEEDED），由各 capture 的 `LoadLib()` 在 Start 时 dlopen（RTLD_NOW|RTLD_GLOBAL，候选 soname 列表 + 关键符号 dlsym 校验）。fcitx5 以 RTLD_LAZY 加载 addon（`Library=` 无 `export:` 前缀），未定义符号延迟到首次调用解析——首次调用必在 LoadLib 成功后，故安全。库缺失/soname 变更时后端优雅降级，addon 本体不受影响
+- **录音库运行期加载（dlopen + dlsym 函数指针表）**: libpulse-simple/libpipewire **不链接**（无 DT_NEEDED、无未定义符号），各 capture 的 `LoadLib()` 在 Start 时 dlopen（RTLD_NOW|RTLD_GLOBAL，候选 soname 列表）并逐个 dlsym 填充函数指针表，所有 `pa_*`/`pw_*` 调用经函数指针间接调用。库缺失/soname 变更/符号不完整时后端优雅降级，addon 本体不受影响。兼容 Arch 构建的 `-z,now`（DF_1_NOW 强制立即绑定也无不解析符号，见 PR #20）
 - **PipeWire**: on_process→ringbuffer(float32)→DrainLoop thread→int16 AudioFrame→FrameQueue
 - **Ring buffer**: `Clear()` 被故意省略（与 PipeWire 回调 data race），清空用 `Read()` drain 模式
 - **音频格式统一**: 16kHz mono, int16, 512 samples/window (32ms)
