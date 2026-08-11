@@ -90,20 +90,26 @@ bool PulseAudioCapture::LoadLib() {
 
         PulseLib lib{};
         lib.handle = handle;
-        lib.pa_simple_new =
-            reinterpret_cast<decltype(lib.pa_simple_new)>(dlsym(handle, "pa_simple_new"));
-        lib.pa_simple_free =
-            reinterpret_cast<decltype(lib.pa_simple_free)>(dlsym(handle, "pa_simple_free"));
-        lib.pa_simple_read =
-            reinterpret_cast<decltype(lib.pa_simple_read)>(dlsym(handle, "pa_simple_read"));
-        lib.pa_strerror =
-            reinterpret_cast<decltype(lib.pa_strerror)>(dlsym(handle, "pa_strerror"));
+        const char* missingSymbol = nullptr;
+#define PULSE_LOAD(sym)                                                               \
+        do {                                                                          \
+            lib.sym = reinterpret_cast<decltype(lib.sym)>(dlsym(handle, #sym));     \
+            if (!lib.sym && !missingSymbol) {                                        \
+                missingSymbol = #sym;                                                \
+            }                                                                         \
+        } while (false)
+        PULSE_LOAD(pa_simple_new);
+        PULSE_LOAD(pa_simple_free);
+        PULSE_LOAD(pa_simple_read);
+        PULSE_LOAD(pa_strerror);
+#undef PULSE_LOAD
 
         // 符号完整性校验：同名 soname 可能被错误实现/损坏库占用，
-        // 任一入口缺失即拒绝，避免后续调用空指针崩溃
+        // 任一入口缺失即拒绝，避免后续调用空指针崩溃。
         if (!lib.valid()) {
             FCITX_WARN() << "[voice-input:pulse] " << soname
-                         << " loaded but symbols incomplete: " << dlerror();
+                         << " loaded but required symbol missing: "
+                         << (missingSymbol ? missingSymbol : "unknown");
             dlclose(handle);
             continue;
         }

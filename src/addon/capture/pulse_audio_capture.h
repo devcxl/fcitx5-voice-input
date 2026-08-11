@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 
+#include <pulse/error.h>
 #include <pulse/simple.h>
 
 #include "capture/audio_capture.h"
@@ -31,12 +32,11 @@ private:
     // 强制立即绑定，addon 也能正常加载（见 PR #20）。
     struct PulseLib {
         void* handle = nullptr;
-        pa_simple* (*pa_simple_new)(const char*, const char*, pa_stream_direction,
-                                    const char*, const char*, const pa_sample_spec*,
-                                    const pa_channel_map*, const pa_buffer_attr*, int*) = nullptr;
-        void (*pa_simple_free)(pa_simple*) = nullptr;
-        int (*pa_simple_read)(pa_simple*, void*, size_t, int*) = nullptr;
-        const char* (*pa_strerror)(int) = nullptr;
+        // 从编译期头文件推导精确 ABI 签名，避免手写函数指针与上游 API 漂移。
+        decltype(&::pa_simple_new) pa_simple_new = nullptr;
+        decltype(&::pa_simple_free) pa_simple_free = nullptr;
+        decltype(&::pa_simple_read) pa_simple_read = nullptr;
+        decltype(&::pa_strerror) pa_strerror = nullptr;
         bool valid() const { return handle && pa_simple_new && pa_simple_free && pa_simple_read && pa_strerror; }
     };
 

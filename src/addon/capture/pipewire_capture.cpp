@@ -41,8 +41,14 @@ bool PipeWireCapture::LoadLib() {
 
         PwLib lib{};
         lib.handle = handle;
-#define PW_LOAD(sym) \
-        lib.sym = reinterpret_cast<decltype(lib.sym)>(dlsym(handle, #sym))
+        const char* missingSymbol = nullptr;
+#define PW_LOAD(sym)                                                                  \
+        do {                                                                          \
+            lib.sym = reinterpret_cast<decltype(lib.sym)>(dlsym(handle, #sym));     \
+            if (!lib.sym && !missingSymbol) {                                        \
+                missingSymbol = #sym;                                                \
+            }                                                                         \
+        } while (false)
         PW_LOAD(pw_init);
         PW_LOAD(pw_thread_loop_new);
         PW_LOAD(pw_thread_loop_get_loop);
@@ -64,10 +70,11 @@ bool PipeWireCapture::LoadLib() {
 #undef PW_LOAD
 
         // 符号完整性校验：同名 soname 可能被错误实现/损坏库占用，
-        // 任一入口缺失即拒绝，避免后续调用空指针崩溃
+        // 任一入口缺失即拒绝，避免后续调用空指针崩溃。
         if (!lib.valid()) {
             FCITX_WARN() << "[voice-input:pw] " << soname
-                         << " loaded but symbols incomplete: " << dlerror();
+                         << " loaded but required symbol missing: "
+                         << (missingSymbol ? missingSymbol : "unknown");
             dlclose(handle);
             continue;
         }

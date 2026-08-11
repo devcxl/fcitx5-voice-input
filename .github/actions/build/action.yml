@@ -45,11 +45,65 @@ runs:
 
     - name: Configure
       shell: bash
-      run: cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} -DCMAKE_INSTALL_PREFIX=/usr -DONNXRUNTIME_ROOT="${ONNXRUNTIME_ROOT}"
+      run: >-
+        cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} -DCMAKE_INSTALL_PREFIX=/usr
+        -DONNXRUNTIME_ROOT="${ONNXRUNTIME_ROOT}" -DCMAKE_MODULE_LINKER_FLAGS="-Wl,-z,now"
 
     - name: Compile
       shell: bash
       run: cmake --build build -j"$(nproc)"
+
+    # The capture libraries are intentionally runtime-loaded. Build success alone
+    # does not catch a direct pw_*/pa_* reference: with DF_1_NOW it only fails
+    # when fcitx dlopen()s the addon.
+    - name: Verify hardened addon loading
+      shell: bash
+      run: |
+        set -euo pipefail
+        export LC_ALL=C
+        addon="${PWD}/build/voice-input-addon.so"
+
+        if nm -D --undefined-only "${addon}" | awk '{print $NF}' | grep -qE '^(pw_|pa_)'; then
+          echo "::error::addon has unresolved PipeWire/PulseAudio symbols"
+          nm -D --undefined-only "${addon}" | awk '$NF ~ /^(pw_|pa_)/ {print}'
+          exit 1
+        fi
+
+        if readelf -dW "${addon}" | grep -qE 'Shared library: \[lib(pipewire|pulse)'; then
+          echo "::error::addon unexpectedly has a capture-library DT_NEEDED entry"
+          readelf -dW "${addon}" | grep -E 'Shared library: \[lib(pipewire|pulse)' || true
+          exit 1
+        fi
+
+        if ! readelf -dW "${addon}" | grep -qE 'BIND_NOW|FLAGS_1.*NOW'; then
+          echo "::error::addon was not linked with DF_1_NOW"
+          exit 1
+        fi
+
+        cat >/tmp/voice-input-dlopen-smoke.c <<'EOF'
+        #include <dlfcn.h>
+        #include <stdio.h>
+
+        int main(int argc, char **argv) {
+            if (argc != 2) {
+                return 2;
+            }
+            void *handle = dlopen(argv[1], RTLD_LAZY | RTLD_LOCAL);
+            if (!handle) {
+                fprintf(stderr, "dlopen failed: %s\n", dlerror());
+                return 1;
+            }
+            if (dlclose(handle) != 0) {
+                fprintf(stderr, "dlclose failed: %s\n", dlerror());
+                return 1;
+            }
+            return 0;
+        }
+        EOF
+        cc -Wall -Wextra -Werror /tmp/voice-input-dlopen-smoke.c -ldl \
+          -o /tmp/voice-input-dlopen-smoke
+        LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+          /tmp/voice-input-dlopen-smoke "${addon}"
 
     - name: Package DEB
       id: deb
