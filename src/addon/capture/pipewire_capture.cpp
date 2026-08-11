@@ -28,26 +28,58 @@ PipeWireCapture::~PipeWireCapture() {
     Stop();
 }
 
-// dlopen 加载 libpipewire 并校验关键符号。
-// 返回 true 后所有 pw_* 调用均安全；失败则本后端不可用（Start 返回 false，
-// 由 pipeline 回退到其他后端），不影响 addon 本体加载。
+// dlopen 加载 libpipewire 并通过 dlsym 填充函数指针表。
+// 返回 true 后所有 pw_* 调用均安全（经 pw_ 间接调用，无未定义符号）；
+// 失败则本后端不可用（Start 返回 false，由 pipeline 回退到其他后端），
+// 不影响 addon 本体加载。
 bool PipeWireCapture::LoadLib() {
-    if (pwLib_) return true;
+    if (pw_.handle) return true;
 
     for (const char* soname : kPwLibCandidates) {
         void* handle = dlopen(soname, RTLD_NOW | RTLD_GLOBAL);
         if (!handle) continue;
 
+        PwLib lib{};
+        lib.handle = handle;
+        const char* missingSymbol = nullptr;
+#define PW_LOAD(sym)                                                                  \
+        do {                                                                          \
+            lib.sym = reinterpret_cast<decltype(lib.sym)>(dlsym(handle, #sym));     \
+            if (!lib.sym && !missingSymbol) {                                        \
+                missingSymbol = #sym;                                                \
+            }                                                                         \
+        } while (false)
+        PW_LOAD(pw_init);
+        PW_LOAD(pw_thread_loop_new);
+        PW_LOAD(pw_thread_loop_get_loop);
+        PW_LOAD(pw_context_new);
+        PW_LOAD(pw_context_connect);
+        PW_LOAD(pw_context_destroy);
+        PW_LOAD(pw_properties_new);
+        PW_LOAD(pw_stream_new);
+        PW_LOAD(pw_stream_add_listener);
+        PW_LOAD(pw_stream_connect);
+        PW_LOAD(pw_stream_dequeue_buffer);
+        PW_LOAD(pw_stream_queue_buffer);
+        PW_LOAD(pw_stream_destroy);
+        PW_LOAD(pw_core_disconnect);
+        PW_LOAD(pw_thread_loop_destroy);
+        PW_LOAD(pw_thread_loop_start);
+        PW_LOAD(pw_thread_loop_stop);
+        PW_LOAD(pw_stream_state_as_string);
+#undef PW_LOAD
+
         // 符号完整性校验：同名 soname 可能被错误实现/损坏库占用，
-        // 必须确认入口符号真实存在，否则后续调用会 undefined symbol 崩溃
-        if (!dlsym(handle, "pw_init")) {
+        // 任一入口缺失即拒绝，避免后续调用空指针崩溃。
+        if (!lib.valid()) {
             FCITX_WARN() << "[voice-input:pw] " << soname
-                         << " loaded but pw_init missing: " << dlerror();
+                         << " loaded but required symbol missing: "
+                         << (missingSymbol ? missingSymbol : "unknown");
             dlclose(handle);
             continue;
         }
 
-        pwLib_ = handle;
+        pw_ = lib;
         FCITX_INFO() << "[voice-input:pw] Runtime-loaded " << soname;
         return true;
     }
@@ -58,9 +90,9 @@ bool PipeWireCapture::LoadLib() {
 }
 
 void PipeWireCapture::UnloadLib() {
-    if (pwLib_) {
-        dlclose(pwLib_);
-        pwLib_ = nullptr;
+    if (pw_.handle) {
+        dlclose(pw_.handle);
+        pw_ = PwLib{};
     }
 }
 
@@ -69,16 +101,16 @@ bool PipeWireCapture::Start() {
 
     if (!LoadLib()) return false;
 
-    pw_init(nullptr, nullptr);
+    pw_.pw_init(nullptr, nullptr);
 
-    loop_ = pw_thread_loop_new("voice-input-capture", nullptr);
+    loop_ = pw_.pw_thread_loop_new("voice-input-capture", nullptr);
     if (!loop_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to create pw_thread_loop";
         UnloadLib();
         return false;
     }
 
-    context_ = pw_context_new(pw_thread_loop_get_loop(loop_), nullptr, 0);
+    context_ = pw_.pw_context_new(pw_.pw_thread_loop_get_loop(loop_), nullptr, 0);
     if (!context_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to create pw_context";
         Cleanup(false);
@@ -86,7 +118,7 @@ bool PipeWireCapture::Start() {
         return false;
     }
 
-    core_ = pw_context_connect(context_, nullptr, 0);
+    core_ = pw_.pw_context_connect(context_, nullptr, 0);
     if (!core_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to connect pw_context";
         Cleanup(false);
@@ -95,7 +127,7 @@ bool PipeWireCapture::Start() {
     }
 
     struct pw_properties* props =
-        pw_properties_new(
+        pw_.pw_properties_new(
             PW_KEY_MEDIA_TYPE, "Audio",
             PW_KEY_MEDIA_CATEGORY, "Capture",
             PW_KEY_MEDIA_ROLE, "Communication",
@@ -103,7 +135,7 @@ bool PipeWireCapture::Start() {
             PW_KEY_NODE_DESCRIPTION, "Voice Input Audio Capture",
             nullptr);
 
-    stream_ = pw_stream_new(core_, "voice-input-capture", props);
+    stream_ = pw_.pw_stream_new(core_, "voice-input-capture", props);
     if (!stream_) {
         FCITX_ERROR() << "[voice-input:pw] Failed to create pw_stream";
         Cleanup(false);
@@ -119,7 +151,7 @@ bool PipeWireCapture::Start() {
         return events;
     }();
 
-    pw_stream_add_listener(stream_, &streamListener_, &stream_events, this);
+    pw_.pw_stream_add_listener(stream_, &streamListener_, &stream_events, this);
 
     uint8_t buffer[1024];
     spa_audio_info_raw audio_info = {};
@@ -131,7 +163,7 @@ bool PipeWireCapture::Start() {
     const spa_pod* params[1];
     params[0] = spa_format_audio_raw_build(&podBuilder, SPA_PARAM_EnumFormat, &audio_info);
 
-    int connectResult = pw_stream_connect(stream_,
+    int connectResult = pw_.pw_stream_connect(stream_,
                                           PW_DIRECTION_INPUT,
                                           PW_ID_ANY,
                                           static_cast<pw_stream_flags>(
@@ -146,7 +178,7 @@ bool PipeWireCapture::Start() {
         return false;
     }
 
-    if (pw_thread_loop_start(loop_) < 0) {
+    if (pw_.pw_thread_loop_start(loop_) < 0) {
         FCITX_ERROR() << "[voice-input:pw] Failed to start pw_thread_loop";
         Cleanup(false);
         UnloadLib();
@@ -180,22 +212,22 @@ void PipeWireCapture::Stop() {
 
 void PipeWireCapture::Cleanup(bool stopLoop) {
     if (stopLoop && loop_) {
-        pw_thread_loop_stop(loop_);
+        pw_.pw_thread_loop_stop(loop_);
     }
     if (stream_) {
-        pw_stream_destroy(stream_);
+        pw_.pw_stream_destroy(stream_);
         stream_ = nullptr;
     }
     if (core_) {
-        pw_core_disconnect(core_);
+        pw_.pw_core_disconnect(core_);
         core_ = nullptr;
     }
     if (context_) {
-        pw_context_destroy(context_);
+        pw_.pw_context_destroy(context_);
         context_ = nullptr;
     }
     if (loop_) {
-        pw_thread_loop_destroy(loop_);
+        pw_.pw_thread_loop_destroy(loop_);
         loop_ = nullptr;
     }
 }
@@ -205,16 +237,17 @@ void PipeWireCapture::OnProcess(void* userdata) {
     self->OnProcessImpl();
 }
 
-void PipeWireCapture::OnStateChanged(void*, pw_stream_state oldState,
+void PipeWireCapture::OnStateChanged(void* userdata, pw_stream_state oldState,
                                      pw_stream_state state, const char* error) {
+    auto* self = static_cast<PipeWireCapture*>(userdata);
     FCITX_DEBUG() << "[voice-input:pw] Stream state: "
-                 << pw_stream_state_as_string(oldState) << " -> "
-                 << pw_stream_state_as_string(state)
+                 << self->pw_.pw_stream_state_as_string(oldState) << " -> "
+                 << self->pw_.pw_stream_state_as_string(state)
                  << (error ? " error=" : "") << (error ? error : "");
 }
 
 void PipeWireCapture::OnProcessImpl() {
-    pw_buffer* buf = pw_stream_dequeue_buffer(stream_);
+    pw_buffer* buf = pw_.pw_stream_dequeue_buffer(stream_);
     if (!buf) {
         FCITX_DEBUG() << "[voice-input:pw] dequeue_buffer returned null";
         return;
@@ -222,20 +255,20 @@ void PipeWireCapture::OnProcessImpl() {
 
     struct spa_buffer* spa_buf = buf->buffer;
     if (spa_buf->n_datas == 0) {
-        pw_stream_queue_buffer(stream_, buf);
+        pw_.pw_stream_queue_buffer(stream_, buf);
         return;
     }
 
     void* src = spa_buf->datas[0].data;
     auto* chunk = spa_buf->datas[0].chunk;
     if (!chunk) {
-        pw_stream_queue_buffer(stream_, buf);
+        pw_.pw_stream_queue_buffer(stream_, buf);
         return;
     }
     uint32_t size = chunk->size;
 
     if (!src || size == 0) {
-        pw_stream_queue_buffer(stream_, buf);
+        pw_.pw_stream_queue_buffer(stream_, buf);
         return;
     }
 
@@ -247,7 +280,7 @@ void PipeWireCapture::OnProcessImpl() {
         rawCallback_(pcm, frames);
     }
 
-    pw_stream_queue_buffer(stream_, buf);
+    pw_.pw_stream_queue_buffer(stream_, buf);
 }
 
 void PipeWireCapture::DrainLoop() {

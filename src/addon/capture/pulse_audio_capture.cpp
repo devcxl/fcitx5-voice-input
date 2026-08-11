@@ -77,26 +77,44 @@ PulseAudioCapture::PulseAudioCapture() = default;
 
 PulseAudioCapture::~PulseAudioCapture() { Stop(); }
 
-// dlopen 加载 libpulse-simple 并校验关键符号。
-// 返回 true 后所有 pa_* 调用均安全；失败则本后端不可用（Start 返回 false，
-// 由 pipeline 回退到其他后端），不影响 addon 本体加载。
+// dlopen 加载 libpulse-simple 并通过 dlsym 填充函数指针表。
+// 返回 true 后所有 pa_* 调用均安全（经 pulse_ 间接调用，无未定义符号）；
+// 失败则本后端不可用（Start 返回 false，由 pipeline 回退到其他后端），
+// 不影响 addon 本体加载。
 bool PulseAudioCapture::LoadLib() {
-    if (pulseLib_) return true;
+    if (pulse_.handle) return true;
 
     for (const char* soname : kPulseLibCandidates) {
         void* handle = dlopen(soname, RTLD_NOW | RTLD_GLOBAL);
         if (!handle) continue;
 
+        PulseLib lib{};
+        lib.handle = handle;
+        const char* missingSymbol = nullptr;
+#define PULSE_LOAD(sym)                                                               \
+        do {                                                                          \
+            lib.sym = reinterpret_cast<decltype(lib.sym)>(dlsym(handle, #sym));     \
+            if (!lib.sym && !missingSymbol) {                                        \
+                missingSymbol = #sym;                                                \
+            }                                                                         \
+        } while (false)
+        PULSE_LOAD(pa_simple_new);
+        PULSE_LOAD(pa_simple_free);
+        PULSE_LOAD(pa_simple_read);
+        PULSE_LOAD(pa_strerror);
+#undef PULSE_LOAD
+
         // 符号完整性校验：同名 soname 可能被错误实现/损坏库占用，
-        // 必须确认入口符号真实存在，否则后续调用会 undefined symbol 崩溃
-        if (!dlsym(handle, "pa_simple_new")) {
+        // 任一入口缺失即拒绝，避免后续调用空指针崩溃。
+        if (!lib.valid()) {
             FCITX_WARN() << "[voice-input:pulse] " << soname
-                         << " loaded but pa_simple_new missing: " << dlerror();
+                         << " loaded but required symbol missing: "
+                         << (missingSymbol ? missingSymbol : "unknown");
             dlclose(handle);
             continue;
         }
 
-        pulseLib_ = handle;
+        pulse_ = lib;
         FCITX_INFO() << "[voice-input:pulse] Runtime-loaded " << soname;
         return true;
     }
@@ -107,9 +125,9 @@ bool PulseAudioCapture::LoadLib() {
 }
 
 void PulseAudioCapture::UnloadLib() {
-    if (pulseLib_) {
-        dlclose(pulseLib_);
-        pulseLib_ = nullptr;
+    if (pulse_.handle) {
+        dlclose(pulse_.handle);
+        pulse_ = PulseLib{};
     }
 }
 
@@ -127,19 +145,19 @@ bool PulseAudioCapture::Start() {
     const char* device = sourceName.empty() ? nullptr : sourceName.c_str();
 
     int error = 0;
-    stream_ = pa_simple_new(nullptr,
-                            "fcitx5-voice-input",
-                            PA_STREAM_RECORD,
-                            device,
-                            "voice input",
-                            &sampleSpec,
-                            nullptr,
-                            nullptr,
-                            &error);
+    stream_ = pulse_.pa_simple_new(nullptr,
+                                   "fcitx5-voice-input",
+                                   PA_STREAM_RECORD,
+                                   device,
+                                   "voice input",
+                                   &sampleSpec,
+                                   nullptr,
+                                   nullptr,
+                                   &error);
     if (!stream_) {
         FCITX_ERROR() << "[voice-input:pulse] Failed to open source: "
                       << (device ? device : "(default)")
-                      << " — " << pa_strerror(error);
+                      << " — " << pulse_.pa_strerror(error);
         UnloadLib();
         return false;
     }
@@ -167,7 +185,7 @@ void PulseAudioCapture::Stop() {
     }
 
     if (stream_) {
-        pa_simple_free(stream_);
+        pulse_.pa_simple_free(stream_);
         stream_ = nullptr;
     }
     UnloadLib();
@@ -179,11 +197,11 @@ void PulseAudioCapture::CaptureLoop() {
 
     while (running_) {
         int error = 0;
-        if (pa_simple_read(stream_, buffer.data(),
-                           buffer.size() * sizeof(int16_t), &error) < 0) {
+        if (pulse_.pa_simple_read(stream_, buffer.data(),
+                                  buffer.size() * sizeof(int16_t), &error) < 0) {
             if (running_) {
                 FCITX_ERROR() << "[voice-input:pulse] Read failed: "
-                              << pa_strerror(error);
+                              << pulse_.pa_strerror(error);
             }
             running_ = false;
             break;
