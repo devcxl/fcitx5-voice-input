@@ -26,6 +26,11 @@ public:
     const char* Name() const override { return "pulseaudio"; }
 
 private:
+    // 运行期 dlopen 句柄（RTLD_GLOBAL 加载 libpulse-simple，避免链接期
+    // DT_NEEDED 硬依赖——库升级/soname 变更时 addon 仍可加载）
+    void* pulseLib_ = nullptr;
+    bool LoadLib();
+    void UnloadLib();
     void CaptureLoop();
 
     pa_simple* stream_ = nullptr;

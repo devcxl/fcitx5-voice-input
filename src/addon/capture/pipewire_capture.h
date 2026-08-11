@@ -34,8 +34,14 @@ private:
     static void OnStateChanged(void* userdata, pw_stream_state oldState,
                                pw_stream_state state, const char* error);
     void OnProcessImpl();
+    bool LoadLib();
+    void UnloadLib();
     void Cleanup(bool stopLoop);
     void DrainLoop();
+
+    // 运行期 dlopen 句柄（RTLD_GLOBAL 加载 libpipewire，避免链接期
+    // DT_NEEDED 硬依赖——库升级/soname 变更时 addon 仍可加载）
+    void* pwLib_ = nullptr;
 
     pw_thread_loop* loop_ = nullptr;
     pw_context* context_ = nullptr;

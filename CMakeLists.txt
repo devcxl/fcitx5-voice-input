@@ -173,6 +173,9 @@ target_include_directories(voice-input-addon PRIVATE
     ${ONNXRUNTIME_INCLUDE_DIRS}
     src/addon
 )
+# 录音库仅在编译期需要头文件（结构体/枚举/宏定义）；
+# 运行期通过 dlopen 按需加载（见 pulse/pipewire capture 的 LoadLib），
+# 因此不链接这两个库——避免 DT_NEEDED 硬依赖，库升级/soname 变更时 addon 仍可加载。
 if(PIPEWIRE_FOUND)
     target_include_directories(voice-input-addon PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
 endif()
@@ -184,15 +187,10 @@ target_link_libraries(voice-input-addon PRIVATE
     ${FCITX5_LIBRARIES}
     ${JSONCPP_LIBRARIES}
     ${ONNXRUNTIME_LIBRARIES}
+    ${CMAKE_DL_LIBS}
     CURL::libcurl
     ZLIB::ZLIB
 )
-if(PIPEWIRE_FOUND)
-    target_link_libraries(voice-input-addon PRIVATE ${PIPEWIRE_LIBRARIES})
-endif()
-if(PULSE_FOUND)
-    target_link_libraries(voice-input-addon PRIVATE ${PULSE_LIBRARIES})
-endif()
 
 target_compile_definitions(voice-input-addon PRIVATE
     VOICE_INPUT_VERSION="${PROJECT_VERSION}"

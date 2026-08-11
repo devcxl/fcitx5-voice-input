@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 #include <string>
 
 #include <fcitx-utils/log.h>
@@ -11,6 +12,13 @@
 
 namespace fcitx {
 namespace {
+
+// libpulse-simple 运行时库候选 soname（按优先级）。当前所有主流发行版为 .so.0；
+// 未来若 soname 变更，旧版本 addon 仍可尝试后续候选，任一成功即可用。
+constexpr const char* kPulseLibCandidates[] = {
+    "libpulse-simple.so.0",
+    "libpulse-simple.so.1",
+};
 
 constexpr size_t kPactlLineMax = 512;
 
@@ -69,8 +77,46 @@ PulseAudioCapture::PulseAudioCapture() = default;
 
 PulseAudioCapture::~PulseAudioCapture() { Stop(); }
 
+// dlopen 加载 libpulse-simple 并校验关键符号。
+// 返回 true 后所有 pa_* 调用均安全；失败则本后端不可用（Start 返回 false，
+// 由 pipeline 回退到其他后端），不影响 addon 本体加载。
+bool PulseAudioCapture::LoadLib() {
+    if (pulseLib_) return true;
+
+    for (const char* soname : kPulseLibCandidates) {
+        void* handle = dlopen(soname, RTLD_NOW | RTLD_GLOBAL);
+        if (!handle) continue;
+
+        // 符号完整性校验：同名 soname 可能被错误实现/损坏库占用，
+        // 必须确认入口符号真实存在，否则后续调用会 undefined symbol 崩溃
+        if (!dlsym(handle, "pa_simple_new")) {
+            FCITX_WARN() << "[voice-input:pulse] " << soname
+                         << " loaded but pa_simple_new missing: " << dlerror();
+            dlclose(handle);
+            continue;
+        }
+
+        pulseLib_ = handle;
+        FCITX_INFO() << "[voice-input:pulse] Runtime-loaded " << soname;
+        return true;
+    }
+
+    FCITX_WARN() << "[voice-input:pulse] Failed to dlopen libpulse-simple: "
+                 << dlerror();
+    return false;
+}
+
+void PulseAudioCapture::UnloadLib() {
+    if (pulseLib_) {
+        dlclose(pulseLib_);
+        pulseLib_ = nullptr;
+    }
+}
+
 bool PulseAudioCapture::Start() {
     if (running_) return true;
+
+    if (!LoadLib()) return false;
 
     pa_sample_spec sampleSpec{};
     sampleSpec.format = PA_SAMPLE_S16LE;
@@ -94,6 +140,7 @@ bool PulseAudioCapture::Start() {
         FCITX_ERROR() << "[voice-input:pulse] Failed to open source: "
                       << (device ? device : "(default)")
                       << " — " << pa_strerror(error);
+        UnloadLib();
         return false;
     }
 
@@ -123,6 +170,7 @@ void PulseAudioCapture::Stop() {
         pa_simple_free(stream_);
         stream_ = nullptr;
     }
+    UnloadLib();
     FCITX_INFO() << "[voice-input:pulse] Capture stopped";
 }
 
