@@ -41,12 +41,14 @@ runs:
     # Distro bootstrap: install build deps + packaging tools, export per-distro
     # CPack parameters via GITHUB_ENV. Runs as root in containers; falls back to
     # sudo on hosted runners (build-no-pipewire job).
+    # 注意：container job 中 github.action_path 是宿主路径（/home/runner/...），
+    # 容器内不可见，必须用 ${GITHUB_WORKSPACE}（容器内 /__w/...）引用仓库文件
     - name: Bootstrap ${{ inputs.distro }}
       shell: bash
       env:
         ONNX_STRATEGY: ${{ inputs.onnx_strategy }}
         CAPTURE_PKGS: ${{ inputs.capture_pkgs }}
-      run: bash "${{ github.action_path }}/distro/${{ inputs.distro }}.sh"
+      run: bash "${GITHUB_WORKSPACE}/.github/actions/build/distro/${{ inputs.distro }}.sh"
 
     - name: Restore onnxruntime download cache
       uses: actions/cache@v5
@@ -159,7 +161,6 @@ runs:
           export LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib:${LD_LIBRARY_PATH:-}"
         fi
         cpack -G "${CPACK_GEN}"
-        cd ..
 
         # 产物重命名，嵌入发行版标识（矩阵内同名包互不冲突）：
         # fcitx5-voice-input_0.4.0_amd64.deb → fcitx5-voice-input_0.4.0_amd64_ubuntu-24.04.deb
@@ -197,4 +198,5 @@ runs:
         esac
         echo "::endgroup::"
 
+        mv "${PACKAGE}" "${GITHUB_WORKSPACE}/"
         echo "path=${PACKAGE}" >> "${GITHUB_OUTPUT}"

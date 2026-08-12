@@ -15,12 +15,14 @@ outputs:
 runs:
   using: composite
   steps:
+    # 注意：container job 中 github.action_path 是宿主路径，容器内不可见，
+    # 必须用 ${GITHUB_WORKSPACE}（容器内 /__w/...）引用仓库文件
     - name: Prepare AUR source
       id: prepare
       shell: bash
-      run: bash "${{ github.action_path }}/prepare.sh"
+      run: bash "${GITHUB_WORKSPACE}/.github/actions/aur/prepare.sh"
 
     - name: Build Arch package
       id: build
       shell: bash
-      run: bash "${{ github.action_path }}/build.sh"
+      run: bash "${GITHUB_WORKSPACE}/.github/actions/aur/build.sh"
