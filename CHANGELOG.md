@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.1] - 2026-08-12
+
+### Changed
+- CI 重构：7 发行版容器矩阵构建（Ubuntu 24.04/26.04、Debian 12/13、Fedora 44、
+  openSUSE Tumbleweed、Arch），产出 DEB/RPM/pkg.tar.zst 原生包（#22）
+- onnxruntime 双策略：发行版系统包优先（DEB 开 dpkg-shlibdeps 自动依赖、
+  RPM 由 rpmbuild 自动生成），无系统包的发行版下载 upstream release（1.28.0）
+- AUR 构建去除 Docker daemon（archlinux 容器内 makepkg）
+- release 改用 softprops/action-gh-release v3 创建 draft release
+
+### Fixed
+- 修复 curl >= 8.2.0 的 `curl_ws_recv` metap 参数 const 化导致的编译失败
+  （Debian 12 curl 7.88 等老版本，按 LIBCURL_VERSION_NUM 条件分支）
+
 ## [0.4.0] - 2026-08-11
 
 ### Added
