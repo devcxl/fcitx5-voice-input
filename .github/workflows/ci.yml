@@ -54,7 +54,7 @@ jobs:
             container: opensuse/tumbleweed
             onnx: system
             cpack: RPM
-            git_cmd: zypper --non-interactive install -y git
+            git_cmd: zypper --non-interactive --gpg-auto-import-keys refresh && zypper --non-interactive install -y git
     steps:
       # 最小容器镜像不带 git，checkout 需要；同时为 actions/checkout 的
       # submodules 支持提供 git（REST 回退不支持 submodules）

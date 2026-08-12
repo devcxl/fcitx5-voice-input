@@ -8,6 +8,8 @@ else
     RUN="sudo"
 fi
 
+# Tumbleweed 为滚动发行版，容器内 zypper 元数据可能过期（镜像 404），先 refresh
+$RUN zypper --non-interactive --gpg-auto-import-keys refresh
 $RUN zypper --non-interactive install -y \
     git curl gcc-c++ cmake pkg-config \
     fcitx5-devel jsoncpp-devel libcurl-devel zlib-devel \
