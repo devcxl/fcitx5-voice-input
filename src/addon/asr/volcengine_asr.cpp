@@ -181,7 +181,13 @@ RecvStatus ReceiveWebSocketFrame(CURL* curl, std::vector<uint8_t>& frame) {
     std::array<uint8_t, 8192> buffer{};
     while (true) {
         size_t received = 0;
+        // curl >= 8.2.0 将 curl_ws_recv 的 metap 参数 const 化；老版本（Debian 12 的
+        // 7.88 等）为非 const 签名，需按编译期 curl 版本分支避免 -fpermissive 错误
+#if LIBCURL_VERSION_NUM >= 0x080200
         const struct curl_ws_frame* meta = nullptr;
+#else
+        struct curl_ws_frame* meta = nullptr;
+#endif
         CURLcode result = curl_ws_recv(curl, buffer.data(), buffer.size(), &received, &meta);
         if (result == CURLE_AGAIN) return RecvStatus::Again;
         if (result != CURLE_OK) {
