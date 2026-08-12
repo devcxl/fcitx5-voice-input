@@ -265,7 +265,8 @@ steps:
 - RPM：`CPACK_RPM_FILE_NAME=RPM-DEFAULT`（`-0.4.0-1.x86_64.rpm`），
   依赖由 rpmbuild 自动生成（`libFcitx5Core.so.7`、`libonnxruntime.so.1(VERS_1.27.0)`）
 - AUR 构建去掉 Docker daemon：archlinux 容器内 useradd + runuser makepkg
-- release 用 `gh release create --draft --generate-notes`（替代 softprops）
+- release 用 `softprops/action-gh-release@v3` 生成 draft release
+  （v3.0.2 于 2026-07 恢复维护；gh CLI 为备选方案）
 - 链接校验（nm/readelf/dlopen smoke）收敛到 verify job 单次执行
 
 ✅ 实测发现并修复的兼容性问题：

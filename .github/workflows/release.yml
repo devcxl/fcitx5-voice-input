@@ -138,13 +138,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # softprops/action-gh-release v3（2026-07 恢复维护，含上传传输加固）；
+      # 产物经 download-artifact merge 后位于 dist/ 下，files 支持 glob
       - name: Create draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --draft \
-            --generate-notes \
-            --title "fcitx5-voice-input $GITHUB_REF_NAME" \
-            dist/*.deb dist/*.rpm dist/*.pkg.tar.zst \
-            dist/PKGBUILD dist/*.tar.gz
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          generate_release_notes: true
+          name: fcitx5-voice-input ${{ github.ref_name }}
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/PKGBUILD
+            dist/*.tar.gz
