@@ -151,4 +151,4 @@ jobs:
             dist/*.rpm
             dist/*.pkg.tar.zst
             dist/PKGBUILD
-            dist/*.tar.gz
+            dist/src/*.tar.gz
