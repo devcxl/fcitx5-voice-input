@@ -67,6 +67,7 @@ runs:
         curl -fsSL "$ONNX_URL" -o "${RUNNER_TEMP}/onnxruntime.tgz"
         tar -xzf "${RUNNER_TEMP}/onnxruntime.tgz" -C "${RUNNER_TEMP}"
         rm -f "${RUNNER_TEMP}/onnxruntime.tgz"
+        echo "ONNXRUNTIME_ROOT=${RUNNER_TEMP}/onnxruntime-linux-x64-${ONNX_VER}" >> "${GITHUB_ENV}"
 
     - name: Set ONNXRUNTIME_ROOT (download, cache hit)
       if: inputs.onnx_strategy == 'download' && steps.onnx-cache.outputs.cache-hit == 'true'

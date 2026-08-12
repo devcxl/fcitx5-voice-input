@@ -29,27 +29,39 @@ jobs:
             container: ubuntu:24.04
             onnx: download
             cpack: DEB
+            git_cmd: apt-get update -qq && apt-get install -y -qq git
           - name: ubuntu-26.04
             container: ubuntu:26.04
             onnx: system
             cpack: DEB
+            git_cmd: apt-get update -qq && apt-get install -y -qq git
           - name: debian-12
             container: debian:12
             onnx: download
             cpack: DEB
+            git_cmd: apt-get update -qq && apt-get install -y -qq git
           - name: debian-13
             container: debian:13
             onnx: system
             cpack: DEB
+            git_cmd: apt-get update -qq && apt-get install -y -qq git
           - name: fedora-44
             container: fedora:44
             onnx: system
             cpack: RPM
+            git_cmd: dnf install -y git
           - name: opensuse-tumbleweed
             container: opensuse/tumbleweed
             onnx: system
             cpack: RPM
+            git_cmd: zypper --non-interactive install -y git
     steps:
+      # 最小容器镜像不带 git，checkout 需要；同时为 actions/checkout 的
+      # submodules 支持提供 git（REST 回退不支持 submodules）
+      - name: Install git (container bootstrap)
+        shell: bash
+        run: ${{ matrix.git_cmd }}
+
       - uses: actions/checkout@v7
         with:
           submodules: recursive
@@ -75,6 +87,10 @@ jobs:
     runs-on: ubuntu-latest
     container: ubuntu:24.04
     steps:
+      - name: Install git (container bootstrap)
+        shell: bash
+        run: apt-get update -qq && apt-get install -y -qq git
+
       - uses: actions/checkout@v7
         with:
           submodules: recursive
@@ -116,6 +132,10 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux
     steps:
+      - name: Install git (container bootstrap)
+        shell: bash
+        run: pacman -Syu --noconfirm git
+
       - uses: actions/checkout@v7
         with:
           submodules: recursive
