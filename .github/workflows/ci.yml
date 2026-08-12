@@ -1,15 +1,22 @@
-name: release
+name: ci
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # 与 ci.yml 相同的构建矩阵（构建逻辑共用 .github/actions/build）
+  # 多发行版容器矩阵：每个发行版在原生容器内构建原生包（deb/rpm）。
+  # onnxruntime 策略：system=发行版系统包（依赖随包声明，dpkg-shlibdeps 自动计算），
+  # download=upstream release 预编译包（Ubuntu 24.04/Debian 12 仓库无此包）。
   build:
     name: build (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -72,7 +79,9 @@ jobs:
             *.deb
             *.rpm
           if-no-files-found: error
+          retention-days: 1
 
+  # 链接校验（nm/readelf/dlopen smoke）只跑一次，矩阵内不重复。
   verify:
     name: verify hardened addon loading
     runs-on: ubuntu-latest
@@ -92,6 +101,32 @@ jobs:
           onnx_strategy: download
           run_verify: "true"
 
+  # 回归防护：录音后端为可选依赖（CMake QUIET 探测），
+  # 确保缺失任一后端时仍能构建，且产物不引用缺失库的符号。
+  build-no-pipewire:
+    name: build without PipeWire
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/build
+        with:
+          distro: ubuntu-24.04
+          onnx_strategy: download
+          capture_pkgs: libpulse-dev # 不装 PipeWire dev 包，模拟上游 pipewire 不可用
+
+      - name: Verify no PipeWire symbols
+        shell: bash
+        run: |
+          if nm -D build/voice-input-addon.so | grep -qE "pw_|pipewire"; then
+            echo "::error::build succeeded but .so still links PipeWire symbols (HAVE_PIPEWIRE misconfig)"
+            exit 1
+          fi
+          echo "OK: PipeWire backend excluded, PulseAudio only"
+
+  # Arch 包：archlinux 容器内直跑 makepkg（无 Docker daemon）
   arch:
     name: build (archlinux)
     runs-on: ubuntu-latest
@@ -127,28 +162,4 @@ jobs:
             dist/aur/PKGBUILD
             dist/aur/src/*.tar.gz
           if-no-files-found: error
-
-  release:
-    name: Create draft release
-    needs: [build, verify, arch]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v7
-        with:
-          path: dist
-          merge-multiple: true
-
-      # softprops/action-gh-release v3（2026-07 恢复维护，含上传传输加固）；
-      # 产物经 download-artifact merge 后位于 dist/ 下，files 支持 glob
-      - name: Create draft release
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          generate_release_notes: true
-          name: fcitx5-voice-input ${{ github.ref_name }}
-          files: |
-            dist/*.deb
-            dist/*.rpm
-            dist/*.pkg.tar.zst
-            dist/PKGBUILD
-            dist/*.tar.gz
+          retention-days: 1

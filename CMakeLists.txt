@@ -291,14 +291,25 @@ set(CPACK_PACKAGE_CONTACT "64475363+devcxl@users.noreply.github.com")
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "devcxl <64475363+devcxl@users.noreply.github.com>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "libs")
-# 核心运行时依赖（Ubuntu 24.04 / Debian 包名；libcurl4t64 为 t64 迁移后的包名）
-# 注意：onnxruntime 不在 Ubuntu 官方仓库（CI 手动下载 release 包），无法声明
-# Depends；DEB 用户需自行安装 onnxruntime 运行时（见 README/CI 下载地址）
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "fcitx5, libjsoncpp25, libcurl4t64, zlib1g")
+# 以下三项为各发行版默认值，CI 矩阵按发行版覆盖（cmake -D 传入，见
+# .github/actions/build/distro/*.sh）：
+# - 依赖名随 t64 迁移/发行版变化（libcurl4t64 vs libcurl4）；
+# - onnxruntime 为系统包时（Ubuntu 26.04/Debian 13/Fedora 44/openSUSE/Arch）
+#   开启 SHLIBDEPS，由 dpkg-shlibdeps 自动计算运行时依赖；
+# - onnxruntime 不在仓库的发行版（Ubuntu 24.04/Debian 12，CI 下载 upstream
+#   release 包）无法声明 Depends，DEB 用户需自行安装 onnxruntime 运行时。
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "fcitx5, libjsoncpp25, libcurl4t64, zlib1g" CACHE STRING "DEB runtime dependencies (per-distro, set by CI)")
 # 录音后端为可选运行时依赖：Recommends 二选一（Ubuntu/Debian 运行时包名），
 # 与 CMake 构建期的可选探测保持一致——缺任一后端时包仍可安装使用另一个
-set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "libpipewire-0.3-0 | libpulse0")
-set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "libpipewire-0.3-0 | libpulse0" CACHE STRING "DEB recommended capture backends (per-distro, set by CI)")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF CACHE BOOL "Compute DEB dependencies with dpkg-shlibdeps (ON when onnxruntime is a system package)")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/devcxl/fcitx5-voice-input")
+
+# RPM package（Fedora/openSUSE，cpack -G RPM）
+# 运行时依赖由 rpmbuild 自动生成（.so SONAME → 提供包），无需手工维护
+set(CPACK_RPM_FILE_NAME RPM-DEFAULT) # fcitx5-voice-input-0.4.0-1.x86_64.rpm
+set(CPACK_RPM_PACKAGE_LICENSE "LGPL-3.0-or-later")
+set(CPACK_RPM_PACKAGE_GROUP "Unspecified")
+set(CPACK_RPM_PACKAGE_RELEASE "1")
 
 include(CPack)

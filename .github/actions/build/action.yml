@@ -1,53 +1,92 @@
 name: Build fcitx5-voice-input
-description: Install deps, configure, compile, and package DEB
+description: Build and package for one Linux distro (container matrix driver)
 
 inputs:
   build_type:
     description: CMake build type
     required: false
     default: Release
-  capture_pkgs:
-    description: apt packages for audio capture backends (override to simulate a missing backend)
+  distro:
+    description: Distro name (selects distro/<name>.sh; also used in artifact naming)
+    required: true
+  onnx_strategy:
+    description: "onnxruntime strategy: system (distro package) or download (upstream release)"
     required: false
-    default: "libpipewire-0.3-dev libspa-0.2-dev libpulse-dev"
+    default: download
+  onnx_version:
+    description: onnxruntime version for the download strategy
+    required: false
+    default: "1.28.0"
+  cpack_generator:
+    description: CPack generator (DEB or RPM)
+    required: false
+    default: DEB
+  capture_pkgs:
+    description: Capture backend dev packages (override to simulate a missing backend)
+    required: false
+    default: ""
+  run_verify:
+    description: Run the hardened addon loading verification (nm/readelf/dlopen smoke)
+    required: false
+    default: "false"
 
 outputs:
-  deb_path:
-    description: Path to the built DEB package
-    value: ${{ steps.deb.outputs.path }}
+  package_path:
+    description: Path to the built package (empty when no package is produced)
+    value: ${{ steps.package.outputs.path }}
 
 runs:
   using: composite
   steps:
-    - name: Install dependencies
+    # Distro bootstrap: install build deps + packaging tools, export per-distro
+    # CPack parameters via GITHUB_ENV. Runs as root in containers; falls back to
+    # sudo on hosted runners (build-no-pipewire job).
+    # 注意：container job 中 github.action_path 是宿主路径（/home/runner/...），
+    # 容器内不可见，必须用 ${GITHUB_WORKSPACE}（容器内 /__w/...）引用仓库文件
+    - name: Bootstrap ${{ inputs.distro }}
       shell: bash
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq \
-          libfcitx5core-dev \
-          ${{ inputs.capture_pkgs }} \
-          gettext \
-          libjsoncpp-dev \
-          libcurl4-openssl-dev \
-          zlib1g-dev \
-          dpkg-dev
+      env:
+        ONNX_STRATEGY: ${{ inputs.onnx_strategy }}
+        CAPTURE_PKGS: ${{ inputs.capture_pkgs }}
+      run: bash "${GITHUB_WORKSPACE}/.github/actions/build/distro/${{ inputs.distro }}.sh"
 
-    - name: Install ONNX Runtime
+    - name: Restore onnxruntime download cache
+      uses: actions/cache@v5
+      if: inputs.onnx_strategy == 'download'
+      id: onnx-cache
+      with:
+        path: ${{ runner.temp }}/onnxruntime-linux-x64-${{ inputs.onnx_version }}
+        key: onnxruntime-${{ inputs.onnx_version }}-x64
+
+    - name: Install ONNX Runtime (download)
+      if: inputs.onnx_strategy == 'download' && steps.onnx-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        # 固定版本：Ubuntu/Debian 官方仓库无 onnxruntime 包，只能从 upstream release 下载。
-        # 升级时同步修改此版本号（需与 ABI 兼容的运行时/打包依赖）。
-        ONNX_VER=1.20.1
+        # 固定版本：Ubuntu 24.04/Debian 12 官方仓库无 onnxruntime 包，从 upstream
+        # release 下载。升级时同步修改 inputs.onnx_version（需与 ABI 兼容的运行时）。
+        ONNX_VER="${{ inputs.onnx_version }}"
         ONNX_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VER}/onnxruntime-linux-x64-${ONNX_VER}.tgz"
-        curl -fsSL "$ONNX_URL" -o /tmp/onnxruntime.tgz
-        tar -xzf /tmp/onnxruntime.tgz -C /tmp
-        echo "ONNXRUNTIME_ROOT=/tmp/onnxruntime-linux-x64-${ONNX_VER}" >> $GITHUB_ENV
+        curl -fsSL "$ONNX_URL" -o "${RUNNER_TEMP}/onnxruntime.tgz"
+        tar -xzf "${RUNNER_TEMP}/onnxruntime.tgz" -C "${RUNNER_TEMP}"
+        rm -f "${RUNNER_TEMP}/onnxruntime.tgz"
+        echo "ONNXRUNTIME_ROOT=${RUNNER_TEMP}/onnxruntime-linux-x64-${ONNX_VER}" >> "${GITHUB_ENV}"
+
+    - name: Set ONNXRUNTIME_ROOT (download, cache hit)
+      if: inputs.onnx_strategy == 'download' && steps.onnx-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: echo "ONNXRUNTIME_ROOT=${{ runner.temp }}/onnxruntime-linux-x64-${{ inputs.onnx_version }}" >> "${GITHUB_ENV}"
 
     - name: Configure
       shell: bash
       run: >-
-        cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} -DCMAKE_INSTALL_PREFIX=/usr
-        -DONNXRUNTIME_ROOT="${ONNXRUNTIME_ROOT}" -DCMAKE_MODULE_LINKER_FLAGS="-Wl,-z,now"
+        cmake -B build
+        -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
+        -DCMAKE_INSTALL_PREFIX=/usr
+        -DONNXRUNTIME_ROOT="${ONNXRUNTIME_ROOT:-}"
+        -DCMAKE_MODULE_LINKER_FLAGS="-Wl,-z,now"
+        -DCPACK_DEBIAN_PACKAGE_DEPENDS="${CPACK_DEBIAN_PACKAGE_DEPENDS:-}"
+        -DCPACK_DEBIAN_PACKAGE_RECOMMENDS="${CPACK_DEBIAN_PACKAGE_RECOMMENDS:-}"
+        -DCPACK_DEBIAN_PACKAGE_SHLIBDEPS="${CPACK_DEBIAN_PACKAGE_SHLIBDEPS:-OFF}"
 
     - name: Compile
       shell: bash
@@ -55,8 +94,10 @@ runs:
 
     # The capture libraries are intentionally runtime-loaded. Build success alone
     # does not catch a direct pw_*/pa_* reference: with DF_1_NOW it only fails
-    # when fcitx dlopen()s the addon.
+    # when fcitx dlopen()s the addon. Run once per CI run (verify job), not in
+    # the full matrix.
     - name: Verify hardened addon loading
+      if: inputs.run_verify == 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -80,7 +121,7 @@ runs:
           exit 1
         fi
 
-        cat >/tmp/voice-input-dlopen-smoke.c <<'EOF'
+        cat >"${RUNNER_TEMP}/voice-input-dlopen-smoke.c" <<'EOF'
         #include <dlfcn.h>
         #include <stdio.h>
 
@@ -100,22 +141,62 @@ runs:
             return 0;
         }
         EOF
-        cc -Wall -Wextra -Werror /tmp/voice-input-dlopen-smoke.c -ldl \
-          -o /tmp/voice-input-dlopen-smoke
-        LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-          /tmp/voice-input-dlopen-smoke "${addon}"
+        cc -Wall -Wextra -Werror "${RUNNER_TEMP}/voice-input-dlopen-smoke.c" -ldl \
+          -o "${RUNNER_TEMP}/voice-input-dlopen-smoke"
+        if [ -n "${ONNXRUNTIME_ROOT:-}" ]; then
+          export LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        fi
+        "${RUNNER_TEMP}/voice-input-dlopen-smoke" "${addon}"
 
-    - name: Package DEB
-      id: deb
+    - name: Package ${{ inputs.cpack_generator }}
+      id: package
       shell: bash
+      env:
+        CPACK_GEN: ${{ inputs.cpack_generator }}
+        DISTRO: ${{ inputs.distro }}
       run: |
+        set -euo pipefail
         cd build
-        export LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib:${LD_LIBRARY_PATH}"
-        cpack -G DEB
-        mv *.deb ../
-        cd ..
-        echo "::group::DEB info"
-        dpkg-deb --info *.deb
+        if [ -n "${ONNXRUNTIME_ROOT:-}" ]; then
+          export LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib:${LD_LIBRARY_PATH:-}"
+        fi
+        cpack -G "${CPACK_GEN}"
+
+        # 产物重命名，嵌入发行版标识（矩阵内同名包互不冲突）：
+        # fcitx5-voice-input_0.4.0_amd64.deb → fcitx5-voice-input_0.4.0_amd64_ubuntu-24.04.deb
+        case "${CPACK_GEN}" in
+          DEB) PATTERN="fcitx5-voice-input_*.deb" ;;
+          RPM) PATTERN="fcitx5-voice-input-*.rpm" ;;
+          *) echo "::error::unsupported generator ${CPACK_GEN}"; exit 1 ;;
+        esac
+        PACKAGE=$(ls ${PATTERN} | head -1)
+        BASE="${PACKAGE%.*}"
+        EXT="${PACKAGE##*.}"
+        mv "${PACKAGE}" "${BASE}_${DISTRO}.${EXT}"
+        PACKAGE="${BASE}_${DISTRO}.${EXT}"
+
+        # 冒烟：解包到临时 root，验证 addon .so 装入 fcitx5 插件目录
+        rm -rf "${RUNNER_TEMP}/smoke" && mkdir -p "${RUNNER_TEMP}/smoke"
+        case "${CPACK_GEN}" in
+          DEB)
+            dpkg-deb -x "${PACKAGE}" "${RUNNER_TEMP}/smoke"
+            ;;
+          RPM)
+            rpm2cpio "${PACKAGE}" | (cd "${RUNNER_TEMP}/smoke" && cpio -idm --quiet)
+            ;;
+        esac
+        if [ -z "$(find "${RUNNER_TEMP}/smoke" -name voice-input-addon.so)" ]; then
+          echo "::error::package ${PACKAGE} does not contain voice-input-addon.so"
+          exit 1
+        fi
+        echo "OK: package contents verified ($(find "${RUNNER_TEMP}/smoke" -name voice-input-addon.so))"
+
+        echo "::group::Package info"
+        case "${CPACK_GEN}" in
+          DEB) dpkg-deb --info "${PACKAGE}" ;;
+          RPM) rpm -qpi "${PACKAGE}" ;;
+        esac
         echo "::endgroup::"
-        DEB_FILE=$(ls *.deb | head -1)
-        echo "path=${DEB_FILE}" >> $GITHUB_OUTPUT
+
+        mv "${PACKAGE}" "${GITHUB_WORKSPACE}/"
+        echo "path=${PACKAGE}" >> "${GITHUB_OUTPUT}"

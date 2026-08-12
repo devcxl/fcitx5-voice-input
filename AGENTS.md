@@ -72,7 +72,19 @@ ARCHITECTURE.md 已与代码同步。提到的超前功能（Command 引擎、LL
 
 ## CI
 
-GitHub Actions `build.yml`：Ubuntu 24.04 构建 + CPack DEB + Docker Arch 包。无测试步骤。
+GitHub Actions（详见 `.github/workflows/` 与 `.github/actions/build/distro/*.sh`）：
+
+- `ci.yml`：PR/push 触发。**7 发行版容器矩阵**（ubuntu-24.04 / ubuntu-26.04 /
+debian-12 / debian-13 / fedora-44 / opensuse-tumbleweed / archlinux），每发行版在
+原生容器内构建原生包（DEB/RPM/pkg.tar.zst）；另含链接校验（nm/readelf/dlopen
+smoke，仅 verify job 跑一次）与 build-no-pipewire 回归防护 job。
+- `release.yml`：tag `v*` 触发。复用同一构建矩阵，`softprops/action-gh-release`
+  v3 生成 draft release（含全部发行版产物 + AUR 源码包）。
+- onnxruntime 双策略：`system`（发行版系统包，DEB 开 dpkg-shlibdeps 自动依赖，
+  RPM 由 rpmbuild 自动依赖）或 `download`（upstream release 1.28.0，缓存加速）。
+- Arch 包：archlinux 容器内直跑 makepkg（无 Docker daemon）。
+
+无测试步骤。
 
 ## 打包
 
