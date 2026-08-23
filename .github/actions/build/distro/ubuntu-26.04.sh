@@ -24,7 +24,7 @@ else
     echo "CPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF" >> "${GITHUB_ENV}"
 fi
 
-# SHLIBDEPS=ON 时 Depends 由 dpkg-shlibdeps 计算（覆盖此值），此处仅作兜底；
+# SHLIBDEPS=ON 时，dpkg-shlibdeps 自动计算的 Depends 会与此值合并；
 # 注意 Ubuntu 26.04 jsoncpp soname 升至 26（libjsoncpp26，不同于 24.04 的 libjsoncpp25）
-echo "CPACK_DEBIAN_PACKAGE_DEPENDS=fcitx5, libjsoncpp26, libcurl4t64, zlib1g" >> "${GITHUB_ENV}"
-echo "CPACK_DEBIAN_PACKAGE_RECOMMENDS=libpipewire-0.3-0 | libpulse0" >> "${GITHUB_ENV}"
+echo "CPACK_DEBIAN_PACKAGE_DEPENDS=fcitx5, libjsoncpp26, libcurl4t64, zlib1g, libpulse0" >> "${GITHUB_ENV}"
+echo "CPACK_DEBIAN_PACKAGE_RECOMMENDS=libpipewire-0.3-0" >> "${GITHUB_ENV}"

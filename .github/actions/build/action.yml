@@ -87,6 +87,7 @@ runs:
         -DCPACK_DEBIAN_PACKAGE_DEPENDS="${CPACK_DEBIAN_PACKAGE_DEPENDS:-}"
         -DCPACK_DEBIAN_PACKAGE_RECOMMENDS="${CPACK_DEBIAN_PACKAGE_RECOMMENDS:-}"
         -DCPACK_DEBIAN_PACKAGE_SHLIBDEPS="${CPACK_DEBIAN_PACKAGE_SHLIBDEPS:-OFF}"
+        -DCPACK_RPM_PACKAGE_REQUIRES="${CPACK_RPM_PACKAGE_REQUIRES:-}"
 
     - name: Compile
       shell: bash
@@ -193,8 +194,31 @@ runs:
 
         echo "::group::Package info"
         case "${CPACK_GEN}" in
-          DEB) dpkg-deb --info "${PACKAGE}" ;;
-          RPM) rpm -qpi "${PACKAGE}" ;;
+          DEB)
+            dpkg-deb --info "${PACKAGE}"
+            DEPENDS=$(dpkg-deb -f "${PACKAGE}" Depends)
+            RECOMMENDS=$(dpkg-deb -f "${PACKAGE}" Recommends)
+            if [[ "${DEPENDS}" != *"libpulse0"* ]]; then
+              echo "::error::DEB package is missing required PulseAudio runtime dependency"
+              exit 1
+            fi
+            if [[ "${RECOMMENDS}" != *"libpipewire-0.3-0"* ]]; then
+              echo "::error::DEB package is missing recommended PipeWire fallback dependency"
+              exit 1
+            fi
+            ;;
+          RPM)
+            rpm -qpi "${PACKAGE}"
+            if [ -z "${CPACK_RPM_PACKAGE_REQUIRES:-}" ]; then
+              echo "::error::RPM PulseAudio runtime dependency is not configured"
+              exit 1
+            fi
+            REQUIRES=$(rpm -qp --requires "${PACKAGE}")
+            if ! grep -Fxq -- "${CPACK_RPM_PACKAGE_REQUIRES}" <<<"${REQUIRES}"; then
+              echo "::error::RPM package is missing required ${CPACK_RPM_PACKAGE_REQUIRES} dependency"
+              exit 1
+            fi
+            ;;
         esac
         echo "::endgroup::"
 

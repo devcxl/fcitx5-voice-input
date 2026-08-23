@@ -35,24 +35,17 @@ else()
     set(FCITX5_ADDON_DIR "lib/fcitx5")
 endif()
 
-# PipeWire audio capture (optional — 缺失时仅失去该后端，不影响其余功能)
+# PulseAudio 采集是必需基线，也兼容现代 PipeWire 桌面的 pipewire-pulse 服务。
+pkg_check_modules(PULSE REQUIRED libpulse-simple libpulse)
+
+# PipeWire 直连采集是可选运行时回退。
 pkg_check_modules(PIPEWIRE QUIET pipewire-0.3)
 if(NOT PIPEWIRE_FOUND)
     pkg_check_modules(PIPEWIRE QUIET libpipewire-0.3)
 endif()
 
-# PulseAudio fallback capture (optional — 缺失时仅失去该后端，不影响其余功能)
-pkg_check_modules(PULSE QUIET libpulse-simple libpulse)
-
-# 至少需要一个录音后端，否则 addon 无录音能力
-if(NOT PIPEWIRE_FOUND AND NOT PULSE_FOUND)
-    message(FATAL_ERROR "No audio capture backend found. Install at least one of: pipewire-0.3 (libpipewire-0.3-dev) or libpulse-simple (libpulse-dev)")
-endif()
 if(NOT PIPEWIRE_FOUND)
     message(WARNING "PipeWire not found — building without PipeWire capture backend")
-endif()
-if(NOT PULSE_FOUND)
-    message(WARNING "PulseAudio not found — building without PulseAudio capture backend")
 endif()
 
 # JSON parsing
@@ -124,13 +117,11 @@ set(ADDON_SOURCES
     src/addon/llm/llm_client.cpp
 )
 
-# 按可用性加入录音后端（可选依赖）
+# PipeWire 仅在可用时编入；PulseAudio 是必需基线。
 if(PIPEWIRE_FOUND)
     list(APPEND ADDON_SOURCES src/addon/capture/pipewire_capture.cpp)
 endif()
-if(PULSE_FOUND)
-    list(APPEND ADDON_SOURCES src/addon/capture/pulse_audio_capture.cpp)
-endif()
+list(APPEND ADDON_SOURCES src/addon/capture/pulse_audio_capture.cpp)
 
 set(ADDON_HEADERS
     src/addon/engine.h
@@ -152,13 +143,11 @@ set(ADDON_HEADERS
     src/addon/asr/utils/base64.h
 )
 
-# 头文件仅用于 IDE 索引，同样按可用性追加
+# 头文件仅用于 IDE 索引；PipeWire 按可用性追加。
 if(PIPEWIRE_FOUND)
     list(APPEND ADDON_HEADERS src/addon/capture/pipewire_capture.h)
 endif()
-if(PULSE_FOUND)
-    list(APPEND ADDON_HEADERS src/addon/capture/pulse_audio_capture.h)
-endif()
+list(APPEND ADDON_HEADERS src/addon/capture/pulse_audio_capture.h)
 
 # ─── Library ──────────────────────────────────────────────────────────────────
 add_library(voice-input-addon MODULE ${ADDON_SOURCES} ${ADDON_HEADERS})
@@ -179,9 +168,7 @@ target_include_directories(voice-input-addon PRIVATE
 if(PIPEWIRE_FOUND)
     target_include_directories(voice-input-addon PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
 endif()
-if(PULSE_FOUND)
-    target_include_directories(voice-input-addon PRIVATE ${PULSE_INCLUDE_DIRS})
-endif()
+target_include_directories(voice-input-addon PRIVATE ${PULSE_INCLUDE_DIRS})
 
 target_link_libraries(voice-input-addon PRIVATE
     ${FCITX5_LIBRARIES}
@@ -200,9 +187,7 @@ target_compile_definitions(voice-input-addon PRIVATE
 if(PIPEWIRE_FOUND)
     target_compile_definitions(voice-input-addon PRIVATE HAVE_PIPEWIRE)
 endif()
-if(PULSE_FOUND)
-    target_compile_definitions(voice-input-addon PRIVATE HAVE_PULSEAUDIO)
-endif()
+target_compile_definitions(voice-input-addon PRIVATE HAVE_PULSEAUDIO)
 
 # ─── Translations ────────────────────────────────────────────────────────────
 find_program(GETTEXT_MSGFMT msgfmt REQUIRED)
@@ -298,18 +283,18 @@ set(CPACK_DEBIAN_PACKAGE_SECTION "libs")
 #   开启 SHLIBDEPS，由 dpkg-shlibdeps 自动计算运行时依赖；
 # - onnxruntime 不在仓库的发行版（Ubuntu 24.04/Debian 12，CI 下载 upstream
 #   release 包）无法声明 Depends，DEB 用户需自行安装 onnxruntime 运行时。
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "fcitx5, libjsoncpp25, libcurl4t64, zlib1g" CACHE STRING "DEB runtime dependencies (per-distro, set by CI)")
-# 录音后端为可选运行时依赖：Recommends 二选一（Ubuntu/Debian 运行时包名），
-# 与 CMake 构建期的可选探测保持一致——缺任一后端时包仍可安装使用另一个
-set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "libpipewire-0.3-0 | libpulse0" CACHE STRING "DEB recommended capture backends (per-distro, set by CI)")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "fcitx5, libjsoncpp25, libcurl4t64, zlib1g, libpulse0" CACHE STRING "DEB runtime dependencies (per-distro, set by CI)")
+# PulseAudio 客户端库是基础录音能力的必需依赖；PipeWire 直连仅作可选回退。
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "libpipewire-0.3-0" CACHE STRING "DEB optional PipeWire capture fallback (per-distro, set by CI)")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF CACHE BOOL "Compute DEB dependencies with dpkg-shlibdeps (ON when onnxruntime is a system package)")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/devcxl/fcitx5-voice-input")
 
 # RPM package（Fedora/openSUSE，cpack -G RPM）
-# 运行时依赖由 rpmbuild 自动生成（.so SONAME → 提供包），无需手工维护
+# dlopen 加载的录音库不会形成 ELF 依赖，由 CI 按发行版注入运行时包名。
 set(CPACK_RPM_FILE_NAME RPM-DEFAULT) # fcitx5-voice-input-0.4.0-1.x86_64.rpm
 set(CPACK_RPM_PACKAGE_LICENSE "LGPL-3.0-or-later")
 set(CPACK_RPM_PACKAGE_GROUP "Unspecified")
 set(CPACK_RPM_PACKAGE_RELEASE "1")
+set(CPACK_RPM_PACKAGE_REQUIRES "" CACHE STRING "RPM runtime dependencies (per-distro, set by CI)")
 
 include(CPack)

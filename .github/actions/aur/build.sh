@@ -25,6 +25,15 @@ runuser -u builder -- sh -c "cd '${PWD}/${WORK_DIR}' && makepkg -f --noconfirm"
 
 PKGFILE=$(ls "${WORK_DIR}"/*.pkg.tar.zst 2>/dev/null | head -1 || true)
 if [ -n "${PKGFILE}" ]; then
+    PKGINFO=$(bsdtar -xOf "${PKGFILE}" .PKGINFO)
+    if ! grep -Fxq 'depend = libpulse' <<<"${PKGINFO}"; then
+        echo "::error::Arch package is missing required libpulse dependency"
+        exit 1
+    fi
+    if ! grep -Eq '^optdepend = pipewire:' <<<"${PKGINFO}"; then
+        echo "::error::Arch package is missing PipeWire fallback optdependency"
+        exit 1
+    fi
     cp "${PKGFILE}" "${OUT_DIR}/"
     echo "pkgfile=${PKGFILE}" >> "${GITHUB_OUTPUT}"
 else

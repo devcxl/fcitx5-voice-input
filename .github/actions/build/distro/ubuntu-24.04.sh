@@ -26,5 +26,5 @@ else
 fi
 
 # t64 迁移后的运行时包名（Ubuntu 24.04 起 libcurl4t64；libjsoncpp25 为 jsoncpp soname）
-echo "CPACK_DEBIAN_PACKAGE_DEPENDS=fcitx5, libjsoncpp25, libcurl4t64, zlib1g" >> "${GITHUB_ENV}"
-echo "CPACK_DEBIAN_PACKAGE_RECOMMENDS=libpipewire-0.3-0 | libpulse0" >> "${GITHUB_ENV}"
+echo "CPACK_DEBIAN_PACKAGE_DEPENDS=fcitx5, libjsoncpp25, libcurl4t64, zlib1g, libpulse0" >> "${GITHUB_ENV}"
+echo "CPACK_DEBIAN_PACKAGE_RECOMMENDS=libpipewire-0.3-0" >> "${GITHUB_ENV}"
