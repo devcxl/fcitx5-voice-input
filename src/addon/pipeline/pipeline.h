@@ -16,6 +16,7 @@
 #include "asr/asr_session.h"
 #include "asr/session_reaper.h"
 #include "llm/llm_client.h"
+#include "pipeline/ordered_result_buffer.h"
 #include "types.h"
 #include "utils/thread_safe_queue.h"
 
@@ -49,8 +50,16 @@ public:
     void SetConfig(const VoiceInputConfig& config);
 
 private:
+    struct SessionMetadata {
+        uint64_t generation = 0;
+        uint64_t utteranceId = 0;
+    };
+
     bool StartCapture();
     void AsrDispatcherLoop();
+    void SubmitOrderedResult(AsrResult result, bool terminal);
+    void SkipUtterance(uint64_t utteranceId);
+    void ResetOrderedResults();
 
     // Queues（带容量上限：超限丢最旧，防止异常路径下内存无界增长）
     // 1024 帧 ≈ 32s 音频缓冲；256 事件 ≈ 256 段语音；128 结果
@@ -69,7 +78,7 @@ private:
     std::shared_ptr<AsrEngine> asrEngine_;
     std::shared_ptr<AsrSession> activeSession_;
     uint64_t activeSessionId_{0};
-    std::unordered_map<uint64_t, uint64_t> sessionGenerationMap_;
+    std::unordered_map<uint64_t, SessionMetadata> sessionGenerationMap_;
     std::mutex sessionMapMutex_;   // 保护 sessionGenerationMap_（worker/ASR/主线程三方）
     std::mutex engineMutex_;       // 保护 asrEngine_ 指针替换与使用
     std::unique_ptr<SessionReaper> reaper_;
@@ -85,6 +94,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> generation_{0};
     std::atomic<uint64_t> utteranceCounter_{0};
+    OrderedResultBuffer orderedResults_;
+    std::mutex orderedResultMutex_;
     // 回调守卫：Abort 后置 false，引擎 worker 线程的异步回调据此丢弃
     std::shared_ptr<std::atomic<bool>> resultGuard_ =
         std::make_shared<std::atomic<bool>>(true);

@@ -128,8 +128,6 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability,
     bool speechStart = probability >= config.speechThreshold;
     bool speechKeep = probability >= config.silenceThreshold;
 
-    AppendPreRoll(frame.pcm, PreRollSamples(config.preRollMs));
-
     if (state_ == State::Idle) {
         if (speechStart) {
             speechFrames_++;
@@ -169,6 +167,9 @@ void VADWorker::ProcessFrame(const AudioFrame& frame, float probability,
             }
         } else {
             speechFrames_ = 0;
+        }
+        if (state_ == State::Idle) {
+            AppendPreRoll(frame.pcm, PreRollSamples(config.preRollMs));
         }
         return;
     }

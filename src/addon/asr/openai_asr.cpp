@@ -351,14 +351,16 @@ std::shared_ptr<AsrSession> OpenaiAsrEngine::StartSession() {
     uint64_t sid;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
+        if (auto cancelled = CancelOldestSessionIfLimitReachedLocked()) {
+            FCITX_WARN() << "[voice-input:openai] Too many sessions, cancel oldest="
+                         << *cancelled;
+        }
         sid = nextSessionId_++;
     }
 
     auto session = std::make_shared<OpenaiAsrSession>(
         config_, errorCb_, sid);
     session->SetResultCallback(resultCb_);
-    if (!session->GetState()->finished)
-        session->StartWorker();
 
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);

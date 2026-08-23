@@ -41,3 +41,14 @@ target_link_libraries(llm_request_cancellation_test PRIVATE
 add_test(NAME llm_request_cancellation_test
     COMMAND llm_request_cancellation_test
 )
+
+add_executable(asr_ordering_test
+    asr_ordering_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/asr_engine.cpp
+)
+
+target_include_directories(asr_ordering_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+)
+
+add_test(NAME asr_ordering_test COMMAND asr_ordering_test)

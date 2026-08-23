@@ -496,18 +496,15 @@ std::shared_ptr<AsrSession> RealtimeAsrEngine::StartSession() {
     uint64_t sid;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
-        // 清理过期 weak_ptr，避免长期运行 map 无限增长
-        for (auto it = sessions_.begin(); it != sessions_.end(); ) {
-            if (it->second.expired()) it = sessions_.erase(it);
-            else ++it;
+        if (auto cancelled = CancelOldestSessionIfLimitReachedLocked()) {
+            FCITX_WARN() << "[voice-input:realtime] Too many sessions, cancel oldest="
+                         << *cancelled;
         }
         sid = nextSessionId_++;
     }
 
     auto session = std::make_shared<RealtimeAsrSession>(config_, errorCb_, sid);
     session->SetResultCallback(resultCb_);
-    if (!session->GetState()->finished)
-        session->StartWorker();
 
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);

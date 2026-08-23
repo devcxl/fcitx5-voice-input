@@ -612,38 +612,18 @@ bool VolcengineAsrEngine::Init(const Config& config) {
 }
 
 std::shared_ptr<AsrSession> VolcengineAsrEngine::StartSession() {
-    {
-        std::lock_guard<std::mutex> lock(sessionsMutex_);
-        // Clean expired weak_ptrs
-        for (auto it = sessions_.begin(); it != sessions_.end(); ) {
-            if (it->second.expired()) it = sessions_.erase(it);
-            else ++it;
-        }
-        // Enforce maxActiveSessions: cancel oldest
-        while (sessions_.size() >= maxActiveSessions_) {
-            auto oldest = sessions_.begin();
-            for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
-                auto s = it->second.lock();
-                auto o = oldest->second.lock();
-                if (s && (!o || s->GetState()->sessionId < o->GetState()->sessionId))
-                    oldest = it;
-            }
-            auto s = oldest->second.lock();
-            if (s) { FCITX_WARN() << "[voice-input:volcengine] Too many sessions, cancel oldest"; s->Cancel(); }
-            sessions_.erase(oldest);
-        }
-    }
-
     uint64_t sid;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
+        if (auto cancelled = CancelOldestSessionIfLimitReachedLocked()) {
+            FCITX_WARN() << "[voice-input:volcengine] Too many sessions, cancel oldest="
+                         << *cancelled;
+        }
         sid = nextSessionId_++;
     }
 
     auto session = std::make_shared<VolcengineAsrSession>(config_, errorCb_, sid);
     session->SetResultCallback(resultCb_);
-    if (!session->GetState()->finished)
-        session->StartWorker();
 
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
