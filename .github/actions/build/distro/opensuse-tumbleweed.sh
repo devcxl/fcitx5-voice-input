@@ -22,3 +22,5 @@ $RUN zypper --non-interactive install -y \
 if [ "${ONNX_STRATEGY:-download}" = "system" ]; then
     $RUN zypper --non-interactive install -y onnxruntime-devel
 fi
+
+echo "CPACK_RPM_PACKAGE_REQUIRES=libpulse0" >> "${GITHUB_ENV}"

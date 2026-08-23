@@ -290,10 +290,11 @@ set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF CACHE BOOL "Compute DEB dependencies with
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/devcxl/fcitx5-voice-input")
 
 # RPM package（Fedora/openSUSE，cpack -G RPM）
-# 运行时依赖由 rpmbuild 自动生成（.so SONAME → 提供包），无需手工维护
+# dlopen 加载的录音库不会形成 ELF 依赖，由 CI 按发行版注入运行时包名。
 set(CPACK_RPM_FILE_NAME RPM-DEFAULT) # fcitx5-voice-input-0.4.0-1.x86_64.rpm
 set(CPACK_RPM_PACKAGE_LICENSE "LGPL-3.0-or-later")
 set(CPACK_RPM_PACKAGE_GROUP "Unspecified")
 set(CPACK_RPM_PACKAGE_RELEASE "1")
+set(CPACK_RPM_PACKAGE_REQUIRES "" CACHE STRING "RPM runtime dependencies (per-distro, set by CI)")
 
 include(CPack)
