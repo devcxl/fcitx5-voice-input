@@ -299,7 +299,7 @@ void PipeWireCapture::OnProcessImpl() {
     }
 
     ForEachCircularFloatSegment(static_cast<const float*>(src), data.maxsize,
-                                chunk->offset, chunk->size,
+                                chunk->offset, chunk->size, chunk->stride,
                                 [this](const float* pcm, size_t frames) {
                                     PushSamples(pcm, frames);
                                 });
