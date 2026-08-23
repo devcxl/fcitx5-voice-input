@@ -6,14 +6,26 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace fcitx {
+
+inline bool WaitForWorkerCompletion(const std::atomic<bool>& completed,
+                                    std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!completed.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
 
 class AsrSession : public std::enable_shared_from_this<AsrSession> {
 public:
     struct State {
         std::atomic<bool> cancelled{false};
         std::atomic<bool> finished{false};
+        std::atomic<bool> workerDone{true};
         uint64_t sessionId{0};
     };
 
