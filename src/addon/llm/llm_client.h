@@ -1,9 +1,10 @@
 #pragma once
 
-#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
+
+#include "llm/llm_request_cancellation.h"
 
 namespace fcitx {
 
@@ -32,12 +33,12 @@ public:
                        std::function<void(const std::string&)> onToken,
                        std::function<void(const std::string&)> onComplete);
 
-    /// 取消在途请求：中断当前阻塞的 HTTP 传输，后续调用立即返回。
-    void Cancel() { cancelled_.store(true); }
+    /// 取消当前及更早的在途请求；后续请求自动使用新代次。
+    void Cancel() { cancellation_.Cancel(); }
 
 private:
     Config config_;
-    std::atomic<bool> cancelled_{false};
+    LLMRequestCancellation cancellation_;
 };
 
 } // namespace fcitx

@@ -20,11 +20,20 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     return total;
 }
 
-// 进度回调：Cancel() 后中断在途 HTTP 传输（返回非 0 中止请求）
+struct RequestCancellationContext {
+    const LLMRequestCancellation* cancellation = nullptr;
+    uint64_t generation = 0;
+
+    bool IsCancelled() const {
+        return cancellation->IsCancelled(generation);
+    }
+};
+
+// 进度回调：请求所属代次被取消后中断 HTTP 传输（返回非 0 中止请求）。
 int CancelProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t,
                            curl_off_t) {
-    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
-    return cancelled->load() ? 1 : 0;
+    auto* context = static_cast<RequestCancellationContext*>(clientp);
+    return context->IsCancelled() ? 1 : 0;
 }
 
 // Extract "text" field from a JSON response.
@@ -58,6 +67,7 @@ struct SSEContext {
     std::string buffer;
     std::function<void(const std::string&)> onToken;
     std::function<void(const std::string&)> onComplete;
+    const RequestCancellationContext* cancellationContext = nullptr;
     std::string accumulated;
     bool done = false;
 };
@@ -65,6 +75,7 @@ struct SSEContext {
 size_t SSEWriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     auto* ctx = static_cast<SSEContext*>(userp);
     size_t total = size * nmemb;
+    if (ctx->cancellationContext->IsCancelled()) return 0;
     ctx->buffer.append(static_cast<char*>(contents), total);
 
     // Parse complete SSE events (separated by "\n\n")
@@ -83,7 +94,9 @@ size_t SSEWriteCallback(void* contents, size_t size, size_t nmemb, void* userp) 
 
         if (data == "[DONE]") {
             ctx->done = true;
-            ctx->onComplete(ctx->accumulated);
+            if (!ctx->cancellationContext->IsCancelled()) {
+                ctx->onComplete(ctx->accumulated);
+            }
             continue;
         }
 
@@ -94,8 +107,10 @@ size_t SSEWriteCallback(void* contents, size_t size, size_t nmemb, void* userp) 
         std::string content = root["choices"][0]["delta"]["content"].asString();
         if (content.empty()) continue;
 
-        ctx->accumulated += content;
-        ctx->onToken(ctx->accumulated);
+        if (!ctx->cancellationContext->IsCancelled()) {
+            ctx->accumulated += content;
+            ctx->onToken(ctx->accumulated);
+        }
     }
 
     return total;
@@ -112,6 +127,9 @@ std::string LLMClient::Process(const std::string& text) {
     if (config_.model.empty()) {
         return text;
     }
+
+    RequestCancellationContext cancellationContext{
+        &cancellation_, cancellation_.BeginRequest()};
 
     // Build URL
     std::string url = config_.endpoint;
@@ -174,10 +192,10 @@ std::string LLMClient::Process(const std::string& text) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
-    // Cancel() 后中断在途传输
+    // Cancel() 后仅中断当前或更早代次的请求。
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancelled_);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancellationContext);
 
     CURLcode res = curl_easy_perform(curl);
 
@@ -191,6 +209,11 @@ std::string LLMClient::Process(const std::string& text) {
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    if (cancellationContext.IsCancelled()) {
+        FCITX_DEBUG() << "[voice-input:llm] Cancelled request";
+        return {};
+    }
 
     FCITX_DEBUG() << "[voice-input:llm] HTTP " << httpCode
                   << " response=" << response.size() << " bytes"
@@ -251,6 +274,9 @@ void LLMClient::ProcessStream(const std::string& text,
                                std::function<void(const std::string&)> onComplete) {
     if (config_.model.empty() || !onComplete) return;
 
+    RequestCancellationContext cancellationContext{
+        &cancellation_, cancellation_.BeginRequest()};
+
     std::string url = config_.endpoint;
     if (!url.empty() && url.back() != '/') {
         url += '/';
@@ -300,6 +326,7 @@ void LLMClient::ProcessStream(const std::string& text,
     headers = curl_slist_append(headers, authHeader.c_str());
 
     SSEContext ctx;
+    ctx.cancellationContext = &cancellationContext;
     // Skip onToken during streaming — partial JSON is not user-friendly
     ctx.onToken = [](const std::string&) {};
     ctx.onComplete = [&onComplete, text](const std::string& s) {
@@ -323,10 +350,10 @@ void LLMClient::ProcessStream(const std::string& text,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
-    // Cancel() 后中断在途传输
+    // Cancel() 后仅中断当前或更早代次的请求。
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancelled_);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancellationContext);
 
     CURLcode res = curl_easy_perform(curl);
 
@@ -338,6 +365,11 @@ void LLMClient::ProcessStream(const std::string& text,
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    if (cancellationContext.IsCancelled()) {
+        FCITX_DEBUG() << "[voice-input:llm:stream] Cancelled request";
+        return;
+    }
 
     if (res != CURLE_OK || httpCode != 200) {
         FCITX_WARN() << "[voice-input:llm:stream] Request failed: "
