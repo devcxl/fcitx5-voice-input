@@ -14,13 +14,13 @@ depends=(
     'curl'
     'onnxruntime-cpu'
     'zlib'
+    'libpulse'
 )
-# 录音后端为可选依赖，至少安装其一（都不装则无法录音）
+# PipeWire 为 PulseAudio 基线失败时的可选直连回退。
 optdepends=(
-    'pipewire: PipeWire capture backend (required for recording)'
-    'libpulse: PulseAudio capture backend (required for recording)'
+    'pipewire: PipeWire direct capture fallback backend'
 )
-makedepends=('cmake' 'pkg-config' 'gettext')
+makedepends=('cmake' 'pkg-config' 'gettext' 'pipewire')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/devcxl/${pkgname}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 

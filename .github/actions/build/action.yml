@@ -193,7 +193,19 @@ runs:
 
         echo "::group::Package info"
         case "${CPACK_GEN}" in
-          DEB) dpkg-deb --info "${PACKAGE}" ;;
+          DEB)
+            dpkg-deb --info "${PACKAGE}"
+            DEPENDS=$(dpkg-deb -f "${PACKAGE}" Depends)
+            RECOMMENDS=$(dpkg-deb -f "${PACKAGE}" Recommends)
+            if [[ "${DEPENDS}" != *"libpulse0"* ]]; then
+              echo "::error::DEB package is missing required PulseAudio runtime dependency"
+              exit 1
+            fi
+            if [[ "${RECOMMENDS}" != *"libpipewire-0.3-0"* ]]; then
+              echo "::error::DEB package is missing recommended PipeWire fallback dependency"
+              exit 1
+            fi
+            ;;
           RPM) rpm -qpi "${PACKAGE}" ;;
         esac
         echo "::endgroup::"

@@ -101,8 +101,8 @@ jobs:
           onnx_strategy: download
           run_verify: "true"
 
-  # 回归防护：录音后端为可选依赖（CMake QUIET 探测），
-  # 确保缺失任一后端时仍能构建，且产物不引用缺失库的符号。
+  # 回归防护：PulseAudio 是必需基线，PipeWire 为可选回退，
+  # 确保缺失 PipeWire 时仍能构建，且产物不引用 PipeWire 符号。
   build-no-pipewire:
     name: build without PipeWire
     runs-on: ubuntu-24.04
