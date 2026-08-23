@@ -1,19 +1,17 @@
-#include <cassert>
-
 #include "llm/llm_request_cancellation.h"
 
 int main() {
     fcitx::LLMRequestCancellation cancellation;
 
     const auto firstRequest = cancellation.BeginRequest();
-    assert(!cancellation.IsCancelled(firstRequest));
+    if (cancellation.IsCancelled(firstRequest)) return 1;
 
     cancellation.Cancel();
-    assert(cancellation.IsCancelled(firstRequest));
+    if (!cancellation.IsCancelled(firstRequest)) return 1;
 
     const auto nextRequest = cancellation.BeginRequest();
-    assert(!cancellation.IsCancelled(nextRequest));
+    if (cancellation.IsCancelled(nextRequest)) return 1;
 
     cancellation.Cancel();
-    assert(cancellation.IsCancelled(nextRequest));
+    if (!cancellation.IsCancelled(nextRequest)) return 1;
 }

@@ -192,6 +192,7 @@ std::string LLMClient::Process(const std::string& text) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // Cancel() 后仅中断当前或更早代次的请求。
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
@@ -350,6 +351,7 @@ void LLMClient::ProcessStream(const std::string& text,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // Cancel() 后仅中断当前或更早代次的请求。
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
