@@ -149,9 +149,11 @@ void OpenaiAsrSession::End() {
     // 用 shared_from_this 保活会话：worker 线程可能因慢网络在 JoinWithTimeout
     // 超时后被 detach，此时会话对象仍必须存活，否则成员访问构成 use-after-free。
     auto self = std::static_pointer_cast<OpenaiAsrSession>(shared_from_this());
+    state_->workerDone.store(false, std::memory_order_release);
     workerThread_ = std::make_unique<std::thread>(
         [self, buf = std::move(buffer)]() mutable {
             self->TranscribeWorker(std::move(buf));
+            self->state_->workerDone.store(true, std::memory_order_release);
         });
 }
 
@@ -161,17 +163,16 @@ void OpenaiAsrSession::Cancel() {
 
 void OpenaiAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout) {
     if (workerThread_ && workerThread_->joinable()) {
-        auto start = std::chrono::steady_clock::now();
-        while (std::chrono::steady_clock::now() - start < timeout) {
-            std::this_thread::sleep_for(10ms);
-            if (!workerThread_->joinable()) {
-                workerThread_->join();
-                return;
-            }
+        if (workerThread_->get_id() == std::this_thread::get_id()) {
+            // worker 持有最后一个会话引用时，析构会在自身线程执行，不能 join 自身。
+            workerThread_->detach();
+        } else if (WaitForWorkerCompletion(state_->workerDone, timeout)) {
+            workerThread_->join();
+        } else {
+            FCITX_WARN() << "[voice-input:openai] Join timeout session="
+                         << state_->sessionId;
+            workerThread_->detach();
         }
-        FCITX_WARN() << "[voice-input:openai] Join timeout session="
-                     << state_->sessionId;
-        workerThread_->detach();
     }
     workerThread_.reset();
 }
@@ -272,6 +273,7 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // Cancel() 后立即中断在途传输，避免 JoinWithTimeout 超时 detach
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);

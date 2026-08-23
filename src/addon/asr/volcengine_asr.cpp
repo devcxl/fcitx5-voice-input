@@ -146,6 +146,12 @@ std::string MaskSecret(const std::string& secret) {
     return secret.substr(0, 6) + "..." + secret.substr(secret.size() - 4);
 }
 
+int CancelProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t,
+                           curl_off_t) {
+    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
+    return cancelled->load(std::memory_order_acquire) ? 1 : 0;
+}
+
 std::string ExtractHeaderValue(const std::string& headers, const std::string& name) {
     size_t pos = headers.find(name);
     if (pos == std::string::npos) return "";
@@ -355,7 +361,11 @@ VolcengineAsrSession::~VolcengineAsrSession() {
 void VolcengineAsrSession::StartWorker() {
     if (!state_->finished && !workerThread_) {
         auto self = std::static_pointer_cast<VolcengineAsrSession>(shared_from_this());
-        workerThread_ = std::make_unique<std::thread>([self]() { self->WorkerLoop(); });
+        state_->workerDone.store(false, std::memory_order_release);
+        workerThread_ = std::make_unique<std::thread>([self]() {
+            self->WorkerLoop();
+            self->state_->workerDone.store(true, std::memory_order_release);
+        });
     }
 }
 
@@ -382,13 +392,16 @@ void VolcengineAsrSession::Cancel() {
 
 void VolcengineAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout) {
     if (workerThread_ && workerThread_->joinable()) {
-        auto start = std::chrono::steady_clock::now();
-        while (std::chrono::steady_clock::now() - start < timeout) {
-            std::this_thread::sleep_for(10ms);
-            if (!workerThread_->joinable()) { workerThread_->join(); return; }
+        if (workerThread_->get_id() == std::this_thread::get_id()) {
+            // worker 持有最后一个会话引用时，析构会在自身线程执行，不能 join 自身。
+            workerThread_->detach();
+        } else if (WaitForWorkerCompletion(state_->workerDone, timeout)) {
+            workerThread_->join();
+        } else {
+            FCITX_WARN() << "[voice-input:volcengine] Join timeout session="
+                         << state_->sessionId;
+            workerThread_->detach();
         }
-        FCITX_WARN() << "[voice-input:volcengine] Join timeout session=" << state_->sessionId;
-        workerThread_->detach();
     }
     workerThread_.reset();
 }
@@ -433,6 +446,10 @@ void VolcengineAsrSession::WorkerLoop() {
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &state_->cancelled);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
                      +[](char* buf, size_t s, size_t n, void* u) -> size_t {
                          static_cast<std::string*>(u)->append(buf, s * n); return s * n;

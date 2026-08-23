@@ -48,6 +48,12 @@ std::string JsonToString(const Json::Value& json) {
     return Json::writeString(builder, json);
 }
 
+int CancelProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t,
+                           curl_off_t) {
+    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
+    return cancelled->load(std::memory_order_acquire) ? 1 : 0;
+}
+
 // 发送一个 TEXT WS 帧（OpenAI Realtime 用 JSON 文本帧）。
 bool SendWebSocketText(CURL* curl, const std::string& data,
                        const std::atomic<bool>& cancelFlag) {
@@ -161,7 +167,11 @@ RealtimeAsrSession::~RealtimeAsrSession() {
 void RealtimeAsrSession::StartWorker() {
     if (!state_->finished && !workerThread_) {
         auto self = std::static_pointer_cast<RealtimeAsrSession>(shared_from_this());
-        workerThread_ = std::make_unique<std::thread>([self]() { self->WorkerLoop(); });
+        state_->workerDone.store(false, std::memory_order_release);
+        workerThread_ = std::make_unique<std::thread>([self]() {
+            self->WorkerLoop();
+            self->state_->workerDone.store(true, std::memory_order_release);
+        });
     }
 }
 
@@ -188,14 +198,16 @@ void RealtimeAsrSession::Cancel() {
 
 void RealtimeAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout) {
     if (workerThread_ && workerThread_->joinable()) {
-        auto start = std::chrono::steady_clock::now();
-        while (std::chrono::steady_clock::now() - start < timeout) {
-            std::this_thread::sleep_for(10ms);
-            if (!workerThread_->joinable()) { workerThread_->join(); return; }
+        if (workerThread_->get_id() == std::this_thread::get_id()) {
+            // worker 持有最后一个会话引用时，析构会在自身线程执行，不能 join 自身。
+            workerThread_->detach();
+        } else if (WaitForWorkerCompletion(state_->workerDone, timeout)) {
+            workerThread_->join();
+        } else {
+            FCITX_WARN() << "[voice-input:realtime] Join timeout session="
+                         << state_->sessionId;
+            workerThread_->detach();
         }
-        FCITX_WARN() << "[voice-input:realtime] Join timeout session="
-                     << state_->sessionId;
-        workerThread_->detach();
     }
     workerThread_.reset();
 }
@@ -257,7 +269,12 @@ void RealtimeAsrSession::WorkerLoop() {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &state_->cancelled);
 
         CURLcode connectResult = curl_easy_perform(curl);
         curl_slist_free_all(headers);
