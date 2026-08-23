@@ -9,6 +9,8 @@
 #include <spa/param/audio/format-utils.h>
 #include <fcitx-utils/log.h>
 
+#include "capture/audio_buffer_segments.h"
+
 namespace fcitx {
 namespace {
 
@@ -100,6 +102,10 @@ bool PipeWireCapture::Start() {
     if (running_) return true;
 
     if (!LoadLib()) return false;
+
+    frameAssembler_.Reset();
+    ringBufferDroppedSamples_ = 0;
+    drainDiscardedSamples_ = 0;
 
     pw_.pw_init(nullptr, nullptr);
 
@@ -197,14 +203,35 @@ bool PipeWireCapture::Start() {
 void PipeWireCapture::Stop() {
     if (!running_) return;
 
-    // Stop drain thread first
+    // 先停止 PipeWire 回调，再关闭 drain，避免 drain 已退出后继续写入 ring buffer。
+    if (loop_) {
+        pw_.pw_thread_loop_stop(loop_);
+    }
+
     drainRunning_ = false;
     if (drainThread_ && drainThread_->joinable()) {
         drainThread_->join();
         drainThread_.reset();
     }
 
-    Cleanup(true);
+    size_t discarded = frameAssembler_.PendingSamples();
+    float discardBuffer[kWindowSize];
+    while (true) {
+        const size_t read = ringBuffer_->Read(discardBuffer, kWindowSize);
+        if (read == 0) break;
+        discarded += read;
+    }
+    frameAssembler_.Reset();
+    drainDiscardedSamples_.fetch_add(discarded, std::memory_order_relaxed);
+
+    const auto ringDropped = ringBufferDroppedSamples_.exchange(0);
+    const auto drainDiscarded = drainDiscardedSamples_.exchange(0);
+    if (ringDropped > 0 || drainDiscarded > 0) {
+        FCITX_WARN() << "[voice-input:pw] Audio samples dropped: ring="
+                     << ringDropped << " drain=" << drainDiscarded;
+    }
+
+    Cleanup(false);
     UnloadLib();
     running_ = false;
     FCITX_INFO() << "[voice-input:pw] Capture stopped";
@@ -249,7 +276,6 @@ void PipeWireCapture::OnStateChanged(void* userdata, pw_stream_state oldState,
 void PipeWireCapture::OnProcessImpl() {
     pw_buffer* buf = pw_.pw_stream_dequeue_buffer(stream_);
     if (!buf) {
-        FCITX_DEBUG() << "[voice-input:pw] dequeue_buffer returned null";
         return;
     }
 
@@ -259,28 +285,36 @@ void PipeWireCapture::OnProcessImpl() {
         return;
     }
 
-    void* src = spa_buf->datas[0].data;
-    auto* chunk = spa_buf->datas[0].chunk;
+    const auto& data = spa_buf->datas[0];
+    void* src = data.data;
+    auto* chunk = data.chunk;
     if (!chunk) {
         pw_.pw_stream_queue_buffer(stream_, buf);
         return;
     }
-    uint32_t size = chunk->size;
 
-    if (!src || size == 0) {
+    if (!src || data.maxsize == 0 || chunk->size == 0) {
         pw_.pw_stream_queue_buffer(stream_, buf);
         return;
     }
 
-    size_t frames = size / sizeof(float);
-    const float* pcm = static_cast<const float*>(src);
-    ringBuffer_->Write(pcm, frames);
-
-    if (rawCallback_) {
-        rawCallback_(pcm, frames);
-    }
+    ForEachCircularFloatSegment(static_cast<const float*>(src), data.maxsize,
+                                chunk->offset, chunk->size, chunk->stride,
+                                [this](const float* pcm, size_t frames) {
+                                    PushSamples(pcm, frames);
+                                });
 
     pw_.pw_stream_queue_buffer(stream_, buf);
+}
+
+void PipeWireCapture::PushSamples(const float* pcm, size_t frames) {
+    if (frames == 0) return;
+
+    const size_t written = ringBuffer_->Write(pcm, frames);
+    if (written < frames) {
+        ringBufferDroppedSamples_.fetch_add(frames - written,
+                                            std::memory_order_relaxed);
+    }
 }
 
 void PipeWireCapture::DrainLoop() {
@@ -289,26 +323,30 @@ void PipeWireCapture::DrainLoop() {
 
     while (drainRunning_) {
         size_t read = ringBuffer_->Read(floatBuf, kDrainChunk);
-        if (read < kDrainChunk) {
+        if (read == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
-        if (!frameQueue_) continue;
+        frameAssembler_.Append(floatBuf, read,
+            [this](const std::array<float, kWindowSize>& samples) {
+                if (!frameQueue_) return;
 
-        AudioFrame frame;
-        frame.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now().time_since_epoch())
-                                 .count();
+                AudioFrame frame;
+                frame.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now().time_since_epoch())
+                                         .count();
 
-        static constexpr float kFloatToInt16 = 32767.0f;
-        for (size_t i = 0; i < kDrainChunk; ++i) {
-            float s = std::clamp(floatBuf[i], -1.0f, 1.0f);
-            frame.pcm[i] = static_cast<int16_t>(s * kFloatToInt16);
-        }
+                static constexpr float kFloatToInt16 = 32767.0f;
+                for (size_t i = 0; i < samples.size(); ++i) {
+                    float s = std::clamp(samples[i], -1.0f, 1.0f);
+                    frame.pcm[i] = static_cast<int16_t>(s * kFloatToInt16);
+                }
 
-        frameQueue_->Push(frame);
+                frameQueue_->Push(frame);
+            });
     }
+
 }
 
 } // namespace fcitx
