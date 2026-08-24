@@ -89,10 +89,10 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
     std::shared_ptr<AsrEngine> previousEngine;
     {
         std::lock_guard<std::mutex> lock(engineMutex_);
+        results_->SkipAllSessions();
         previousEngine = std::move(asrEngine_);
         asrEngine_ = std::move(enginePtr);
     }
-    results_->SkipAllSessions();
     if (previousEngine) previousEngine->CancelAllSessions();
 }
 

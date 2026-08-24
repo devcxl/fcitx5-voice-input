@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -71,6 +72,10 @@ public:
     void SetErrorCallback(AsrSession::ErrorCallback cb) { errorCb_ = std::move(cb); }
 
 protected:
+    static uint64_t NextSessionId() {
+        return nextSessionId_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     std::optional<uint64_t> CancelOldestSessionIfLimitReachedLocked() {
         for (auto it = sessions_.begin(); it != sessions_.end();) {
             if (it->second.expired()) {
@@ -107,8 +112,10 @@ protected:
 
     std::mutex sessionsMutex_;
     std::unordered_map<uint64_t, std::weak_ptr<AsrSession>> sessions_;
-    uint64_t nextSessionId_{1};
     size_t maxActiveSessions_{kMaxActiveSessions};
+
+private:
+    inline static std::atomic<uint64_t> nextSessionId_{1};
 };
 
 } // namespace fcitx

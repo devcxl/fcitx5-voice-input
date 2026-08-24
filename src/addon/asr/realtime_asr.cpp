@@ -512,7 +512,7 @@ AsrSessionStart RealtimeAsrEngine::StartSession() {
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         cancelledSessionId = CancelOldestSessionIfLimitReachedLocked();
-        sid = nextSessionId_++;
+        sid = NextSessionId();
     }
 
     auto session = std::make_shared<RealtimeAsrSession>(config_, errorCb_, sid);

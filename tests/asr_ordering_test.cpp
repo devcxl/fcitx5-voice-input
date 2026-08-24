@@ -41,7 +41,7 @@ public:
     AsrSessionStart StartSession() override {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         auto cancelled = CancelOldestSessionIfLimitReachedLocked();
-        const auto sessionId = nextSessionId_++;
+        const auto sessionId = NextSessionId();
         auto session = std::make_shared<TestSession>(sessionId);
         sessions_[sessionId] = session;
         retainedSessions_.push_back(session);
@@ -171,6 +171,17 @@ bool TestReportedCancellationUnblocksCompletedMiddleSession() {
                  "completed middle sessions must retain their order");
 }
 
+bool TestSessionIdsAreUniqueAcrossEngines() {
+    TestEngine firstEngine;
+    TestEngine replacementEngine;
+    auto oldSession = firstEngine.StartSession();
+    auto newSession = replacementEngine.StartSession();
+
+    return Check(oldSession.session->GetState()->sessionId !=
+                     newSession.session->GetState()->sessionId,
+                 "replacement engines must not reuse session IDs");
+}
+
 } // namespace
 
 int main() {
@@ -179,7 +190,8 @@ int main() {
                    TestSkippedUtteranceUnblocksLaterResult() &&
                    TestSkipDiscardsCachedAndLateResults() &&
                    TestSessionLimitCancelsOldestSession() &&
-                   TestReportedCancellationUnblocksCompletedMiddleSession()
+                   TestReportedCancellationUnblocksCompletedMiddleSession() &&
+                   TestSessionIdsAreUniqueAcrossEngines()
                ? 0
                : 1;
 }
