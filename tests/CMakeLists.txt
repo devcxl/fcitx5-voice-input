@@ -52,3 +52,36 @@ target_include_directories(asr_ordering_test PRIVATE
 )
 
 add_test(NAME asr_ordering_test COMMAND asr_ordering_test)
+
+add_executable(result_coordinator_test
+    result_coordinator_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/pipeline/result_coordinator.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/llm/llm_client.cpp
+)
+
+target_include_directories(result_coordinator_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+)
+
+target_link_libraries(result_coordinator_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    CURL::libcurl
+)
+
+add_test(NAME result_coordinator_test COMMAND result_coordinator_test)
+
+add_executable(realtime_terminal_state_test
+    realtime_terminal_state_test.cpp
+)
+
+target_include_directories(realtime_terminal_state_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+)
+
+add_test(NAME realtime_terminal_state_test
+    COMMAND realtime_terminal_state_test
+)

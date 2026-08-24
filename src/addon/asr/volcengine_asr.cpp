@@ -611,14 +611,12 @@ bool VolcengineAsrEngine::Init(const Config& config) {
     return true;
 }
 
-std::shared_ptr<AsrSession> VolcengineAsrEngine::StartSession() {
+AsrSessionStart VolcengineAsrEngine::StartSession() {
     uint64_t sid;
+    std::optional<uint64_t> cancelledSessionId;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
-        if (auto cancelled = CancelOldestSessionIfLimitReachedLocked()) {
-            FCITX_WARN() << "[voice-input:volcengine] Too many sessions, cancel oldest="
-                         << *cancelled;
-        }
+        cancelledSessionId = CancelOldestSessionIfLimitReachedLocked();
         sid = nextSessionId_++;
     }
 
@@ -629,7 +627,7 @@ std::shared_ptr<AsrSession> VolcengineAsrEngine::StartSession() {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         sessions_[sid] = session;
     }
-    return session;
+    return {std::move(session), cancelledSessionId};
 }
 
 } // namespace fcitx

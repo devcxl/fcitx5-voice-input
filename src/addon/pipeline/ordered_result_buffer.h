@@ -27,6 +27,9 @@ public:
         }
 
         auto& pending = pending_[result.utteranceId];
+        if (pending.skipped) {
+            return {};
+        }
         if (result.isPartial && !pending.results.empty() &&
             pending.results.back().isPartial) {
             pending.results.back() = std::move(result);
@@ -43,7 +46,10 @@ public:
             return {};
         }
 
-        pending_[utteranceId].terminal = true;
+        auto& pending = pending_[utteranceId];
+        pending.results.clear();
+        pending.skipped = true;
+        pending.terminal = true;
         return DrainReadyLocked();
     }
 
@@ -51,6 +57,7 @@ private:
     struct PendingUtterance {
         std::deque<AsrResult> results;
         bool terminal = false;
+        bool skipped = false;
     };
 
     std::vector<AsrResult> DrainReadyLocked() {

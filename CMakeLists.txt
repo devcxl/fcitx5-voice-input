@@ -108,6 +108,7 @@ set(ADDON_SOURCES
     src/addon/vad/vad.cpp
     src/addon/vad/silero_vad.cpp
     src/addon/pipeline/pipeline.cpp
+    src/addon/pipeline/result_coordinator.cpp
     src/addon/asr/openai_asr.cpp
     src/addon/asr/realtime_asr.cpp
     src/addon/asr/volcengine_asr.cpp
@@ -133,6 +134,8 @@ set(ADDON_HEADERS
     src/addon/asr/asr_engine.h
     src/addon/asr/asr_session.h
     src/addon/asr/session_reaper.h
+    src/addon/pipeline/ordered_result_buffer.h
+    src/addon/pipeline/result_coordinator.h
     src/addon/asr/openai_asr.h
     src/addon/asr/realtime_asr.h
     src/addon/asr/volcengine_asr.h

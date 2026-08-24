@@ -51,7 +51,7 @@ private:
 class VolcengineAsrEngine : public AsrEngine {
 public:
     bool Init(const Config& config) override;
-    std::shared_ptr<AsrSession> StartSession() override;
+    AsrSessionStart StartSession() override;
     const char* Name() const override { return "volcengine"; }
 
 private:

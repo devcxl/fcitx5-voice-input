@@ -14,6 +14,46 @@
 
 namespace fcitx {
 
+enum class RealtimeServerOutcome {
+    Continue,
+    FinalReceived,
+    TransportFailure,
+};
+
+struct RealtimeServerDecision {
+    bool stop = false;
+    bool reconnect = false;
+    bool publishFallback = false;
+};
+
+constexpr RealtimeServerDecision DecideRealtimeServerOutcome(
+    RealtimeServerOutcome outcome, bool inputFinished) {
+    if (outcome == RealtimeServerOutcome::FinalReceived) {
+        return {.stop = true};
+    }
+    if (outcome == RealtimeServerOutcome::TransportFailure) {
+        return inputFinished
+                   ? RealtimeServerDecision{.stop = true,
+                                            .publishFallback = true}
+                   : RealtimeServerDecision{.reconnect = true};
+    }
+    return {};
+}
+
+class RealtimeTerminalState {
+public:
+    bool TryMarkPublished() {
+        if (published_) return false;
+        published_ = true;
+        return true;
+    }
+
+    bool IsPublished() const { return published_; }
+
+private:
+    bool published_ = false;
+};
+
 /// OpenAI Realtime 流式实时转录会话。
 ///
 /// 与 VolcengineAsrSession 结构对齐：StartWorker 即建 WS 持久连接，
@@ -51,7 +91,7 @@ private:
 class RealtimeAsrEngine : public AsrEngine {
 public:
     bool Init(const Config& config) override;
-    std::shared_ptr<AsrSession> StartSession() override;
+    AsrSessionStart StartSession() override;
     const char* Name() const override { return "realtime"; }
 
 private:

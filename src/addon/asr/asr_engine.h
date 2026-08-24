@@ -5,14 +5,18 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 #include "asr_session.h"
 
 namespace fcitx {
 
+struct AsrSessionStart {
+    std::shared_ptr<AsrSession> session;
+    std::optional<uint64_t> cancelledSessionId;
+};
+
 /// ASR 后端引擎，全局单例（由 Pipeline 持有）。
-/// 工厂模式：StartSession() 返回独立会话对象。
+/// 工厂模式：StartSession() 返回独立会话及容量取消结果。
 /// 内部用 weak_ptr 追踪活跃 Session，用于批量取消。
 class AsrEngine {
 public:
@@ -54,10 +58,9 @@ public:
     /// 调用时若有活跃 Session，调用方应先 CancelAllSessions。
     virtual bool Init(const Config& config) = 0;
 
-    /// 创建新识别会话。返回 shared_ptr，调用方完成回调登记后再启动 worker。
-    /// 超过 maxActiveSessions 时自动取消最旧会话。
-    /// 若旧会话未结束，内部调用 Cancel（不阻塞）。
-    virtual std::shared_ptr<AsrSession> StartSession() = 0;
+    /// 创建新识别会话；若容量已满，同时返回实际取消的旧会话 ID。
+    /// 调用方完成 session 映射和回调登记后再启动 worker。
+    virtual AsrSessionStart StartSession() = 0;
 
     /// 取消所有由本 Engine 创建的活跃 Session。
     virtual void CancelAllSessions();
