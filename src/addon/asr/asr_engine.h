@@ -1,20 +1,28 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 #include "asr_session.h"
 
 namespace fcitx {
 
+struct AsrSessionStart {
+    std::shared_ptr<AsrSession> session;
+    std::optional<uint64_t> cancelledSessionId;
+};
+
 /// ASR 后端引擎，全局单例（由 Pipeline 持有）。
-/// 工厂模式：StartSession() 返回独立会话对象。
+/// 工厂模式：StartSession() 返回独立会话及容量取消结果。
 /// 内部用 weak_ptr 追踪活跃 Session，用于批量取消。
 class AsrEngine {
 public:
+    static constexpr size_t kMaxActiveSessions = 3;
+
     struct Config {
         // Common
         std::string modelName;
@@ -51,10 +59,9 @@ public:
     /// 调用时若有活跃 Session，调用方应先 CancelAllSessions。
     virtual bool Init(const Config& config) = 0;
 
-    /// 创建新识别会话。返回 shared_ptr。
-    /// 超过 maxActiveSessions 时自动取消最旧会话。
-    /// 若旧会话未结束，内部调用 Cancel（不阻塞）。
-    virtual std::shared_ptr<AsrSession> StartSession() = 0;
+    /// 创建新识别会话；若容量已满，同时返回实际取消的旧会话 ID。
+    /// 调用方完成 session 映射和回调登记后再启动 worker。
+    virtual AsrSessionStart StartSession() = 0;
 
     /// 取消所有由本 Engine 创建的活跃 Session。
     virtual void CancelAllSessions();
@@ -65,13 +72,50 @@ public:
     void SetErrorCallback(AsrSession::ErrorCallback cb) { errorCb_ = std::move(cb); }
 
 protected:
+    static uint64_t NextSessionId() {
+        return nextSessionId_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    std::optional<uint64_t> CancelOldestSessionIfLimitReachedLocked() {
+        for (auto it = sessions_.begin(); it != sessions_.end();) {
+            if (it->second.expired()) {
+                it = sessions_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (sessions_.size() < maxActiveSessions_) {
+            return std::nullopt;
+        }
+
+        auto oldest = sessions_.begin();
+        for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
+            auto session = it->second.lock();
+            auto oldestSession = oldest->second.lock();
+            if (session && (!oldestSession ||
+                            session->GetState()->sessionId <
+                                oldestSession->GetState()->sessionId)) {
+                oldest = it;
+            }
+        }
+
+        const auto sessionId = oldest->first;
+        if (auto session = oldest->second.lock()) {
+            session->Cancel();
+        }
+        sessions_.erase(oldest);
+        return sessionId;
+    }
+
     AsrSession::ResultCallback resultCb_;
     AsrSession::ErrorCallback errorCb_;
 
     std::mutex sessionsMutex_;
     std::unordered_map<uint64_t, std::weak_ptr<AsrSession>> sessions_;
-    uint64_t nextSessionId_{1};
-    size_t maxActiveSessions_{3};
+    size_t maxActiveSessions_{kMaxActiveSessions};
+
+private:
+    inline static std::atomic<uint64_t> nextSessionId_{1};
 };
 
 } // namespace fcitx

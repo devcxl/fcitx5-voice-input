@@ -243,20 +243,25 @@ void RealtimeAsrSession::WorkerLoop() {
         return JsonToString(ev);
     };
 
-    bool gotFinal = false;
+    RealtimeTerminalState terminal;
+    auto publishFinal = [&](const std::string& transcript) {
+        if (!terminal.TryMarkPublished()) return;
+        if (cb) cb(transcript, true, sid);
+    };
     bool endCommitSent = false;      // End commit 是否已发出（决定最终 item 判定）
     std::string fullTranscript;      // 会话级累积文本（整句，preedit 显示的依据）
     std::string currentTranscript;   // 当前 item 的 delta 累积
     std::vector<int16_t> pending24k;  // 提升到连接循环外，重连时保留未发送缓冲
 
     // 连接循环：处理首次连接 + 断线/30min 重连（保持同一 sessionId）
-    for (int attempt = 0; attempt < kMaxReconnectAttempts && !gotFinal; ++attempt) {
+    for (int attempt = 0;
+         attempt < kMaxReconnectAttempts && !terminal.IsPublished(); ++attempt) {
         if (state_->cancelled) break;
 
         CURL* curl = curl_easy_init();
         if (!curl) {
             if (ecb) ecb("Failed to init curl");
-            if (cb) cb("", true, sid);
+            publishFinal({});
             return;
         }
 
@@ -289,7 +294,7 @@ void RealtimeAsrSession::WorkerLoop() {
             curl_easy_cleanup(curl);
             if (attempt == kMaxReconnectAttempts - 1) {
                 if (ecb) ecb("Realtime connect failed: " + std::string(curl_easy_strerror(connectResult)));
-                if (cb) cb("", true, sid);
+                publishFinal({});
                 return;
             }
             std::this_thread::sleep_for(1s);
@@ -307,15 +312,21 @@ void RealtimeAsrSession::WorkerLoop() {
         int commitsInFlight = 0;           // 在途 commit 数（重连后新连接重新计数）
 
         // 处理服务端事件
-        auto handleServer = [&](std::chrono::milliseconds timeout) {
+        auto handleServer = [&](std::chrono::milliseconds timeout)
+            -> RealtimeServerOutcome {
             auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!state_->cancelled && !gotFinal &&
+            while (!state_->cancelled && !terminal.IsPublished() &&
                    std::chrono::steady_clock::now() < deadline) {
                 std::string text;
                 RecvStatus r = ReceiveTextFrame(curl, text);
                 if (r == RecvStatus::Again) { std::this_thread::sleep_for(10ms); continue; }
-                if (r == RecvStatus::Closed) { gotFinal = true; return false; }
-                if (r == RecvStatus::Error) { if (ecb) ecb("WS recv error"); return false; }
+                if (r == RecvStatus::Closed) {
+                    return RealtimeServerOutcome::TransportFailure;
+                }
+                if (r == RecvStatus::Error) {
+                    if (ecb) ecb("WS recv error");
+                    return RealtimeServerOutcome::TransportFailure;
+                }
 
                 Json::Value json;
                 Json::Reader reader;
@@ -338,10 +349,9 @@ void RealtimeAsrSession::WorkerLoop() {
                     fullTranscript += transcript;
                     if (isFinalItem) {
                         // 最终结果（整句累积），上报 final 并结束会话
-                        if (cb && !fullTranscript.empty()) cb(fullTranscript, true, sid);
+                        publishFinal(fullTranscript);
                         currentTranscript.clear();
-                        gotFinal = true;
-                        return false;
+                        return RealtimeServerOutcome::FinalReceived;
                     } else {
                         // 周期 commit（或在途旧 item）产生的转录 → 累加后作为 partial 刷新 preedit
                         // （pipeline 契约：每个会话仅一个 final，此处不得上报 final）
@@ -355,11 +365,12 @@ void RealtimeAsrSession::WorkerLoop() {
                 }
                 // 其他事件（response.*/error 等）忽略
             }
-            return true;
+            return RealtimeServerOutcome::Continue;
         };
 
         bool reconnectNeeded = false;
-        while (!state_->cancelled && !gotFinal && !reconnectNeeded) {
+        while (!state_->cancelled && !terminal.IsPublished() &&
+               !reconnectNeeded) {
             std::vector<int16_t> chunk;
             bool hasChunk = audioChunks->TryPop(chunk);
 
@@ -372,31 +383,31 @@ void RealtimeAsrSession::WorkerLoop() {
                     if (!SendWebSocketText(curl, buildAppendEvent(pending24k), state_->cancelled)) {
                         FCITX_ERROR() << "[voice-input:realtime] End flush failed session=" << sid;
                         // 兜底 final 后经统一清理路径退出（break → CloseWebSocket + cleanup）
-                        if (cb) cb(fullTranscript, true, sid);
-                        gotFinal = true;
+                        publishFinal(fullTranscript);
                         break;
                     }
                     pending24k.clear();
                 }
                 if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
                     FCITX_ERROR() << "[voice-input:realtime] End commit failed session=" << sid;
-                    if (cb) cb(fullTranscript, true, sid);
-                    gotFinal = true;
+                    publishFinal(fullTranscript);
                     break;
                 }
                 endCommitSent = true;
                 ++commitsInFlight;
                 auto deadline = std::chrono::steady_clock::now() + 30s;
-                while (!state_->cancelled && !gotFinal &&
+                while (!state_->cancelled && !terminal.IsPublished() &&
                        std::chrono::steady_clock::now() < deadline) {
-                    if (!handleServer(50ms)) { gotFinal = true; break; }
+                    const auto decision = DecideRealtimeServerOutcome(
+                        handleServer(50ms), true);
+                    if (decision.publishFallback) publishFinal(fullTranscript);
+                    if (decision.stop) break;
                 }
-                if (!gotFinal && !state_->cancelled) {
+                if (!terminal.IsPublished() && !state_->cancelled) {
                     // 30s 超时仍未收到最终 completed → 以已累积文本兜底 final，
-                    // 并置 gotFinal 结束会话（否则 for 循环会重连后空转挂死）
+                    // 并结束会话（否则 for 循环会重连后空转挂死）。
                     FCITX_WARN() << "[voice-input:realtime] End wait timeout session=" << sid;
-                    if (cb) cb(fullTranscript, true, sid);
-                    gotFinal = true;
+                    publishFinal(fullTranscript);
                 }
                 break;
             }
@@ -457,14 +468,17 @@ void RealtimeAsrSession::WorkerLoop() {
                 break;
             }
 
-            if (!handleServer(20ms)) { gotFinal = true; break; }
+            const auto decision =
+                DecideRealtimeServerOutcome(handleServer(20ms), false);
+            if (decision.reconnect) reconnectNeeded = true;
+            if (decision.stop || decision.reconnect) break;
             std::this_thread::sleep_for(5ms);
         }
 
         CloseWebSocket(curl);
         curl_easy_cleanup(curl);
 
-        if (state_->cancelled || gotFinal) break;
+        if (state_->cancelled || terminal.IsPublished()) break;
         if (reconnectNeeded) {
             FCITX_WARN() << "[voice-input:realtime] Reconnecting session=" << sid;
             // 重连后是全新服务端会话，旧 item 的 delta 上下文已失效：
@@ -479,9 +493,9 @@ void RealtimeAsrSession::WorkerLoop() {
         FCITX_DEBUG() << "[voice-input:realtime] Cancelled session=" << sid;
         return;
     }
-    if (!gotFinal) {
+    if (!terminal.IsPublished()) {
         // 未收到最终转录（连接断开/失败）：以空 final 触发 pipeline 错误/清理分支
-        if (cb) cb("", true, sid);
+        publishFinal({});
     }
 }
 
@@ -492,28 +506,23 @@ bool RealtimeAsrEngine::Init(const Config& config) {
     return true;
 }
 
-std::shared_ptr<AsrSession> RealtimeAsrEngine::StartSession() {
+AsrSessionStart RealtimeAsrEngine::StartSession() {
     uint64_t sid;
+    std::optional<uint64_t> cancelledSessionId;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
-        // 清理过期 weak_ptr，避免长期运行 map 无限增长
-        for (auto it = sessions_.begin(); it != sessions_.end(); ) {
-            if (it->second.expired()) it = sessions_.erase(it);
-            else ++it;
-        }
-        sid = nextSessionId_++;
+        cancelledSessionId = CancelOldestSessionIfLimitReachedLocked();
+        sid = NextSessionId();
     }
 
     auto session = std::make_shared<RealtimeAsrSession>(config_, errorCb_, sid);
     session->SetResultCallback(resultCb_);
-    if (!session->GetState()->finished)
-        session->StartWorker();
 
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         sessions_[sid] = session;
     }
-    return session;
+    return {std::move(session), cancelledSessionId};
 }
 
 } // namespace fcitx

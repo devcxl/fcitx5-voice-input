@@ -276,7 +276,7 @@ void LLMClient::Process(const std::string& text, uint64_t generation,
 }
 
 void LLMClient::ProcessStream(const std::string& text, uint64_t generation,
-                               std::function<void(const std::string&)> onToken,
+                               std::function<void(const std::string&)>,
                                std::function<void(const std::string&)> onComplete) {
     if (config_.model.empty() || !onComplete) return;
 
@@ -322,6 +322,7 @@ void LLMClient::ProcessStream(const std::string& text, uint64_t generation,
     CURL* curl = curl_easy_init();
     if (!curl) {
         FCITX_ERROR() << "[voice-input:llm:stream] Failed to init curl";
+        cancellationContext.PublishIfCurrent([&] { onComplete(text); });
         return;
     }
 
@@ -372,10 +373,13 @@ void LLMClient::ProcessStream(const std::string& text, uint64_t generation,
                      << curl_easy_strerror(res)
                      << " http=" << httpCode
                      << " elapsed=" << elapsedMs << "ms";
+        cancellationContext.PublishIfCurrent([&] { onComplete(text); });
         return;
     }
     if (!ctx.done) {
-        FCITX_WARN() << "[voice-input:llm:stream] Response ended without [DONE]";
+        FCITX_WARN() << "[voice-input:llm:stream] Response ended without [DONE], "
+                     << "falling back to raw ASR text";
+        cancellationContext.PublishIfCurrent([&] { onComplete(text); });
         return;
     }
 

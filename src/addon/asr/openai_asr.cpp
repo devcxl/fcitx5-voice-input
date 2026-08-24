@@ -347,24 +347,24 @@ bool OpenaiAsrEngine::Init(const Config& config) {
     return true;
 }
 
-std::shared_ptr<AsrSession> OpenaiAsrEngine::StartSession() {
+AsrSessionStart OpenaiAsrEngine::StartSession() {
     uint64_t sid;
+    std::optional<uint64_t> cancelledSessionId;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
-        sid = nextSessionId_++;
+        cancelledSessionId = CancelOldestSessionIfLimitReachedLocked();
+        sid = NextSessionId();
     }
 
     auto session = std::make_shared<OpenaiAsrSession>(
         config_, errorCb_, sid);
     session->SetResultCallback(resultCb_);
-    if (!session->GetState()->finished)
-        session->StartWorker();
 
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         sessions_[sid] = session;
     }
-    return session;
+    return {std::move(session), cancelledSessionId};
 }
 
 } // namespace fcitx
