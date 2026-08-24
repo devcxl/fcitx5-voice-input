@@ -71,6 +71,9 @@ void Pipeline::SetConfig(const VoiceInputConfig& config) {
 
 void Pipeline::SetLLMClient(std::unique_ptr<LLMClient> client) {
     llmClient_ = std::move(client);
+    if (llmClient_ && running_) {
+        llmClient_->Activate(generation_.load());
+    }
 }
 
 void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
@@ -139,7 +142,7 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                                  << " uid=" << uid << " gen=" << gen
                                  << " stream=" << llmStream_;
                     if (llmStream_) {
-                        llmClient_->ProcessStream(text,
+                        llmClient_->ProcessStream(text, gen,
                             [this, guard, uid, gen,
                              sid](const std::string& partial) {
                                 if (!guard->load()) return;
@@ -167,17 +170,19 @@ void Pipeline::SetAsrEngine(std::unique_ptr<AsrEngine> engine) {
                                 if (resultCb_) resultCb_(fullText);
                             });
                     } else {
-                        std::string processed = llmClient_->Process(text);
-                        if (!processed.empty()) {
-                            AsrResult refinedResult;
-                            refinedResult.text = processed;
-                            refinedResult.generation = gen;
-                            refinedResult.sessionId = sid;
-                            refinedResult.utteranceId = uid;
-                            refinedResult.isLLMRefined = true;
-                            resultQueue_.Push(std::move(refinedResult));
-                            if (resultCb_) resultCb_(processed);
-                        }
+                        llmClient_->Process(text, gen,
+                            [this, guard, uid, gen,
+                             sid](const std::string& processed) {
+                                if (!guard->load()) return;
+                                AsrResult refinedResult;
+                                refinedResult.text = processed;
+                                refinedResult.generation = gen;
+                                refinedResult.sessionId = sid;
+                                refinedResult.utteranceId = uid;
+                                refinedResult.isLLMRefined = true;
+                                resultQueue_.Push(std::move(refinedResult));
+                                if (resultCb_) resultCb_(processed);
+                            });
                     }
                 }
             } else if (!text.empty()) {
@@ -211,7 +216,10 @@ void Pipeline::SetVadStatusCallback(VADWorker::VadStatusCallback cb) {
 }
 
 void Pipeline::Start() {
-    if (running_) return;
+    if (running_) {
+        if (llmClient_) llmClient_->Activate(generation_.load());
+        return;
+    }
 
     if (!asrEngine_) {
         FCITX_ERROR() << "[voice-input] No ASR engine configured";
@@ -233,6 +241,7 @@ void Pipeline::Start() {
         return;
     }
 
+    if (llmClient_) llmClient_->Activate(generation_.load());
     running_ = true;
     asrThread_ = std::make_unique<std::thread>(&Pipeline::AsrDispatcherLoop, this);
 
@@ -243,6 +252,9 @@ void Pipeline::Stop() {
     if (!running_) return;
 
     running_ = false;
+    if (llmClient_) {
+        llmClient_->Cancel();
+    }
 
     if (capture_) {
         capture_->Stop();
@@ -272,11 +284,6 @@ void Pipeline::Stop() {
         engine->CancelAllSessions();
     }
 
-    // 停止 LLM 后处理（中断在途请求）
-    if (llmClient_) {
-        llmClient_->Cancel();
-    }
-
     if (capture_) {
         capture_.reset();
     }
@@ -298,6 +305,9 @@ void Pipeline::Stop() {
 
 void Pipeline::Abort() {
     running_ = false;
+    if (llmClient_) {
+        llmClient_->Cancel();
+    }
 
     if (capture_) {
         capture_->Stop();
@@ -324,10 +334,6 @@ void Pipeline::Abort() {
     }
     if (engine) {
         engine->CancelAllSessions();
-    }
-
-    if (llmClient_) {
-        llmClient_->Cancel();
     }
 
     // Clear queues
