@@ -111,6 +111,7 @@ set(ADDON_SOURCES
     src/addon/pipeline/result_coordinator.cpp
     src/addon/asr/openai_asr.cpp
     src/addon/asr/realtime_asr.cpp
+    src/addon/asr/mistral_asr.cpp
     src/addon/asr/volcengine_asr.cpp
     src/addon/asr/asr_engine.cpp
     src/addon/asr/session_reaper.cpp
@@ -138,6 +139,7 @@ set(ADDON_HEADERS
     src/addon/pipeline/result_coordinator.h
     src/addon/asr/openai_asr.h
     src/addon/asr/realtime_asr.h
+    src/addon/asr/mistral_asr.h
     src/addon/asr/volcengine_asr.h
     src/addon/llm/llm_client.h
     src/addon/pipeline/pipeline.h

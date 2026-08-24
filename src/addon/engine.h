@@ -61,6 +61,7 @@ private:
     VoiceInputConfig config_;
     OpenAIAsrConfig openaiConfig_;
     VolcengineAsrConfig volcengineConfig_;
+    MistralAsrConfig mistralConfig_;
 
     InputContext* activeIc_ = nullptr;
     std::atomic<uint64_t> activeGeneration_{0};

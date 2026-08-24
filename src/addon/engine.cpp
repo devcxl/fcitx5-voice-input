@@ -27,6 +27,7 @@
 
 #include "asr/openai_asr.h"
 #include "asr/realtime_asr.h"
+#include "asr/mistral_asr.h"
 #include "asr/volcengine_asr.h"
 #include "llm/llm_client.h"
 
@@ -82,6 +83,7 @@ void VoiceInputEngine::reloadConfig() {
     readAsIni(config_, "conf/voiceinput.conf");
     readAsIni(openaiConfig_, "conf/voiceinput-openai.conf");
     readAsIni(volcengineConfig_, "conf/voiceinput-volcengine.conf");
+    readAsIni(mistralConfig_, "conf/voiceinput-mistral.conf");
     FCITX_INFO() << "[voice-input] reloadConfig: backend="
                  << *config_.activeBackend;
 }
@@ -110,6 +112,9 @@ const Configuration* VoiceInputEngine::getSubConfig(
     if (path == "asr/volcengine") {
         return &volcengineConfig_;
     }
+    if (path == "asr/mistral") {
+        return &mistralConfig_;
+    }
     FCITX_WARN() << "[voice-input] getSubConfig: unknown path=" << path;
     return nullptr;
 }
@@ -127,6 +132,11 @@ void VoiceInputEngine::setSubConfig(const std::string& path,
         safeSaveAsIni(volcengineConfig_, "conf/voiceinput-volcengine.conf");
         RestrictConfigFilePermissions("conf/voiceinput-volcengine.conf");
         FCITX_INFO() << "[voice-input] Saved volcengine sub-config";
+    } else if (path == "asr/mistral") {
+        mistralConfig_.load(rawConfig, true);
+        safeSaveAsIni(mistralConfig_, "conf/voiceinput-mistral.conf");
+        RestrictConfigFilePermissions("conf/voiceinput-mistral.conf");
+        FCITX_INFO() << "[voice-input] Saved mistral sub-config";
     }
 
     if (initialized_) {
@@ -389,6 +399,20 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
                      << asrConfig.apiEndpoint
                      << " apiKey=" << (asrConfig.apiKey.empty() ? "(empty)" : "***");
         asr = std::make_unique<VolcengineAsrEngine>();
+    } else if (backend == "mistral") {
+        asrConfig.apiEndpoint = *mistralConfig_.baseUrl;
+        if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {
+            FCITX_WARN() << "[voice-input] Mistral endpoint is not TLS, "
+                         << "API credentials will be sent in plaintext: "
+                         << asrConfig.apiEndpoint;
+        }
+        asrConfig.apiKey = *mistralConfig_.apiKey;
+        asrConfig.modelName = *mistralConfig_.model;
+        asrConfig.commitIntervalMs = *mistralConfig_.commitIntervalMs;
+        FCITX_INFO() << "[voice-input] Mistral config: endpoint="
+                     << asrConfig.apiEndpoint
+                     << " model=" << asrConfig.modelName;
+        asr = std::make_unique<MistralAsrEngine>();
     } else {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
         if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {
