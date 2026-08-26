@@ -81,6 +81,9 @@ msgstr "判停窗口 (毫秒)"
 msgid "实时提交间隔 (毫秒)"
 msgstr "实时提交间隔 (毫秒)"
 
+msgid "流式延迟 (毫秒)"
+msgstr "流式延迟 (毫秒)"
+
 msgid "当前 ASR 后端"
 msgstr "当前 ASR 后端"
 

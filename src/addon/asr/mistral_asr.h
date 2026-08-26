@@ -44,8 +44,8 @@ private:
     std::string endpoint_;
     std::string apiKey_;
     std::string modelName_;
-    std::string language_;
     int commitIntervalMs_ = 5000;
+    int targetStreamingDelayMs_ = 0;
     static constexpr int kMaxReconnectAttempts = 3;
     static constexpr std::chrono::seconds kSessionMaxDuration =
         std::chrono::seconds(30 * 60);

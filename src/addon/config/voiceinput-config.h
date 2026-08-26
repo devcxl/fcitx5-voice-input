@@ -119,6 +119,10 @@ FCITX_CONFIGURATION(MistralAsrConfig,
     Option<int, IntConstrain> commitIntervalMs{
         this, "CommitIntervalMs", _("实时提交间隔 (毫秒)"), 5000,
         IntConstrain(1000, 30000)};
+
+    Option<int, IntConstrain> targetStreamingDelayMs{
+        this, "TargetStreamingDelayMs", _("流式延迟 (毫秒)"), 0,
+        IntConstrain(0, 1000)};
 );
 
 FCITX_CONFIGURATION(VolcengineAsrConfig,

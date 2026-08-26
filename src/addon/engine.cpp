@@ -409,9 +409,11 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         asrConfig.apiKey = *mistralConfig_.apiKey;
         asrConfig.modelName = *mistralConfig_.model;
         asrConfig.commitIntervalMs = *mistralConfig_.commitIntervalMs;
+        asrConfig.targetStreamingDelayMs = *mistralConfig_.targetStreamingDelayMs;
         FCITX_INFO() << "[voice-input] Mistral config: endpoint="
                      << asrConfig.apiEndpoint
-                     << " model=" << asrConfig.modelName;
+                     << " model=" << asrConfig.modelName
+                     << " delay=" << asrConfig.targetStreamingDelayMs;
         asr = std::make_unique<MistralAsrEngine>();
     } else {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;

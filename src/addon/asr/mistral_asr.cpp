@@ -128,8 +128,8 @@ MistralAsrSession::MistralAsrSession(const AsrEngine::Config& config,
     // base 形如 wss://api.mistral.ai/v1/
     endpoint_ = base + "audio/transcriptions/realtime?model=" + modelName_;
     apiKey_ = config.apiKey;
-    language_ = config.language;
     commitIntervalMs_ = std::clamp(config.commitIntervalMs, 1000, 30000);
+    targetStreamingDelayMs_ = std::clamp(config.targetStreamingDelayMs, 0, 1000);
 
     if (apiKey_.empty()) {
         state_->finished = true;
@@ -222,10 +222,11 @@ void MistralAsrSession::WorkerLoop() {
     auto buildSessionUpdate = [this]() -> std::string {
         Json::Value ev;
         ev["type"] = "session.update";
-        if (!language_.empty()) {
-            ev["session"]["audio_format"]["encoding"] = "pcm_s16le";
-            ev["session"]["audio_format"]["sample_rate"] = 16000;
-        }
+        // 音频格式：Mistral Realtime 原生接受 16k s16le PCM
+        ev["session"]["audio_format"]["encoding"] = "pcm_s16le";
+        ev["session"]["audio_format"]["sample_rate"] = 16000;
+        // 目标流式延迟：等更多上下文换取同音字/准确率（0 = 不等待，最快）
+        ev["session"]["target_streaming_delay_ms"] = targetStreamingDelayMs_;
         return JsonToString(ev);
     };
 
