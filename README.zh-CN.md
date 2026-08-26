@@ -7,7 +7,7 @@
 # fcitx5-voice-input
 
 <p>
-  <a href="https://github.com/devcxl/fcitx5-voice-input/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/devcxl/fcitx5-voice-input/build.yml?branch=main&logo=github&label=build" alt="Build"></a>
+  <a href="https://github.com/devcxl/fcitx5-voice-input/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/devcxl/fcitx5-voice-input/ci.yml?branch=main&logo=github&label=build" alt="Build"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-LGPL%20v3-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-Linux-important" alt="Platform">
   <img src="https://img.shields.io/badge/fcitx5-%3E%3D5.1.19-blueviolet" alt="Fcitx5">
