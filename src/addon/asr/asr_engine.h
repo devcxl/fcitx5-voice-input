@@ -40,6 +40,9 @@ public:
         // OpenAI Realtime (streaming): periodic commit interval for long speech
         int commitIntervalMs = 5000;
 
+        // Mistral Realtime: target streaming delay (ms) to trade latency for accuracy
+        int targetStreamingDelayMs = 0;
+
         // Volcengine Doubao streaming ASR (cloud)
         std::string authMode;
         std::string appKey;

@@ -21,6 +21,11 @@ struct AsrBackendAnnotation : public EnumAnnotation {
         config.setValueByPath("EnumI18n/1", _("Volcengine Doubao"));
         config.setValueByPath("SubConfigPath/1",
             "fcitx://config/addon/voiceinput/asr/volcengine");
+
+        config.setValueByPath("Enum/2", "mistral");
+        config.setValueByPath("EnumI18n/2", _("Mistral Realtime"));
+        config.setValueByPath("SubConfigPath/2",
+            "fcitx://config/addon/voiceinput/asr/mistral");
     }
 };
 
@@ -97,6 +102,27 @@ FCITX_CONFIGURATION(OpenAIAsrConfig,
     Option<int, IntConstrain> commitIntervalMs{
         this, "CommitIntervalMs", _("实时提交间隔 (毫秒)"), 5000,
         IntConstrain(1000, 30000)};
+);
+
+FCITX_CONFIGURATION(MistralAsrConfig,
+    Option<std::string> baseUrl{
+        this, "BaseUrl", _("接口地址"),
+        "https://api.mistral.ai/v1"};
+
+    Option<std::string> apiKey{
+        this, "ApiKey", _("API 密钥"), ""};
+
+    Option<std::string> model{
+        this, "Model", _("语音模型"),
+        "voxtral-mini-transcribe-realtime-2602"};
+
+    Option<int, IntConstrain> commitIntervalMs{
+        this, "CommitIntervalMs", _("实时提交间隔 (毫秒)"), 5000,
+        IntConstrain(1000, 30000)};
+
+    Option<int, IntConstrain> targetStreamingDelayMs{
+        this, "TargetStreamingDelayMs", _("流式延迟 (毫秒)"), 0,
+        IntConstrain(0, 1000)};
 );
 
 FCITX_CONFIGURATION(VolcengineAsrConfig,
