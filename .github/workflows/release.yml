@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（如 v0.5.0）'
+        required: true
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -145,7 +152,7 @@ jobs:
         with:
           draft: true
           generate_release_notes: true
-          name: fcitx5-voice-input ${{ github.ref_name }}
+          name: fcitx5-voice-input ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
           files: |
             dist/*.deb
             dist/*.rpm
