@@ -26,6 +26,11 @@ struct AsrBackendAnnotation : public EnumAnnotation {
         config.setValueByPath("EnumI18n/2", _("Mistral Realtime"));
         config.setValueByPath("SubConfigPath/2",
             "fcitx://config/addon/voiceinput/asr/mistral");
+
+        config.setValueByPath("Enum/3", "sherpa_onnx");
+        config.setValueByPath("EnumI18n/3", _("Sherpa-ONNX (Local Realtime)"));
+        config.setValueByPath("SubConfigPath/3",
+            "fcitx://config/addon/voiceinput/asr/sherpa_onnx");
     }
 };
 
@@ -167,6 +172,25 @@ FCITX_CONFIGURATION(VolcengineAsrConfig,
     Option<int, IntConstrain> endWindowMs{
         this, "EndWindowMs", _("判停窗口 (毫秒)"), 800,
         IntConstrain(200, 3000)};
+);
+
+FCITX_CONFIGURATION(SherpaOnnxAsrConfig,
+    Option<std::string> modelDir{
+        this, "ModelDir", _("模型目录路径 (留空自动搜索默认目录)"), ""};
+
+    Option<int, IntConstrain> numThreads{
+        this, "NumThreads", _("CPU 推理线程数"), 2,
+        IntConstrain(1, 16)};
+
+    Option<std::string> hotwordsFile{
+        this, "HotwordsFile", _("热词文件路径 (可选)"), ""};
+
+    Option<int, IntConstrain> hotwordsScore{
+        this, "HotwordsScore", _("热词提权加分 (分值 1~10)"), 2,
+        IntConstrain(1, 10)};
+
+    Option<bool> autoCommit{
+        this, "AutoCommit", _("无 LLM 时自动上屏"), true};
 );
 
 FCITX_CONFIGURATION(VoiceInputConfig,

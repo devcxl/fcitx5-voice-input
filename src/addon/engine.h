@@ -14,6 +14,7 @@
 
 #include "config/voiceinput-config.h"
 #include "asr/asr_engine.h"
+#include "asr/sherpa_onnx_asr.h"
 #include "pipeline/pipeline.h"
 #include "types.h"
 
@@ -62,6 +63,7 @@ private:
     OpenAIAsrConfig openaiConfig_;
     VolcengineAsrConfig volcengineConfig_;
     MistralAsrConfig mistralConfig_;
+    SherpaOnnxAsrConfig sherpaOnnxConfig_;
 
     InputContext* activeIc_ = nullptr;
     std::atomic<uint64_t> activeGeneration_{0};

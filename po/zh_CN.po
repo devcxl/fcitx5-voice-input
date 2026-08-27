@@ -114,5 +114,20 @@ msgstr "修正中..."
 msgid "正在录音中..."
 msgstr "正在录音中..."
 
+msgid "Mistral Realtime"
+msgstr "Mistral 实时流式"
+
+msgid "Sherpa-ONNX (Local Realtime)"
+msgstr "Sherpa-ONNX 本地流式"
+
+msgid "模型目录路径 (留空自动搜索默认目录)"
+msgstr "模型目录路径 (留空自动搜索默认目录)"
+
+msgid "CPU 推理线程数"
+msgstr "CPU 推理线程数"
+
+msgid "热词提权加分 (分值 1~10)"
+msgstr "热词提权加分 (分值 1~10)"
+
 msgid "Voice Input"
 msgstr "语音"
