@@ -27,9 +27,15 @@ public:
         // Common
         std::string modelName;
 
-        // Sherpa-onnx (local)
+        // Sherpa-onnx / Zipformer (local)
         std::string modelPath;
-        int numThreads = 4;
+        std::string encoderPath;
+        std::string decoderPath;
+        std::string joinerPath;
+        std::string tokensPath;
+        std::string hotwordsFile;
+        float hotwordsScore = 1.5f;
+        int numThreads = 2;
 
         // OpenAI-compatible (cloud)
         std::string apiEndpoint;
