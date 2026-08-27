@@ -6,3 +6,8 @@ dist/
 .codegraph/
 .worktree/
 .opencode/
+aur/src/
+aur/pkg/
+aur/fcitx5-voice-input-git/
+aur/*.pkg.tar.*
+/hotwords.txt
