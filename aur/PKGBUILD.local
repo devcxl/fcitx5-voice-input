@@ -1,0 +1,84 @@
+# Maintainer: devcxl <64475363+devcxl@users.noreply.github.com>
+# 本地源码构建专用 PKGBUILD
+# 用法：在工程根目录或 aur 目录执行：makepkg -p PKGBUILD.local -si
+
+pkgname=fcitx5-voice-input-git
+pkgver=0.5.0.r0.g201192c
+pkgrel=1
+pkgdesc="Fcitx5 voice input addon (Built from local source tree)"
+arch=('x86_64')
+url="https://github.com/devcxl/fcitx5-voice-input"
+license=('Apache')
+options=('!debug')
+
+depends=(
+    'fcitx5'
+    'jsoncpp'
+    'curl'
+    'onnxruntime'
+    'zlib'
+    'libpulse'
+)
+
+optdepends=(
+    'pipewire: PipeWire direct capture fallback backend'
+)
+
+makedepends=(
+    'cmake'
+    'pkg-config'
+    'gettext'
+    'git'
+    'pipewire'
+)
+
+provides=('fcitx5-voice-input')
+conflicts=('fcitx5-voice-input')
+
+source=()
+sha256sums=()
+
+pkgver() {
+    cd "${startdir}/.."
+    git describe --long --tags --always 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' || echo "0.5.0.local"
+}
+
+prepare() {
+    local _target="${srcdir}/${pkgname}"
+    mkdir -p "${_target}"
+
+    # 将本地工作区源码（包含所有未提交修改及新增文件）实时同步到构建目录
+    if command -v rsync &>/dev/null; then
+        rsync -a --delete \
+            --exclude='/build*' \
+            --exclude='/dist*' \
+            --exclude='/aur/src' \
+            --exclude='/aur/pkg' \
+            --exclude='/aur/*.pkg.tar.*' \
+            --exclude='*.swp' \
+            "${startdir}/../" "${_target}/"
+    else
+        cp -a "${startdir}/../src" "${_target}/"
+        cp -a "${startdir}/../third_party" "${_target}/"
+        cp -a "${startdir}/../data" "${_target}/"
+        cp -a "${startdir}/../po" "${_target}/"
+        cp -a "${startdir}/../cmake" "${_target}/"
+        cp -a "${startdir}/../CMakeLists.txt" "${_target}/"
+        cp -a "${startdir}/../aur" "${_target}/"
+    fi
+}
+
+build() {
+    cd "${srcdir}/${pkgname}"
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DBUILD_TESTS=OFF
+
+    cmake --build build -j"$(nproc)"
+}
+
+package() {
+    cd "${srcdir}/${pkgname}"
+    cmake --install build --prefix "${pkgdir}/usr"
+}

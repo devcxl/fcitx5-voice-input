@@ -12,7 +12,7 @@ depends=(
     'fcitx5'
     'jsoncpp'
     'curl'
-    'onnxruntime-cpu'
+    'onnxruntime'
     'zlib'
     'libpulse'
 )
