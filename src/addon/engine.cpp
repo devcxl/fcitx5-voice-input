@@ -121,6 +121,7 @@ void VoiceInputEngine::reloadConfig() {
     readAsIni(openaiConfig_, "conf/voiceinput-openai.conf");
     readAsIni(volcengineConfig_, "conf/voiceinput-volcengine.conf");
     readAsIni(mistralConfig_, "conf/voiceinput-mistral.conf");
+    readAsIni(sherpaOnnxConfig_, "conf/voiceinput-sherpa-onnx.conf");
     FCITX_INFO() << "[voice-input] reloadConfig: backend="
                  << *config_.activeBackend;
 }
@@ -152,6 +153,9 @@ const Configuration* VoiceInputEngine::getSubConfig(
     if (path == "asr/mistral") {
         return &mistralConfig_;
     }
+    if (path == "asr/sherpa_onnx") {
+        return &sherpaOnnxConfig_;
+    }
     FCITX_WARN() << "[voice-input] getSubConfig: unknown path=" << path;
     return nullptr;
 }
@@ -174,6 +178,11 @@ void VoiceInputEngine::setSubConfig(const std::string& path,
         safeSaveAsIni(mistralConfig_, "conf/voiceinput-mistral.conf");
         RestrictConfigFilePermissions("conf/voiceinput-mistral.conf");
         FCITX_INFO() << "[voice-input] Saved mistral sub-config";
+    } else if (path == "asr/sherpa_onnx") {
+        sherpaOnnxConfig_.load(rawConfig, true);
+        safeSaveAsIni(sherpaOnnxConfig_, "conf/voiceinput-sherpa-onnx.conf");
+        RestrictConfigFilePermissions("conf/voiceinput-sherpa-onnx.conf");
+        FCITX_INFO() << "[voice-input] Saved sherpa_onnx sub-config";
     }
 
     if (initialized_) {
@@ -368,6 +377,16 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
                      << " model=" << asrConfig.modelName
                      << " delay=" << asrConfig.targetStreamingDelayMs;
         asr = std::make_unique<MistralAsrEngine>();
+    } else if (backend == "sherpa_onnx") {
+        asrConfig.modelPath = *sherpaOnnxConfig_.modelDir;
+        asrConfig.numThreads = *sherpaOnnxConfig_.numThreads;
+        asrConfig.hotwordsFile = *sherpaOnnxConfig_.hotwordsFile;
+        asrConfig.hotwordsScore = static_cast<float>(*sherpaOnnxConfig_.hotwordsScore);
+        FCITX_INFO() << "[voice-input] SherpaOnnx config: modelDir="
+                     << (asrConfig.modelPath.empty() ? "(auto)" : asrConfig.modelPath)
+                     << " threads=" << asrConfig.numThreads
+                     << " hotwordsScore=" << asrConfig.hotwordsScore;
+        asr = std::make_unique<SherpaOnnxAsrEngine>();
     } else {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
         if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {

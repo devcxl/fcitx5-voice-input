@@ -93,6 +93,14 @@ void VoiceInputEngine::PollResults() {
                     continue;
                 }
 
+                bool autoCommit = true;
+                const auto& backend = *config_.activeBackend;
+                if (backend == "openai") {
+                    autoCommit = openaiConfig_.autoCommit.value();
+                } else if (backend == "sherpa_onnx") {
+                    autoCommit = sherpaOnnxConfig_.autoCommit.value();
+                }
+
                 if (llmActive) {
                     ic->inputPanel().setPreedit(Text(result.text));
                     ic->inputPanel().setAuxDown(Text(_("修正中...")));
@@ -101,7 +109,7 @@ void VoiceInputEngine::PollResults() {
                     ic->updateUserInterface(UserInterfaceComponent::StatusArea);
                     pendingPreeditText_ = result.text;
                     pendingPreeditUtteranceId_ = result.utteranceId;
-                } else if (openaiConfig_.autoCommit.value()) {
+                } else if (autoCommit) {
                     ic->commitString(result.text);
                     ic->inputPanel().reset();
                     ic->updateUserInterface(UserInterfaceComponent::InputPanel);
