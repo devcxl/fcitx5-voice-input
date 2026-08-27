@@ -1,3 +1,6 @@
 [submodule "third_party/silero-vad"]
 	path = third_party/silero-vad
 	url = https://github.com/snakers4/silero-vad.git
+[submodule "third_party/sherpa-onnx"]
+	path = third_party/sherpa-onnx
+	url = https://github.com/k2-fsa/sherpa-onnx.git
