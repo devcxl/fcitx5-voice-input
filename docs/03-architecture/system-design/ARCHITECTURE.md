@@ -162,7 +162,6 @@ private:
 
 ```
 src/addon/config/
-├── config.h                  # 桥接头文件 → voiceinput-config.h
 └── voiceinput-config.h       # FCITX_CONFIGURATION 宏定义全部配置键
 ```
 
@@ -216,7 +215,7 @@ src/addon/config/
 | `EnableITN` / `EnablePunc` / `EnableDDC` / `EnableNonstream` | Bool | 见代码 | ITN / 标点 / 语义顺滑 / 二次识别 |
 | `EndWindowMs` | Int | `800` | 判停窗口（毫秒） |
 
-`AudioSource` 通过 `pactl list sources short` 动态枚举 PulseAudio 输入设备（排除 monitor source，见 capture 章节）。无高级 JSON 配置层。
+音频设备无手动配置项：PulseAudio 后端启动时经 `pactl list sources short` 自动枚举并挑选最佳输入源（优先 `alsa_input.*`，排除 monitor / echoCancel 源，见 capture 章节）。无高级 JSON 配置层。
 
 ### 3. 音频捕获 (`src/addon/capture/`)
 
@@ -512,7 +511,7 @@ fcitx5-voice-input
 └── onnxruntime                 # Silero VAD ONNX Runtime（v1.28.0 / 系统包双策略）
 ```
 
-> 录音库（libpulse-simple/libpipewire）**不链接**（无 DT_NEEDED）：各 capture 后端在 Start 时 dlopen + dlsym 函数指针表延迟加载，库缺失/soname 变更/符号不完整时优雅降级，addon 本体不受影响（详见过往 PR：Arch 构建 `-z,now` 兼容）。
+> 录音库（libpulse-simple/libpipewire）**不链接**（无 DT_NEEDED）：各 capture 后端在 Start 时 dlopen + dlsym 函数指针表延迟加载，库缺失/soname 变更/符号不完整时优雅降级，addon 本体不受影响（详见 PR #20：Arch 构建 `-z,now` 兼容）。
 
 ### 构建选项
 
@@ -555,7 +554,6 @@ fcitx5-voice-input/
 │       ├── types.h                 # AudioFrame / SpeechEvent / AsrResult 类型定义
 │       ├── voiceinput.conf.in      # Fcitx5 addon 配置模板（@PROJECT_VERSION@ 替换）
 │       ├── config/
-│       │   ├── config.h                    # 桥接头文件
 │       │   └── voiceinput-config.h         # FCITX_CONFIGURATION 宏定义（4 个子配置块）
 │       ├── capture/
 │       │   ├── audio_capture.h             # 捕获后端抽象接口
@@ -617,7 +615,7 @@ fcitx5-voice-input/
 - [x] Volcengine Doubao 流式 ASR 引擎
 - [x] Mistral Realtime 流式 ASR 引擎（v0.5.0）
 - [x] v4 会话模型：AsrSession / SessionReaper / ResultCoordinator 保序交付
-- [x] LLM 后处理（flow/非流式，generation 取消）
+- [x] LLM 后处理（流式/非流式，generation 取消）
 - [x] fcitx5-configtool 配置界面（多后端子配置）
 - [x] 多发行版打包（7 发行版 CI 矩阵：DEB / RPM / pkg.tar.zst）
 
