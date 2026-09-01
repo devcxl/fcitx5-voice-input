@@ -6,3 +6,22 @@ dist/
 .codegraph/
 .worktree/
 .opencode/
+
+# cabbage / VitePress
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+# AUR packaging artifacts (makepkg 工作区/产物)
+aur/src/
+aur/pkg/
+aur/fcitx5-voice-input-git/
+aur/*.pkg.tar.zst
+
+# 本地 agent skill 工作区与元数据
+.agents/
+/skills-lock.json
+/package.json
+
+# 本地预留目录（未注册为 submodule）
+third_party/sherpa-onnx/

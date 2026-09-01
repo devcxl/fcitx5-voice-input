@@ -1,0 +1,46 @@
+version: 1
+impact_fields:
+- product
+- architecture
+- api
+- database
+- security
+- testing
+- deployment
+- operations
+- data
+- performance
+ci:
+  require_change_for_code: true
+  require_current_state_docs: true
+  exclude_prefixes:
+  - docs/
+  - .cabbage/
+  - .github/
+  - README
+  - LICENSE
+  current_state_rules:
+    product:
+    - docs/01-product/
+    architecture:
+    - docs/03-architecture/
+    api:
+    - docs/05-api/
+    database:
+    - docs/04-data/
+    security:
+    - docs/09-security/
+    testing:
+    - docs/08-testing/
+    deployment:
+    - docs/10-infrastructure/
+    - docs/11-ci-cd/
+    - docs/12-release/
+    operations:
+    - docs/13-operations/
+    data:
+    - docs/04-data/
+    performance:
+    - docs/14-performance/
+docs:
+  dir: docs

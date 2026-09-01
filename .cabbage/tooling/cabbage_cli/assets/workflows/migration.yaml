@@ -1,0 +1,8 @@
+name: migration
+stages:
+  - {id: impact, artifact: impact.md, template: impact.md, required_headings: [Impact Matrix, Risks]}
+  - {id: design, artifact: tech-spec.md, template: tech-spec.md, depends_on: [impact], required_headings: [Context, Design, Failure Modes, Rollout]}
+  - {id: database, artifact: database-design.md, template: database-design.md, depends_on: [design], required_headings: [Schema, Migration, Rollback]}
+  - {id: tests, artifact: test-plan.md, template: test-plan.md, depends_on: [database], required_headings: [Strategy, Cases]}
+  - {id: implementation, artifact: tasks.md, template: tasks.md, depends_on: [tests], validator: checklist, required_headings: [Tasks]}
+  - {id: release, artifact: release-plan.md, template: release-plan.md, depends_on: [implementation], required_headings: [Deployment, Rollback, Verification]}

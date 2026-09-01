@@ -1,0 +1,9 @@
+name: integration
+stages:
+  - {id: requirement, artifact: prd.md, template: prd.md, required_headings: [Goal, Scope, Acceptance Criteria]}
+  - {id: impact, artifact: impact.md, template: impact.md, depends_on: [requirement], required_headings: [Impact Matrix, Risks]}
+  - {id: design, artifact: tech-spec.md, template: tech-spec.md, depends_on: [impact], required_headings: [Context, Design, Failure Modes, Rollout]}
+  - {id: api, artifact: api-design.md, template: api-design.md, depends_on: [design], required_headings: [Contract, Compatibility]}
+  - {id: security, artifact: security-review.md, template: security-review.md, when: impact.security, depends_on: [design], required_headings: [Threats, Controls]}
+  - {id: tests, artifact: test-plan.md, template: test-plan.md, depends_on: [api, security], required_headings: [Strategy, Cases]}
+  - {id: implementation, artifact: tasks.md, template: tasks.md, depends_on: [tests], validator: checklist, required_headings: [Tasks]}
