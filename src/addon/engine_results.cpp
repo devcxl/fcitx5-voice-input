@@ -99,6 +99,8 @@ void VoiceInputEngine::PollResults() {
                     autoCommit = openaiConfig_.autoCommit.value();
                 } else if (backend == "sherpa_onnx") {
                     autoCommit = sherpaOnnxConfig_.autoCommit.value();
+                } else if (backend == "sherpa_offline") {
+                    autoCommit = sherpaOfflineConfig_.autoCommit.value();
                 }
 
                 if (llmActive) {

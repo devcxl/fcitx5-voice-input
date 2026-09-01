@@ -191,6 +191,7 @@ set(ADDON_SOURCES
     src/addon/asr/mistral_asr.cpp
     src/addon/asr/volcengine_asr.cpp
     src/addon/asr/sherpa_onnx_asr.cpp
+    src/addon/asr/sherpa_offline_asr.cpp
     src/addon/asr/asr_engine.cpp
     src/addon/asr/session_reaper.cpp
     src/addon/asr/utils/base64.cpp
@@ -221,6 +222,7 @@ set(ADDON_HEADERS
     src/addon/asr/mistral_asr.h
     src/addon/asr/volcengine_asr.h
     src/addon/asr/sherpa_onnx_asr.h
+    src/addon/asr/sherpa_offline_asr.h
     src/addon/llm/llm_client.h
     src/addon/pipeline/pipeline.h
     src/addon/utils/audio_buffer.h
