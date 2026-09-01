@@ -1,0 +1,12 @@
+name: architecture
+stages:
+  - {id: impact, artifact: impact.md, template: impact.md, description: Change impact, required_headings: [Impact Matrix, Risks]}
+  - {id: rfc, artifact: rfc.md, template: rfc.md, depends_on: [impact], required_headings: [Problem, Proposal, Alternatives]}
+  - {id: design, artifact: tech-spec.md, template: tech-spec.md, depends_on: [rfc], required_headings: [Context, Design, Failure Modes, Rollout]}
+  - {id: adr, artifact: adr.md, template: adr.md, depends_on: [design], required_headings: [Context, Decision, Consequences]}
+  - {id: api, artifact: api-design.md, template: api-design.md, when: impact.api, depends_on: [design], required_headings: [Contract, Compatibility]}
+  - {id: database, artifact: database-design.md, template: database-design.md, when: impact.database, depends_on: [design], required_headings: [Schema, Migration, Rollback]}
+  - {id: security, artifact: security-review.md, template: security-review.md, when: impact.security, depends_on: [design], required_headings: [Threats, Controls]}
+  - {id: tests, artifact: test-plan.md, template: test-plan.md, depends_on: [adr, api, database, security], required_headings: [Strategy, Cases]}
+  - {id: implementation, artifact: tasks.md, template: tasks.md, depends_on: [tests], validator: checklist, required_headings: [Tasks]}
+  - {id: release, artifact: release-plan.md, template: release-plan.md, when: impact.deployment, depends_on: [implementation], required_headings: [Deployment, Rollback, Verification]}

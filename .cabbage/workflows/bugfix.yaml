@@ -1,0 +1,6 @@
+name: bugfix
+stages:
+  - {id: impact, artifact: impact.md, template: impact.md, required_headings: [Impact Matrix, Risks]}
+  - {id: design, artifact: tech-spec.md, template: tech-spec.md, depends_on: [impact], required_headings: [Context, Design, Failure Modes, Rollout]}
+  - {id: tests, artifact: test-plan.md, template: test-plan.md, depends_on: [design], required_headings: [Strategy, Cases]}
+  - {id: implementation, artifact: tasks.md, template: tasks.md, depends_on: [tests], validator: checklist, required_headings: [Tasks]}

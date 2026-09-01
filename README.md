@@ -20,13 +20,13 @@
 
 </div>
 
-**fcitx5-voice-input** is a Fcitx5 addon for voice input. Captures audio via PulseAudio (or PipeWire fallback), detects speech segments with Silero ONNX VAD, and transcribes via OpenAI-compatible API or Volcengine Doubao streaming ASR.
+**fcitx5-voice-input** is a Fcitx5 addon for voice input. Captures audio via PulseAudio (or PipeWire fallback), detects speech segments with Silero ONNX VAD, and transcribes via OpenAI-compatible API, Volcengine Doubao streaming ASR, or Mistral Realtime streaming transcription.
 
 ## Features
 
-- Voice input (OpenAI Whisper API / compatible services, or Volcengine Doubao streaming ASR)
+- Voice input (OpenAI Whisper API / compatible services, Volcengine Doubao streaming ASR, or Mistral Realtime streaming)
 - Silero ONNX VAD for automatic speech segmentation (no push-to-talk required)
-- Real-time partial transcript update during speech (requires Volcengine backend)
+- Real-time partial transcript update during speech (Volcengine / Mistral Realtime / OpenAI Realtime backends)
 - Queue-based pipeline: Audio Capture → VAD → ASR → EventDispatcher → commit
 - Graphical configuration via `fcitx5-configtool`
 - Smart delayed stop on window switching
@@ -145,11 +145,25 @@ Volcengine authentication requires a resource purchased from the [Volcengine con
 
 **Troubleshooting:** If recognition fails, check the addon log for `X-Tt-Logid` and provide it to Volcengine support.
 
+#### Mistral Realtime Backend (sub-config)
+
+Set `ActiveBackend=mistral`, click the gear button to open the Mistral config page.
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `BaseUrl` | API base URL | `https://api.mistral.ai/v1` |
+| `ApiKey` | API Key | **(required)** |
+| `Model` | Model name | `voxtral-mini-transcribe-realtime-2602` |
+| `CommitIntervalMs` | Periodic commit interval (ms); keeps emitting partials for long speech | `5000` |
+| `TargetStreamingDelayMs` | Target streaming delay (ms, 0-1000); higher = lower latency but more aggressive partials | `0` |
+
+This backend uses the [Mistral Realtime transcription API](https://docs.mistral.ai/capabilities/transcription/) over WebSocket. Audio is sent as 16kHz PCM directly (no resampling needed). Partial `transcription.text.delta` events update the preedit live; the final `transcription.done` commits on speech end. Connection drops are handled with automatic reconnection keeping the same session.
+
 ### 3. How to Use
 
 1. Switch to **Voice Input** IME
 2. Start speaking — VAD automatically detects speech and records
-3. With the **Volcengine** backend, partial recognition text appears in the preedit area in real-time as you speak
+3. With the **Volcengine**, **Mistral Realtime** or **OpenAI Realtime** backend, partial recognition text appears in the preedit area in real-time as you speak
 4. Stop speaking (default 800ms silence timeout) — final recognition result is committed
 5. Stay in Voice Input mode and continue speaking for consecutive recognition
 
@@ -199,23 +213,24 @@ sudo cmake --install build --prefix /usr
 
 ## Notes
 
-- **API Key Security**: API keys are stored in plain text in `~/.config/fcitx5/conf/voiceinput-openai.conf` and `~/.config/fcitx5/conf/voiceinput-volcengine.conf`. Ensure proper file permissions
-- **Network Required**: OpenAI backend requires internet. Local ASR can be added via the AsrEngine interface
+- **API Key Security**: API keys are stored in plain text in `~/.config/fcitx5/conf/voiceinput-openai.conf`, `voiceinput-volcengine.conf` and `voiceinput-mistral.conf`. Ensure proper file permissions
+- **Network Required**: OpenAI / Volcengine / Mistral backends require internet. Local ASR can be added via the `AsrEngine` / `AsrSession` interfaces
 - **Audio Device**: Auto-selects system default input. To specify a device, choose from the `AudioSource` dropdown. Only input sources are listed (no Monitor sources)
 - **VAD Model**: The Silero VAD model is distributed via git submodule (`third_party/silero-vad/`) and copied to the install directory at build time. Run `git submodule update --init --recursive` before building
 - **PipeWire Users**: The PulseAudio backend works fine under pipewire-pulse. Native PipeWire is only used as fallback when PulseAudio is completely unavailable
-- **Local ASR**: Not yet implemented. The codebase provides an `AsrEngine` abstract interface for future local ASR integration
+- **Local ASR**: Not yet implemented. The codebase provides `AsrEngine` (session factory) / `AsrSession` abstract interfaces for future local ASR integration
 - **Window Switching**: A 200ms delayed stop prevents unnecessary restarts on quick window switches. Long inactivity will stop the pipeline
 
 ## Architecture Overview
 
 ```
-Audio Capture Thread → FrameQueue → VAD Worker Thread → SpeechEventQueue → ASR Worker Thread → ResultQueue → EventDispatcher → commitString
+Audio Capture Thread → FrameQueue → VAD Worker → SpeechEventQueue → ASR Dispatcher → AsrSession workers
+    → ResultCoordinator (ordering + optional LLM post-processing) → ResultQueue → EventDispatcher → commitString
 
 SpeechEvent types: Begin (speech onset) → Audio (32ms frames, batched to 200ms by Pipeline) → End (silence) / Cancel (too short)
 ```
 
-Three worker threads + main thread, connected by `ThreadSafeQueue`. See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+Main thread + capture thread + VAD worker + per-session ASR workers, connected by `ThreadSafeQueue`. Every utterance is an `AsrSession` (factory: `AsrEngine::StartSession`); finished sessions are reaped by `SessionReaper` with timeout, and concurrent results are delivered in creation order. See [ARCHITECTURE.md](docs/03-architecture/system-design/ARCHITECTURE.md) for details.
 
 ## License
 

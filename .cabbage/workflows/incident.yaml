@@ -1,0 +1,5 @@
+name: incident
+stages:
+  - {id: incident, artifact: incident.md, template: incident.md, required_headings: [Impact, Timeline, Mitigation]}
+  - {id: postmortem, artifact: postmortem.md, template: postmortem.md, depends_on: [incident], required_headings: [Root Cause, Contributing Factors, Corrective Actions]}
+  - {id: implementation, artifact: tasks.md, template: tasks.md, depends_on: [postmortem], validator: checklist, required_headings: [Tasks]}

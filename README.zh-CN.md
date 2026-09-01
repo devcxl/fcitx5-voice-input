@@ -20,13 +20,13 @@
 
 </div>
 
-**fcitx5-voice-input** 是一个 Fcitx5 语音输入插件。通过 PulseAudio（或 PipeWire fallback）捕获音频，使用 Silero ONNX VAD 检测人声分段，通过 OpenAI 兼容 API 或火山引擎豆包流式语音进行识别。
+**fcitx5-voice-input** 是一个 Fcitx5 语音输入插件。通过 PulseAudio（或 PipeWire fallback）捕获音频，使用 Silero ONNX VAD 检测人声分段，通过 OpenAI 兼容 API、火山引擎豆包流式语音或 Mistral Realtime 流式实时转录进行识别。
 
 ## 功能
 
-- 中文语音输入（OpenAI Whisper API / 兼容服务，或火山引擎豆包流式语音）
+- 中文语音输入（OpenAI Whisper API / 兼容服务、火山引擎豆包流式语音，或 Mistral Realtime 流式实时转录）
 - Silero ONNX VAD 自动分段录音（无需手动按键控制开始结束）
-- 说话过程中实时显示识别中间结果（火山引擎后端支持）
+- 说话过程中实时显示识别中间结果（火山引擎 / Mistral Realtime / OpenAI Realtime 后端支持）
 - 队列管道架构：音频采集 → VAD 分段 → ASR 识别 → EventDispatcher 上屏
 - 通过 `fcitx5-configtool` 图形化配置
 - 窗口快速切换自动延迟停止，防止误停
@@ -146,11 +146,25 @@ makepkg -si
 
 **故障排查：** 如果识别失败，在插件日志中查找 `X-Tt-Logid`，并提交给火山引擎技术支持。
 
+#### Mistral Realtime 后端（子配置）
+
+设置 `ActiveBackend=mistral`，点击齿轮按钮打开 Mistral 配置页。
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `BaseUrl` | API 地址 | `https://api.mistral.ai/v1` |
+| `ApiKey` | API Key | **（必填）** |
+| `Model` | 模型名 | `voxtral-mini-transcribe-realtime-2602` |
+| `CommitIntervalMs` | 周期性提交间隔 (ms)，长句无停顿也能持续出增量 | `5000` |
+| `TargetStreamingDelayMs` | 目标流式延迟 (ms, 0-1000)，越大延迟越低但增量更激进 | `0` |
+
+该后端通过 WebSocket 使用 [Mistral Realtime 转录 API](https://docs.mistral.ai/capabilities/transcription/)。音频以 16kHz PCM 直推（无需重采样）。`transcription.text.delta` 增量事件实时刷入 preedit，`transcription.done` 在说话结束时提交最终结果。断线自动重连并保持同一会话。
+
 ### 3. 使用
 
 1. 切换到 **Voice Input** 输入法
 2. 开始说话，VAD 自动检测人声并录音
-3. 使用**火山引擎**后端时，说话过程中会实时显示识别中间结果
+3. 使用**火山引擎 / Mistral Realtime / OpenAI Realtime** 后端时，说话过程中会实时显示识别中间结果
 4. 停止说话（默认 800ms 静音超时），最终识别结果自动上屏
 5. 保持语音输入模式，继续说话可连续识别
 
@@ -200,23 +214,24 @@ sudo cmake --install build --prefix /usr
 
 ## 注意事项
 
-- **API Key 安全**：API Key 明文存储在 `~/.config/fcitx5/conf/voiceinput-openai.conf` 和 `~/.config/fcitx5/conf/voiceinput-volcengine.conf` 中，请注意文件权限
-- **网络要求**：OpenAI 后端需要网络连接。本地 ASR 可通过 AsrEngine 接口后续扩展
+- **API Key 安全**：API Key 明文存储在 `~/.config/fcitx5/conf/voiceinput-openai.conf`、`voiceinput-volcengine.conf` 和 `voiceinput-mistral.conf` 中，请注意文件权限
+- **网络要求**：OpenAI / 火山引擎 / Mistral 后端需要网络连接。本地 ASR 可通过 `AsrEngine` / `AsrSession` 接口后续扩展
 - **音频设备**：默认自动选择系统音频输入设备。如需指定，在 `AudioSource` 下拉框中选择。仅支持输入源（Source），不支持 Monitor 源
 - **VAD 模型**：Silero VAD 模型通过 git submodule 分发（`third_party/silero-vad/`），编译时自动复制到安装目录。构建前务必执行 `git submodule update --init --recursive`
 - **PipeWire 用户**：PulseAudio 后端也能在 pipewire-pulse 下正常工作，仅在 PulseAudio 完全不可用时 fallback 到 PipeWire 直连
-- **本地 ASR**：暂未实现。代码提供了 `AsrEngine` 抽象接口，后续可扩展本地引擎
+- **本地 ASR**：暂未实现。代码提供了 `AsrEngine`（会话工厂）/ `AsrSession`（会话）抽象接口，后续可扩展本地引擎
 - **窗口切换**：快速切换窗口时插件使用延迟停止机制（200ms），不会频繁重启流水线。长时间切出后会自动停止
 
 ## 架构简介
 
 ```
-音频捕获线程 → FrameQueue → VAD Worker 线程 → SpeechEventQueue → ASR Worker 线程 → ResultQueue → EventDispatcher → commitString
+音频捕获线程 → FrameQueue → VAD Worker → SpeechEventQueue → ASR Dispatcher → AsrSession 会话 worker
+    → ResultCoordinator（结果保序 + 可选 LLM 后处理）→ ResultQueue → EventDispatcher → commitString
 
 SpeechEvent 类型: Begin（说话开始）→ Audio（32ms 帧，Pipeline 聚合到 200ms）→ End（静音）/ Cancel（语音太短丢弃）
 ```
 
-三个工作线程 + 主线程，通过 `ThreadSafeQueue` 连接各阶段。详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+主线程 + 捕获线程 + VAD worker + 每语音段独立的会话 worker，通过 `ThreadSafeQueue` 连接各阶段。每句语音是一个 `AsrSession`（由 `AsrEngine::StartSession` 工厂创建），完成后由 `SessionReaper` 超时回收，并发结果按说话顺序保序上屏。详见 [ARCHITECTURE.md](docs/03-architecture/system-design/ARCHITECTURE.md)。
 
 ## 许可证
 
