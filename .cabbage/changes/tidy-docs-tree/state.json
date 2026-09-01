@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "completed": {
+    "impact": {
+      "signature": "ab8610feb6f2d26c3c5f431b496f5daf38722af77466055cf4d54ace44ce1d4a",
+      "verified_at": "2026-09-01T21:59:57.090949+00:00",
+      "completed_at": "2026-09-01T21:59:57.090959+00:00"
+    },
+    "design": {
+      "signature": "5ec651f15a67a040af723a7f5303fc3d1d4c7f96a8b862b79949325a3553dbee",
+      "verified_at": "2026-09-01T22:01:09.900304+00:00",
+      "completed_at": "2026-09-01T22:01:09.900315+00:00"
+    },
+    "tests": {
+      "signature": "87265efb81fa3cc4899f9696d47ba0723a77bf21ab31fbe8ec9092a44c272c71",
+      "verified_at": "2026-09-01T22:01:51.937712+00:00",
+      "completed_at": "2026-09-01T22:01:51.937722+00:00"
+    },
+    "implementation": {
+      "signature": "97b43c36fd6b0173e43c4e891af473d3f85377e7b9568d66880455ffea93fee4",
+      "verified_at": "2026-09-01T22:05:33.312247+00:00",
+      "completed_at": "2026-09-01T22:05:33.312259+00:00"
+    }
+  }
+}
