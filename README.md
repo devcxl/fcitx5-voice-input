@@ -215,7 +215,7 @@ sudo cmake --install build --prefix /usr
 
 - **API Key Security**: API keys are stored in plain text in `~/.config/fcitx5/conf/voiceinput-openai.conf`, `voiceinput-volcengine.conf` and `voiceinput-mistral.conf`. Ensure proper file permissions
 - **Network Required**: OpenAI / Volcengine / Mistral backends require internet. Local ASR can be added via the `AsrEngine` / `AsrSession` interfaces
-- **Audio Device**: Auto-selects system default input. To specify a device, choose from the `AudioSource` dropdown. Only input sources are listed (no Monitor sources)
+- **Audio Device**: The input device is auto-selected at startup (prefers `alsa_input.*` microphones; Monitor and echo-cancel sources are skipped). Manual device selection is not supported yet
 - **VAD Model**: The Silero VAD model is distributed via git submodule (`third_party/silero-vad/`) and copied to the install directory at build time. Run `git submodule update --init --recursive` before building
 - **PipeWire Users**: The PulseAudio backend works fine under pipewire-pulse. Native PipeWire is only used as fallback when PulseAudio is completely unavailable
 - **Local ASR**: Not yet implemented. The codebase provides `AsrEngine` (session factory) / `AsrSession` abstract interfaces for future local ASR integration

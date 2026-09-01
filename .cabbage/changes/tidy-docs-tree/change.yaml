@@ -1,0 +1,14 @@
+id: tidy-docs-tree
+type: refactor
+status: active
+impact:
+  product: true
+  architecture: false
+  api: false
+  database: false
+  security: false
+  testing: true
+  deployment: false
+  operations: false
+  data: false
+  performance: false

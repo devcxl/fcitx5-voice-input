@@ -44,3 +44,13 @@ ci:
     - docs/14-performance/
 docs:
   dir: docs
+  # 覆盖 tooling 默认同步映射（cabbage sync / archive 用）：
+  # - design/tests/release 的 tech-spec / test-plan / release-plan 是变更工作区
+  #   工件，留在 .cabbage/changes|archive/，不写入 docs/（映射值为空即跳过）。
+  # - requirement（PRD）同步到 01-product/prd/ 子目录，与既有 prd/ 布局一致。
+  # - adr / rfc / api / database / security 沿用 core.py 默认映射。
+  mapping:
+    requirement: '01-product/prd/{change_id}.md'
+    design: ''
+    tests: ''
+    release: ''
