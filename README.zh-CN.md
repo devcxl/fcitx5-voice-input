@@ -216,7 +216,7 @@ sudo cmake --install build --prefix /usr
 
 - **API Key 安全**：API Key 明文存储在 `~/.config/fcitx5/conf/voiceinput-openai.conf`、`voiceinput-volcengine.conf` 和 `voiceinput-mistral.conf` 中，请注意文件权限
 - **网络要求**：OpenAI / 火山引擎 / Mistral 后端需要网络连接。本地 ASR 可通过 `AsrEngine` / `AsrSession` 接口后续扩展
-- **音频设备**：默认自动选择系统音频输入设备。如需指定，在 `AudioSource` 下拉框中选择。仅支持输入源（Source），不支持 Monitor 源
+- **音频设备**：启动时自动选择系统音频输入设备（优先 `alsa_input.*` 麦克风，自动排除 Monitor 与回声消除源），暂不支持手动指定设备
 - **VAD 模型**：Silero VAD 模型通过 git submodule 分发（`third_party/silero-vad/`），编译时自动复制到安装目录。构建前务必执行 `git submodule update --init --recursive`
 - **PipeWire 用户**：PulseAudio 后端也能在 pipewire-pulse 下正常工作，仅在 PulseAudio 完全不可用时 fallback 到 PipeWire 直连
 - **本地 ASR**：暂未实现。代码提供了 `AsrEngine`（会话工厂）/ `AsrSession`（会话）抽象接口，后续可扩展本地引擎
