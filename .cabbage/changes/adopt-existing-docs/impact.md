@@ -17,7 +17,7 @@ change_type: feature
 | API | No | 无 API 变更 |
 | Database | No | |
 | Security | No | |
-| Testing | Yes | 新增 docs 静态门禁与站点构建验证 |
+| Testing | No | 验证通过变更内 test-plan 与 CI 门禁（docs build/validate）完成，无测试文档/代码变更 |
 | Deployment | No | 新增 GitHub Pages 部署 workflow（cabbage.yml），不影响现有构建产物 |
 | Operations | No | |
 | Data | No | |
@@ -26,7 +26,6 @@ change_type: feature
 # Impact Details
 
 - **Product**: 文档路径从 5 个非标准目录收敛到 4 个编号分区（01/03/06/11），站点可导航可搜索；根 README/CHANGELOG 位置不变。
-- **Testing**: `cabbage validate` + `cabbage docs build` 成为 PR 门禁；占位符/坏链将被 CI 拒绝。
 - **Deployment**: cabbage.yml 新增 GitHub Pages 部署（仅 main push 触发）；若无 Pages 配置可裁剪，不影响现有 ci/release。
 
 # Risks

@@ -7,7 +7,7 @@ impact:
   api: false
   database: false
   security: false
-  testing: true
+  testing: false
   deployment: false
   operations: false
   data: false
