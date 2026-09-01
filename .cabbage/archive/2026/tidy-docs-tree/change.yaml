@@ -1,6 +1,6 @@
 id: tidy-docs-tree
 type: refactor
-status: active
+status: archived
 impact:
   product: true
   architecture: false
