@@ -85,6 +85,7 @@ void VoiceInputEngine::reloadConfig() {
     readAsIni(volcengineConfig_, "conf/voiceinput-volcengine.conf");
     readAsIni(mistralConfig_, "conf/voiceinput-mistral.conf");
     readAsIni(sherpaOnnxConfig_, "conf/voiceinput-sherpa-onnx.conf");
+    readAsIni(sherpaOfflineConfig_, "conf/voiceinput-sherpa-offline.conf");
     FCITX_INFO() << "[voice-input] reloadConfig: backend="
                  << *config_.activeBackend;
 }
@@ -119,6 +120,9 @@ const Configuration* VoiceInputEngine::getSubConfig(
     if (path == "asr/sherpa_onnx") {
         return &sherpaOnnxConfig_;
     }
+    if (path == "asr/sherpa_offline") {
+        return &sherpaOfflineConfig_;
+    }
     FCITX_WARN() << "[voice-input] getSubConfig: unknown path=" << path;
     return nullptr;
 }
@@ -146,6 +150,11 @@ void VoiceInputEngine::setSubConfig(const std::string& path,
         safeSaveAsIni(sherpaOnnxConfig_, "conf/voiceinput-sherpa-onnx.conf");
         RestrictConfigFilePermissions("conf/voiceinput-sherpa-onnx.conf");
         FCITX_INFO() << "[voice-input] Saved sherpa_onnx sub-config";
+    } else if (path == "asr/sherpa_offline") {
+        sherpaOfflineConfig_.load(rawConfig, true);
+        safeSaveAsIni(sherpaOfflineConfig_, "conf/voiceinput-sherpa-offline.conf");
+        RestrictConfigFilePermissions("conf/voiceinput-sherpa-offline.conf");
+        FCITX_INFO() << "[voice-input] Saved sherpa_offline sub-config";
     }
 
     if (initialized_) {
@@ -320,6 +329,8 @@ void VoiceInputEngine::PollResults() {
                     autoCommit = openaiConfig_.autoCommit.value();
                 } else if (backend == "sherpa_onnx") {
                     autoCommit = sherpaOnnxConfig_.autoCommit.value();
+                } else if (backend == "sherpa_offline") {
+                    autoCommit = sherpaOfflineConfig_.autoCommit.value();
                 }
 
                 if (llmActive) {
@@ -442,6 +453,13 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
                      << " threads=" << asrConfig.numThreads
                      << " hotwordsScore=" << asrConfig.hotwordsScore;
         asr = std::make_unique<SherpaOnnxAsrEngine>();
+    } else if (backend == "sherpa_offline") {
+        asrConfig.modelPath = *sherpaOfflineConfig_.modelDir;
+        asrConfig.numThreads = *sherpaOfflineConfig_.numThreads;
+        FCITX_INFO() << "[voice-input] SherpaOffline config: modelDir="
+                     << (asrConfig.modelPath.empty() ? "(auto)" : asrConfig.modelPath)
+                     << " threads=" << asrConfig.numThreads;
+        asr = std::make_unique<SherpaOfflineAsrEngine>();
     } else {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
         if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {

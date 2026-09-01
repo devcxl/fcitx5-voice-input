@@ -6,6 +6,9 @@ dist/
 .codegraph/
 .worktree/
 .opencode/
+.agents/
+package.json
+skills-lock.json
 aur/src/
 aur/pkg/
 aur/fcitx5-voice-input-git/

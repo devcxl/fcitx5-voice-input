@@ -1,11 +1,33 @@
 #!/usr/bin/env bash
+# 下载 sherpa-onnx 本地 ASR 模型
+#
+# 用法:
+#   ./scripts/download-model.sh            # 默认下载流式在线模型
+#   ./scripts/download-model.sh --offline  # 下载 X-ASR 非流式离线模型
+#   ./scripts/download-model.sh --online   # 下载流式在线模型
 set -euo pipefail
 
-TARGET_DIR="${HOME}/.local/share/fcitx5/voice-input/models/zipformer"
-MODEL_NAME="sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30"
-MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${MODEL_NAME}.tar.bz2"
+MODE="${1:---online}"
 
-echo "=== 下载 Zipformer 中文旗舰 X-Large 超大模型 (${MODEL_NAME}) ==="
+case "${MODE}" in
+    --online)
+        TARGET_DIR="${HOME}/.local/share/fcitx5/voice-input/models/zipformer"
+        MODEL_NAME="sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30"
+        MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${MODEL_NAME}.tar.bz2"
+        ;;
+    --offline)
+        TARGET_DIR="${HOME}/.local/share/fcitx5/voice-input/models/x-asr"
+        MODEL_NAME="sherpa-onnx-x-asr-zipformer-transducer-zh-en-int8-2026-06-03"
+        MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${MODEL_NAME}.tar.bz2"
+        ;;
+    *)
+        echo "未知参数: ${MODE}" >&2
+        echo "用法: $0 [--online|--offline]" >&2
+        exit 1
+        ;;
+esac
+
+echo "=== 下载模型 (${MODEL_NAME}) ==="
 echo "目标路径: ${TARGET_DIR}"
 
 mkdir -p "${TARGET_DIR}"

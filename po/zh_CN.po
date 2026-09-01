@@ -120,6 +120,9 @@ msgstr "Mistral 实时流式"
 msgid "Sherpa-ONNX (Local Realtime)"
 msgstr "Sherpa-ONNX 本地流式"
 
+msgid "Sherpa-ONNX X-ASR (Local Offline)"
+msgstr "Sherpa-ONNX X-ASR 本地离线"
+
 msgid "模型目录路径 (留空自动搜索默认目录)"
 msgstr "模型目录路径 (留空自动搜索默认目录)"
 
