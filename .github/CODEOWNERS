@@ -1,0 +1,6 @@
+# Cabbage 工作流与门禁配置须人工评审（adoption Phase 7）
+.cabbage/config.yaml                          @devcxl
+.cabbage/workflows/**                         @devcxl
+.cabbage/tooling/**                           @devcxl
+.github/workflows/**                          @devcxl
+.github/actions/**                            @devcxl
