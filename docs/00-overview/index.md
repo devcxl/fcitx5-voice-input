@@ -43,6 +43,6 @@
 
 ## 进阶文档
 
-- [系统架构设计](/03-architecture/)：详细设计、会话模型与 ADR 决策记录。
-- [产品需求与规范](/01-product/)：产品功能定义与排除范围。
-- [CI/CD 多发行版构建](/11-ci-cd/)：多发行版容器化构建矩阵分析。
+- [系统架构设计](/03-architecture/system-design/ARCHITECTURE)：详细设计、会话模型与 ADR 决策记录。
+- [产品需求与规范](/01-product/prd/product-prd-v1)：产品功能定义与排除范围。
+- [CI/CD 多发行版构建](/11-ci-cd/multi-distro-build-analysis)：多发行版容器化构建矩阵分析。

@@ -1,7 +1,11 @@
 import { defineConfig } from 'vitepress'
 import { withMermaid } from 'vitepress-plugin-mermaid'
+import { fileURLToPath, URL } from 'node:url'
 
 const base = (process.env.BASE_URL || (process.env.GITHUB_REPOSITORY ? `/${process.env.GITHUB_REPOSITORY.split('/')[1]}/` : '/')) as `/${string}/` | '/'
+
+const dayjsEsm = fileURLToPath(new URL('../node_modules/dayjs/esm/index.js', import.meta.url))
+const mermaidEsm = fileURLToPath(new URL('../node_modules/mermaid/dist/mermaid.esm.mjs', import.meta.url))
 
 export default withMermaid(
   defineConfig({
@@ -13,23 +17,31 @@ export default withMermaid(
     },
     lang: 'zh-CN',
     title: 'fcitx5-voice-input',
+    vite: {
+      resolve: {
+        alias: {
+          dayjs: dayjsEsm,
+          mermaid: mermaidEsm,
+        },
+      },
+    },
     description: 'Fcitx5 语音输入插件 —— 架构、需求、CI/CD 项目文档',
     themeConfig: {
       logo: 'https://raw.githubusercontent.com/devcxl/fcitx5-voice-input/main/data/fcitx_voiceinput.svg',
       nav: [
         { text: '首页', link: '/' },
         { text: '入门与配置', link: '/00-overview/getting-started' },
-        { text: '产品需求', link: '/01-product/' },
-        { text: '系统架构', link: '/03-architecture/' },
-        { text: '开发记录', link: '/06-development/' },
-        { text: 'CI/CD', link: '/11-ci-cd/' },
+{ text: '产品需求', link: '/01-product/prd/add-input-method-icon' },
+        { text: '系统架构', link: '/03-architecture/system-design/ARCHITECTURE' },
+        { text: '开发记录', link: '/06-development/specs/gpt-realtime-asr' },
+        { text: 'CI/CD', link: '/11-ci-cd/multi-distro-build-analysis' },
       ],
       sidebar: [
         {
           text: '入门与概览 (00-overview)',
           collapsed: false,
           items: [
-            { text: '项目概览', link: '/00-overview/' },
+{ text: '项目概览', link: '/00-overview/' },
             { text: '快速入门', link: '/00-overview/getting-started' },
             { text: '快速安装指南', link: '/00-overview/installation' },
             { text: '详细配置指南', link: '/00-overview/configuration' },
@@ -40,7 +52,7 @@ export default withMermaid(
           text: '产品需求 (01-product)',
           collapsed: false,
           items: [
-            { text: '索引', link: '/01-product/' },
+            { text: '产品级 PRD（现状基线）', link: '/01-product/prd/product-prd-v1' },
             { text: 'PRD：输入法图标', link: '/01-product/prd/add-input-method-icon' },
             { text: 'Out of Scope', link: '/01-product/out-of-scope' },
           ],
@@ -49,7 +61,6 @@ export default withMermaid(
           text: '系统架构 (03-architecture)',
           collapsed: false,
           items: [
-            { text: '索引', link: '/03-architecture/' },
             { text: 'ARCHITECTURE（当前）', link: '/03-architecture/system-design/ARCHITECTURE' },
             { text: 'v4 会话模型设计', link: '/03-architecture/system-design/v4-asr-session-model' },
             { text: 'ADR-0001 GPT-Realtime', link: '/03-architecture/adr/ADR-0001-gpt-realtime-asr' },
@@ -60,7 +71,6 @@ export default withMermaid(
           text: '开发记录 (06-development)',
           collapsed: false,
           items: [
-            { text: '索引', link: '/06-development/' },
             { text: 'Specs：GPT-Realtime', link: '/06-development/specs/gpt-realtime-asr' },
             { text: 'Tasks：GPT-Realtime', link: '/06-development/tasks/gpt-realtime-asr' },
             { text: 'Research：GPT-Realtime Whisper', link: '/06-development/research/gpt-realtime-whisper' },
@@ -70,7 +80,6 @@ export default withMermaid(
           text: 'CI/CD (11-ci-cd)',
           collapsed: false,
           items: [
-            { text: '索引', link: '/11-ci-cd/' },
             { text: '多发行版构建分析', link: '/11-ci-cd/multi-distro-build-analysis' },
           ],
         },
