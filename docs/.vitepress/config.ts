@@ -18,7 +18,7 @@ export default withMermaid(
       logo: 'https://raw.githubusercontent.com/devcxl/fcitx5-voice-input/main/data/fcitx_voiceinput.svg',
       nav: [
         { text: '首页', link: '/' },
-        { text: '概览', link: '/00-overview/' },
+        { text: '入门与配置', link: '/00-overview/getting-started' },
         { text: '产品需求', link: '/01-product/' },
         { text: '系统架构', link: '/03-architecture/' },
         { text: '开发记录', link: '/06-development/' },
@@ -26,10 +26,14 @@ export default withMermaid(
       ],
       sidebar: [
         {
-          text: '项目概览',
+          text: '入门与概览 (00-overview)',
           collapsed: false,
           items: [
-            { text: '概览', link: '/00-overview/' },
+            { text: '项目概览', link: '/00-overview/' },
+            { text: '快速入门', link: '/00-overview/getting-started' },
+            { text: '快速安装指南', link: '/00-overview/installation' },
+            { text: '详细配置指南', link: '/00-overview/configuration' },
+            { text: '常见问题与排查 (FAQ)', link: '/00-overview/troubleshooting' },
           ],
         },
         {
