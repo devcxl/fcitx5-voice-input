@@ -31,7 +31,7 @@ export default withMermaid(
       nav: [
         { text: '首页', link: '/' },
         { text: '入门与配置', link: '/00-overview/getting-started' },
-        { text: '产品需求', link: '/01-product/prd/add-input-method-icon' },
+{ text: '产品需求', link: '/01-product/prd/add-input-method-icon' },
         { text: '系统架构', link: '/03-architecture/system-design/ARCHITECTURE' },
         { text: '开发记录', link: '/06-development/specs/gpt-realtime-asr' },
         { text: 'CI/CD', link: '/11-ci-cd/multi-distro-build-analysis' },
@@ -41,7 +41,7 @@ export default withMermaid(
           text: '入门与概览 (00-overview)',
           collapsed: false,
           items: [
-            { text: '项目概览', link: '/' },
+{ text: '项目概览', link: '/00-overview/' },
             { text: '快速入门', link: '/00-overview/getting-started' },
             { text: '快速安装指南', link: '/00-overview/installation' },
             { text: '详细配置指南', link: '/00-overview/configuration' },

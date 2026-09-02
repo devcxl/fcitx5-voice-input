@@ -36,7 +36,7 @@ features:
 
 | 分区 | 内容 |
 |------|------|
-| [00-overview 入门与概览](/00-overview/getting-started) | [快速入门](/00-overview/getting-started) · [安装指南](/00-overview/installation) · [详细配置](/00-overview/configuration) · [问题排查](/00-overview/troubleshooting) |
+| [00-overview 入门与概览](/00-overview/) | [快速入门](/00-overview/getting-started) · [安装指南](/00-overview/installation) · [详细配置](/00-overview/configuration) · [问题排查](/00-overview/troubleshooting) |
 | [01-product 产品需求](/01-product/prd/product-prd-v1) | [产品级 PRD（现状基线）](/01-product/prd/product-prd-v1) · [PRD：输入法图标](/01-product/prd/add-input-method-icon) · [Out of Scope](/01-product/out-of-scope) |
 | [03-architecture 系统架构](/03-architecture/system-design/ARCHITECTURE) | 系统架构、v4 会话模型设计、ADR 决策与架构评审 |
 | [06-development 开发记录](/06-development/specs/gpt-realtime-asr) | 技术方案、任务分解与调研记录 |
