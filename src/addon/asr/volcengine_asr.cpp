@@ -11,6 +11,8 @@
 #include <json/json.h>
 #include <zlib.h>
 
+#include "utils/ws_frame_receiver.h"
+
 using namespace std::chrono_literals;
 
 namespace fcitx {
@@ -31,10 +33,10 @@ constexpr uint8_t kCompressionGzip = 0x1;
 constexpr int kVolcengineSampleRate = 16000;
 constexpr int kVolcengineBigmodelSuccessCode = 20000000;
 constexpr int kVolcengineLegacySuccessCode = 1000;
-constexpr size_t kMaxFrameBytes = 16 * 1024 * 1024;        // 单帧 16MB
 constexpr size_t kMaxDecompressedBytes = 16 * 1024 * 1024; // gzip 解压累计 16MB
+constexpr const char* kLogTag = "[voice-input:volcengine]";
 
-enum class RecvStatus { Ok, Again, Closed, Error };
+enum class RecvStatus { Ok, Again, Skipped, Closed, Error };
 
 struct ServerMessage {
     uint8_t type = 0;
@@ -182,36 +184,20 @@ bool SendWebSocketBinary(CURL* curl, const uint8_t* data, size_t length,
     return true;
 }
 
-RecvStatus ReceiveWebSocketFrame(CURL* curl, std::vector<uint8_t>& frame) {
-    frame.clear();
-    std::array<uint8_t, 8192> buffer{};
-    while (true) {
-        size_t received = 0;
-        // curl >= 8.2.0 将 curl_ws_recv 的 metap 参数 const 化；老版本（Debian 12 的
-        // 7.88 等）为非 const 签名，需按编译期 curl 版本分支避免 -fpermissive 错误
-#if LIBCURL_VERSION_NUM >= 0x080200
-        const struct curl_ws_frame* meta = nullptr;
-#else
-        struct curl_ws_frame* meta = nullptr;
-#endif
-        CURLcode result = curl_ws_recv(curl, buffer.data(), buffer.size(), &received, &meta);
-        if (result == CURLE_AGAIN) return RecvStatus::Again;
-        if (result != CURLE_OK) {
-            FCITX_ERROR() << "[voice-input:volcengine] curl_ws_recv failed: "
-                          << curl_easy_strerror(result);
-            return RecvStatus::Error;
-        }
-        if (meta && (meta->flags & CURLWS_CLOSE)) return RecvStatus::Closed;
-        if (!meta || !(meta->flags & CURLWS_BINARY)) continue;
-        // 限制单帧累计大小，防止恶意/异常服务端耗尽内存
-        if (frame.size() + received > kMaxFrameBytes) {
-            FCITX_ERROR() << "[voice-input:volcengine] WS frame exceeds "
-                          << kMaxFrameBytes << " bytes";
-            return RecvStatus::Error;
-        }
-        frame.insert(frame.end(), buffer.begin(), buffer.begin() + received);
-        if (meta->bytesleft == 0) return RecvStatus::Ok;
+RecvStatus ReceiveWebSocketFrame(CURL* curl, WsFrameReceiver& receiver,
+                                std::vector<uint8_t>& frame) {
+    const WsMessageStatus r = ReceiveWsMessage(curl, receiver, kLogTag);
+    if (r == WsMessageStatus::Ok) {
+        frame = receiver.Bytes();
+        return RecvStatus::Ok;
     }
+    if (r == WsMessageStatus::Skipped) {
+        frame.clear();
+        return RecvStatus::Skipped;
+    }
+    if (r == WsMessageStatus::Again) return RecvStatus::Again;
+    if (r == WsMessageStatus::Closed) return RecvStatus::Closed;
+    return RecvStatus::Error;
 }
 
 bool ParseServerMessage(const std::vector<uint8_t>& frame, ServerMessage& msg) {
@@ -507,13 +493,15 @@ void VolcengineAsrSession::WorkerLoop() {
     std::vector<int16_t> pendingAudio;
     std::string latestText;
     bool gotFinal = false;
+    WsFrameReceiver receiver(CURLWS_BINARY);
 
     auto handleResponses = [&](std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (!state_->cancelled && std::chrono::steady_clock::now() < deadline) {
             std::vector<uint8_t> rawFrame;
-            RecvStatus r = ReceiveWebSocketFrame(curl, rawFrame);
+            RecvStatus r = ReceiveWebSocketFrame(curl, receiver, rawFrame);
             if (r == RecvStatus::Again) { std::this_thread::sleep_for(10ms); continue; }
+            if (r == RecvStatus::Skipped) continue;
             if (r == RecvStatus::Closed) { gotFinal = true; return; }
             if (r == RecvStatus::Error) { if (ecb) ecb("WS recv error"); gotFinal = true; return; }
 
