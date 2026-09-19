@@ -12,6 +12,7 @@
 #include <zlib.h>
 
 #include "utils/ws_frame_receiver.h"
+#include "utils/ws_frame_sender.h"
 
 using namespace std::chrono_literals;
 
@@ -148,12 +149,6 @@ std::string MaskSecret(const std::string& secret) {
     return secret.substr(0, 6) + "..." + secret.substr(secret.size() - 4);
 }
 
-int CancelProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t,
-                           curl_off_t) {
-    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
-    return cancelled->load(std::memory_order_acquire) ? 1 : 0;
-}
-
 std::string ExtractHeaderValue(const std::string& headers, const std::string& name) {
     size_t pos = headers.find(name);
     if (pos == std::string::npos) return "";
@@ -164,24 +159,12 @@ std::string ExtractHeaderValue(const std::string& headers, const std::string& na
     return headers.substr(pos, end == std::string::npos ? end : end - pos);
 }
 
+// 发送一帧二进制 WS 消息；上游不读 socket 时有界失败（issue #42）。
 bool SendWebSocketBinary(CURL* curl, const uint8_t* data, size_t length,
-                         const std::atomic<bool>& cancelFlag) {
-    const uint8_t* ptr = data;
-    size_t remaining = length;
-    while (remaining > 0) {
-        if (cancelFlag.load()) return false;
-        size_t sent = 0;
-        CURLcode result = curl_ws_send(curl, ptr, remaining, &sent, 0, CURLWS_BINARY);
-        if (result == CURLE_AGAIN) { std::this_thread::sleep_for(10ms); continue; }
-        if (result != CURLE_OK) {
-            FCITX_ERROR() << "[voice-input:volcengine] curl_ws_send failed: "
-                          << curl_easy_strerror(result);
-            return false;
-        }
-        ptr += sent;
-        remaining -= sent;
-    }
-    return true;
+                         const WsAbort& abort,
+                         WsDeadline deadline = WsDeadline{}) {
+    return SendWsMessage(curl, data, length, CURLWS_BINARY, abort, kLogTag,
+                         deadline);
 }
 
 RecvStatus ReceiveWebSocketFrame(CURL* curl, WsFrameReceiver& receiver,
@@ -367,6 +350,7 @@ void VolcengineAsrSession::FeedAudio(const float* pcm, size_t frames) {
 }
 
 void VolcengineAsrSession::End() {
+    endBudget_.Arm();
     state_->finished = true;
     if (audioChunks_) audioChunks_->Push(std::vector<int16_t>());
 }
@@ -434,8 +418,10 @@ void VolcengineAsrSession::WorkerLoop() {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &state_->cancelled);
+    // 建连也响应 finished：End() 后重试连接没有意义，应立即交出终态
+    connectAbort_ = WsAbort::CancelOrFinished(state_->cancelled, state_->finished);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, WsAbortProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &connectAbort_);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
                      +[](char* buf, size_t s, size_t n, void* u) -> size_t {
                          static_cast<std::string*>(u)->append(buf, s * n); return s * n;
@@ -482,7 +468,8 @@ void VolcengineAsrSession::WorkerLoop() {
 
     auto requestFrame = BuildFrame(kMsgFullClientRequest, kFlagNoSequence,
                                    kSerializationJson, kCompressionGzip, compressedRequest);
-    if (!SendWebSocketBinary(curl, requestFrame.data(), requestFrame.size(), state_->cancelled)) {
+    if (!SendWebSocketBinary(curl, requestFrame.data(), requestFrame.size(),
+                             WsAbort::CancelOnly(state_->cancelled))) {
         if (ecb) ecb("Failed to send request");
         if (cb) cb("", true, sid);
         curl_easy_cleanup(curl);
@@ -534,6 +521,9 @@ void VolcengineAsrSession::WorkerLoop() {
         std::vector<int16_t> chunk;
         bool hasChunk = audioChunks->TryPop(chunk);
         if (hasChunk && chunk.empty() && state_->finished) {
+            // End 路径：结束帧与 wait 共用一份预算，保证 worker 能在
+            // SessionReaper 的 15s JoinWithTimeout 之前返回（issue #42）。
+            const WsDeadline endBudget = endBudget_.Deadline();
             if (!pendingAudio.empty()) {
                 auto compressed = GzipCompress(
                     reinterpret_cast<const uint8_t*>(pendingAudio.data()),
@@ -541,15 +531,18 @@ void VolcengineAsrSession::WorkerLoop() {
                 if (!compressed.empty()) {
                     auto frame = BuildFrame(kMsgAudioOnlyRequest, kFlagFinalNoSequence,
                                             kSerializationNone, kCompressionGzip, compressed);
-                    SendWebSocketBinary(curl, frame.data(), frame.size(), state_->cancelled);
+                    SendWebSocketBinary(curl, frame.data(), frame.size(),
+                                        WsAbort::CancelOnly(state_->cancelled),
+                                        endBudget);
                 }
             } else {
                 auto frame = BuildFrame(kMsgAudioOnlyRequest, kFlagFinalNoSequence,
                                         kSerializationNone, kCompressionNone, {});
-                SendWebSocketBinary(curl, frame.data(), frame.size(), state_->cancelled);
+                SendWebSocketBinary(curl, frame.data(), frame.size(),
+                                        WsAbort::CancelOnly(state_->cancelled),
+                                        endBudget);
             }
-            auto deadline = std::chrono::steady_clock::now() + 30s;
-            while (!state_->cancelled && !gotFinal && std::chrono::steady_clock::now() < deadline)
+            while (!state_->cancelled && !gotFinal && !endBudget.Expired())
                 handleResponses(50ms);
             break;
         }
@@ -564,7 +557,9 @@ void VolcengineAsrSession::WorkerLoop() {
             if (!compressed.empty()) {
                 auto frame = BuildFrame(kMsgAudioOnlyRequest, kFlagNoSequence,
                                         kSerializationNone, kCompressionGzip, compressed);
-                SendWebSocketBinary(curl, frame.data(), frame.size(), state_->cancelled);
+                SendWebSocketBinary(curl, frame.data(), frame.size(),
+                                    WsAbort::CancelOrFinished(
+                                        state_->cancelled, state_->finished));
             }
             pendingAudio.erase(pendingAudio.begin(), pendingAudio.begin() + sendSize);
             handleResponses(20ms);

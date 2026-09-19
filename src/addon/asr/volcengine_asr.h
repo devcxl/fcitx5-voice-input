@@ -10,6 +10,7 @@
 #include "asr_engine.h"
 #include "asr_session.h"
 #include "utils/thread_safe_queue.h"
+#include "utils/ws_frame_sender.h"
 
 namespace fcitx {
 
@@ -46,6 +47,11 @@ private:
 
     std::shared_ptr<ThreadSafeQueue<std::vector<int16_t>>> audioChunks_;
     std::unique_ptr<std::thread> workerThread_;
+
+    // End 路径总预算（跨线程：End() 武装，worker 读取）
+    WsEndBudget endBudget_;
+    // 建连中止条件（clientp 生命周期需覆盖 curl_easy_perform）
+    WsAbort connectAbort_;
 };
 
 class VolcengineAsrEngine : public AsrEngine {

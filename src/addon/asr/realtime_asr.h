@@ -11,6 +11,7 @@
 #include "asr_engine.h"
 #include "asr_session.h"
 #include "utils/thread_safe_queue.h"
+#include "utils/ws_deadline.h"
 
 namespace fcitx {
 
@@ -86,6 +87,11 @@ private:
 
     std::shared_ptr<ThreadSafeQueue<std::vector<int16_t>>> audioChunks_;
     std::unique_ptr<std::thread> workerThread_;
+
+    // End 路径总预算（跨线程：End() 由 pipeline 线程武装，worker 读取）
+    WsEndBudget endBudget_;
+    // 建连中止条件（clientp 必须在其生命周期内保持有效：连接循环内使用）
+    WsAbort connectAbort_;
 };
 
 class RealtimeAsrEngine : public AsrEngine {
