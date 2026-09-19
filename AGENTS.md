@@ -16,7 +16,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j"$(nproc)"
 ```
 
-选项：`BUILD_TESTS`（目前无测试文件）。
+选项：`BUILD_TESTS`（测试源在 `tests/`，用 `ctest --test-dir build` 运行）。
 
 ## 依赖
 
@@ -52,6 +52,8 @@ src/addon/
 │   ├── volcengine_asr.cpp/.h       # 火山引擎豆包引擎（WS 流式）
 │   ├── mistral_asr.cpp/.h          # Mistral Realtime 引擎（WS 流式）
 │   └── utils/                      # ASR 内部工具
+│       ├── base64.cpp/.h       # Base64 编解码
+│       └── ws_frame_receiver.h # WS 消息重组（跨 TCP 分片保留已收前缀）
 ├── llm/
 │   ├── llm_client.cpp/.h          # LLM 后处理（流式/非流式，generation 取消）
 │   └── llm_request_cancellation.h
@@ -84,7 +86,7 @@ po/
 `docs/03-architecture/system-design/v4-asr-session-model.md`（AsrSession 详细设计，已实现）、
 `docs/03-architecture/adr/`（ADR 历史决策）与 `docs/03-architecture/reviews/`（评审记录）。
 
-ARCHITECTURE.md 已同步至 v4 会话模型。Route Map 中标记为待实现的超前功能（本地 ASR、Command 引擎、场景系统、热词优化、单元测试）仍是代码与文档的一致状态；LLM 后处理与多发行版打包已实现（Route Map 已勾选）。
+ARCHITECTURE.md 已同步至 v4 会话模型。Route Map 中标记为待实现的超前功能（本地 ASR、Command 引擎、场景系统、热词优化）仍是代码与文档的一致状态；LLM 后处理、多发行版打包与单元测试（`tests/` + CI verify job 的 `ctest`）已实现。
 
 ## CI
 

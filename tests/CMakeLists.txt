@@ -85,3 +85,27 @@ target_include_directories(realtime_terminal_state_test PRIVATE
 add_test(NAME realtime_terminal_state_test
     COMMAND realtime_terminal_state_test
 )
+
+add_executable(ws_frame_reassembly_test
+    ws_frame_reassembly_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/realtime_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/volcengine_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/asr_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/base64.cpp
+)
+
+target_include_directories(ws_frame_reassembly_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+)
+
+target_link_libraries(ws_frame_reassembly_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    CURL::libcurl
+    ZLIB::ZLIB
+)
+
+add_test(NAME ws_frame_reassembly_test COMMAND ws_frame_reassembly_test)

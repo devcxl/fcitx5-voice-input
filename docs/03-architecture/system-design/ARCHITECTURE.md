@@ -371,6 +371,7 @@ class AsrEngine {
 | `MistralAsrEngine` | mistral | Mistral Realtime WS | 16kHz PCM 直推（无需重采样）；`transcription.text.delta` 增量 preedit；周期 flush + 断线重连（保持同一 sessionId）；`TargetStreamingDelayMs` 权衡延迟/准确性 |
 
 - OpenAI `realtime` 与 Mistral 的流式会话在 `StartWorker()` 即建立持久 WS 连接，断线自动重连并保持 sessionId
+- 三个流式 WS 后端共用 `src/addon/asr/utils/ws_frame_receiver.h` 的 `WsFrameReceiver` + `ReceiveWsMessage()` 收包：跨 TCP 分片（含 WS `CURLWS_CONT`）的事件消息跨调用保留已收前缀，单条累计超过 16MB 时整条丢弃且在消息边界恢复解析（`Skipped` 不触发重连）
 - Volcengine 每个语音段建立独立 WebSocket 连接，使用完毕后关闭
 - `SessionReaper`（独立回收线程）对完成/取消的会话做超时 join，防止僵尸线程（详见 [v4-asr-session-model.md](v4-asr-session-model.md)）
 - `LLMClient`（`src/addon/llm/`）：可选 LLM 后处理（纠错/格式化），支持流式与非流式，按 generation 取消过期请求
@@ -489,6 +490,8 @@ void VoiceInputEngine::deactivate(...) {
 | ASR API Key 未配置 | 对应引擎 Init 返回 false |
 | Volcengine 认证失败 / WS 断开 | Init 返回 false；断开则丢弃当前段继续下一段 |
 | Volcengine 服务端错误 | 日志打印响应中的 `message` 和 `X-Tt-Logid` |
+| WS 事件消息跨 TCP 分片 | `WsFrameReceiver` 跨 `CURLE_AGAIN` 保留已收前缀，消息边界到齐后才解析（不丢 delta/completed） |
+| WS 单条消息超过 16MB | 整条丢弃（`Skipped`），在消息边界恢复解析；不当作传输错误，不触发重连 |
 | OpenAI realtime / Mistral WS 断线 | 自动重连（保持同一 sessionId），周期 commit/flush 兜底 |
 | 会话 worker 未按时退出 | SessionReaper `JoinWithTimeout` 超时后丢弃，不阻塞清理 |
 | 结果乱序/迟到（并发会话） | OrderedResultBuffer 按 utteranceId 保序，旧 generation 结果丢弃 |
@@ -517,7 +520,7 @@ fcitx5-voice-input
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `BUILD_TESTS` | OFF | 构建测试（目前没有测试源文件） |
+| `BUILD_TESTS` | OFF | 构建单元/集成测试（`tests/`，`ctest` 运行；CI verify job 开启） |
 | `ONNXRUNTIME_ROOT` | "" | ONNX Runtime 自定义路径（onnxruntime 双策略：pkg-config 系统包或 download 1.28.0，CI 缓存加速） |
 
 ### 构建产物
@@ -574,7 +577,8 @@ fcitx5-voice-input/
 │       │   ├── realtime_asr.cpp/.h              # OpenAI Realtime WS 会话
 │       │   ├── volcengine_asr.cpp/.h            # 火山引擎豆包引擎
 │       │   ├── mistral_asr.cpp/.h               # Mistral Realtime 引擎
-│       │   └── utils/                           # ASR 内部工具（重采样/base64 等）
+│       │   ├── utils/base64.cpp/.h              # Base64 编解码
+│       │   └── utils/ws_frame_receiver.h        # WS 消息重组（跨 TCP 分片保留前缀）
 │       ├── llm/
 │       │   ├── llm_client.cpp/.h               # LLM 后处理客户端（流式/非流式）
 │       │   └── llm_request_cancellation.h      # generation 取消
@@ -624,7 +628,6 @@ fcitx5-voice-input/
 - [ ] Command 引擎（外部命令云 ASR）
 - [ ] 场景系统
 - [ ] 热词优化
-- [ ] 单元测试
 
 ---
 

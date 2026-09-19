@@ -11,6 +11,7 @@
 #include <json/json.h>
 
 #include "utils/base64.h"
+#include "utils/ws_frame_receiver.h"
 
 using namespace std::chrono_literals;
 
@@ -20,9 +21,7 @@ namespace {
 constexpr int kSourceSampleRate = 16000;
 constexpr int kTargetSampleRate = 24000;  // OpenAI Realtime 要求 >= 24kHz
 constexpr int kAppendChunkSamples = 2400; // ~100ms @24k 音频推送粒度（含重采样后）
-constexpr size_t kMaxFrameBytes = 16 * 1024 * 1024;  // 单帧 16MB 上限
-
-enum class RecvStatus { Ok, Again, Closed, Error };
+constexpr const char* kLogTag = "[voice-input:realtime]";
 
 // 16k → 24k 线性插值（比例 3/2）。输出样本数 = floor(1.5 * N)。
 // 对每个输出下标 j，其对应的源位置 pos = j * 2/3，在相邻源样本间线性插值。
@@ -74,43 +73,6 @@ bool SendWebSocketText(CURL* curl, const std::string& data,
         remaining -= sent;
     }
     return true;
-}
-
-// 接收一帧 TEXT，返回 JSON 字符串。跨分片拼接（bytesleft）。
-RecvStatus ReceiveTextFrame(CURL* curl, std::string& out) {
-    out.clear();
-    std::array<char, 8192> buffer{};
-    while (true) {
-        size_t received = 0;
-        // curl >= 8.2.0 将 curl_ws_recv 的 metap 参数 const 化；老版本（Debian 12 的
-        // 7.88 等）为非 const 签名，需按编译期 curl 版本分支避免 -fpermissive 错误
-#if LIBCURL_VERSION_NUM >= 0x080200
-        const struct curl_ws_frame* meta = nullptr;
-#else
-        struct curl_ws_frame* meta = nullptr;
-#endif
-        CURLcode result =
-            curl_ws_recv(curl, buffer.data(), buffer.size(), &received, &meta);
-        if (result == CURLE_AGAIN) return RecvStatus::Again;
-        if (result != CURLE_OK) {
-            FCITX_ERROR() << "[voice-input:realtime] curl_ws_recv failed: "
-                          << curl_easy_strerror(result);
-            return RecvStatus::Error;
-        }
-        if (meta && (meta->flags & CURLWS_CLOSE)) return RecvStatus::Closed;
-        bool isText = meta && (meta->flags & CURLWS_TEXT);
-        if (received > 0) {
-            // 限制单帧累计大小，防止恶意/异常服务端耗尽内存
-            if (out.size() + received > kMaxFrameBytes) {
-                FCITX_ERROR() << "[voice-input:realtime] WS frame exceeds "
-                              << kMaxFrameBytes << " bytes";
-                return RecvStatus::Error;
-            }
-            out.append(buffer.data(), received);
-        }
-        if (!meta || !isText) continue;
-        if (meta->bytesleft == 0) return RecvStatus::Ok;
-    }
 }
 
 void CloseWebSocket(CURL* curl) {
@@ -305,6 +267,7 @@ void RealtimeAsrSession::WorkerLoop() {
 
         // 会话开始：发送 session.update（语言/模型提示）
         SendWebSocketText(curl, buildSessionUpdate(), state_->cancelled);
+        WsFrameReceiver receiver(CURLWS_TEXT);
 
         auto sessionStart = std::chrono::steady_clock::now();
         auto lastCommitTime = sessionStart;
@@ -317,16 +280,21 @@ void RealtimeAsrSession::WorkerLoop() {
             auto deadline = std::chrono::steady_clock::now() + timeout;
             while (!state_->cancelled && !terminal.IsPublished() &&
                    std::chrono::steady_clock::now() < deadline) {
-                std::string text;
-                RecvStatus r = ReceiveTextFrame(curl, text);
-                if (r == RecvStatus::Again) { std::this_thread::sleep_for(10ms); continue; }
-                if (r == RecvStatus::Closed) {
+                WsMessageStatus r =
+                    ReceiveWsMessage(curl, receiver, kLogTag);
+                if (r == WsMessageStatus::Again) {
+                    std::this_thread::sleep_for(10ms);
+                    continue;
+                }
+                if (r == WsMessageStatus::Skipped) continue;
+                if (r == WsMessageStatus::Closed) {
                     return RealtimeServerOutcome::TransportFailure;
                 }
-                if (r == RecvStatus::Error) {
+                if (r == WsMessageStatus::Error) {
                     if (ecb) ecb("WS recv error");
                     return RealtimeServerOutcome::TransportFailure;
                 }
+                const std::string text = receiver.AsString();
 
                 Json::Value json;
                 Json::Reader reader;
