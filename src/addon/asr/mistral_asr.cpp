@@ -368,6 +368,9 @@ void MistralAsrSession::WorkerLoop() {
                 if (!SendWebSocketText(curl, buildFlushEvent(),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
+                    // End() 触发的中止不是传输失败：回到循环顶部消费 End 哨兵，
+                    // 由 End 收尾路径（flush + end + 等待 done）处理。
+                    if (state_->finished || state_->cancelled) continue;
                     reconnectNeeded = true;
                     break;
                 }
@@ -382,6 +385,8 @@ void MistralAsrSession::WorkerLoop() {
                 if (!SendWebSocketText(curl, buildAppendEvent(toSend),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
+                    // 同上：End() 触发的中止交由 End 收尾路径处理。
+                    if (state_->finished || state_->cancelled) continue;
                     reconnectNeeded = true;
                     break;
                 }

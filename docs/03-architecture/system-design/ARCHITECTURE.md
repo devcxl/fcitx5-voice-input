@@ -371,6 +371,7 @@ class AsrEngine {
 | `MistralAsrEngine` | mistral | Mistral Realtime WS | 16kHz PCM 直推（无需重采样）；`transcription.text.delta` 增量 preedit；周期 flush + 断线重连（保持同一 sessionId）；`TargetStreamingDelayMs` 权衡延迟/准确性 |
 
 - OpenAI `realtime` 与 Mistral 的流式会话在 `StartWorker()` 即建立持久 WS 连接，断线自动重连并保持 sessionId
+- Realtime 的终态判定按服务端确认的 `item_id` 追踪在途 item（`utils/realtime_commit_tracker.h`）：`error` 事件不再造成计数漂移，最终 `completed` 到达即上屏；`error` 事件的内容（message/code）进入日志与错误回调；End 等待以「距最后服务端事件 5s」的空闲超时为上界（见错误处理策略表）
 - 三个流式 WS 后端共用 `src/addon/asr/utils/ws_frame_receiver.h` 的 `WsFrameReceiver` + `ReceiveWsMessage()` 收包：跨 TCP 分片（含 WS `CURLWS_CONT`）的事件消息跨调用保留已收前缀，单条累计超过 16MB 时整条丢弃且在消息边界恢复解析（`Skipped` 不触发重连）
 - 发送与建连同样有界：`src/addon/asr/utils/ws_deadline.h` 的 `WsDeadline`（单次发送预算，默认 10s）、`WsEndBudget`（End 路径总预算，默认 8s）与 `WsAbort`（`cancelled` 始终生效，`finished` 用于非 End 路径的推流与建连）；`ws_frame_sender.h` 的 `SendWsMessage()` 在 `CURLE_AGAIN`/零进展时按预算失败。上游不读 socket 时 `End()` 在 End 预算内收敛并交出兜底终态，`SessionReaper::JoinWithTimeout(15s)` 不再超时，且 `End()` 后不再重连
 - Volcengine 每个语音段建立独立 WebSocket 连接，使用完毕后关闭
@@ -501,6 +502,8 @@ void VoiceInputEngine::deactivate(...) {
 | 发送超时 / 上游卡死 | 日志打印待发字节数与预算；调用方走重连（仅非 End 路径）或兜底终态 |
 | 会话 worker 未按时退出 | SessionReaper `JoinWithTimeout` 超时后丢弃，不阻塞清理 |
 | 结果乱序/迟到（并发会话） | OrderedResultBuffer 按 utteranceId 保序，旧 generation 结果丢弃 |
+| 服务端 `error` 事件（如空 buffer 的 `commit_empty`） | 日志 `server error session=N: <message>` + 错误回调上报；不产生转写 item，不影响最终 item 判定 |
+| End 后服务端无响应 | 空闲超时 5s（距最后一个服务端事件）触发，以已累积文本兜底 final |
 | 某段 ASR 永久无终态（会话卡死） | 保序闸门停滞放行：超过 40s 时该段以超时错误上屏（`语音识别失败` 提示），后续段结果照常交付，不再被永久扣住 |
 | OpenAI API 返回空结果 | 丢弃不上屏 |
 

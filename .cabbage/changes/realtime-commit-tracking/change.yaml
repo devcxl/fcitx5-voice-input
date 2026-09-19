@@ -1,0 +1,14 @@
+id: realtime-commit-tracking
+type: bugfix
+status: active
+impact:
+  product: true
+  architecture: true
+  api: false
+  database: false
+  security: false
+  testing: true
+  deployment: false
+  operations: true
+  data: false
+  performance: false

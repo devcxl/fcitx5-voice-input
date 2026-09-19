@@ -42,6 +42,23 @@ void Upsample16kTo24k(const std::vector<float>& in, std::vector<float>& out) {
     }
 }
 
+/// 从服务端 error 事件中提取可读信息（issue #44：原实现完全忽略 error）。
+/// OpenAI Realtime 的 error 事件形如
+/// {"type":"error","error":{"type":"...","code":"...","message":"..."}}。
+std::string DescribeError(const Json::Value& json) {
+    const Json::Value& error = json["error"];
+    if (error.isObject()) {
+        const std::string message = error.get("message", "").asString();
+        if (!message.empty()) return message;
+        const std::string code = error.get("code", "").asString();
+        if (!code.empty()) return code;
+        const std::string type = error.get("type", "").asString();
+        if (!type.empty()) return type;
+    }
+    const std::string message = json.get("message", "").asString();
+    return message;
+}
+
 std::string JsonToString(const Json::Value& json) {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";
@@ -195,7 +212,6 @@ void RealtimeAsrSession::WorkerLoop() {
         if (!terminal.TryMarkPublished()) return;
         if (cb) cb(transcript, true, sid);
     };
-    bool endCommitSent = false;      // End commit 是否已发出（决定最终 item 判定）
     std::string fullTranscript;      // 会话级累积文本（整句，preedit 显示的依据）
     std::string currentTranscript;   // 当前 item 的 delta 累积
     std::vector<int16_t> pending24k;  // 提升到连接循环外，重连时保留未发送缓冲
@@ -262,7 +278,16 @@ void RealtimeAsrSession::WorkerLoop() {
         auto sessionStart = std::chrono::steady_clock::now();
         auto lastCommitTime = sessionStart;
         bool appendedSinceCommit = false;  // 自上次 commit 后是否 append 过音频
-        int commitsInFlight = 0;           // 在途 commit 数（重连后新连接重新计数）
+        // 在途 item 追踪（按 item_id，替代原先的计数器；见 RealtimeCommitTracker）
+        RealtimeCommitTracker commits;
+        // 最后一次收到服务端事件的时刻（用于「空闲超时」兜底）
+        auto lastServerEventAt = std::chrono::steady_clock::now();
+
+        // End 等待是否应因服务端空闲而结束（issue #44：固定 30s → 空闲超时）。
+        auto endWaitIdleExpired = [&] {
+            return std::chrono::steady_clock::now() - lastServerEventAt >=
+                   kEndIdleTimeout;
+        };
 
         // 处理服务端事件
         auto handleServer = [&](std::chrono::milliseconds timeout)
@@ -284,6 +309,7 @@ void RealtimeAsrSession::WorkerLoop() {
                     if (ecb) ecb("WS recv error");
                     return RealtimeServerOutcome::TransportFailure;
                 }
+                lastServerEventAt = std::chrono::steady_clock::now();
                 const std::string text = receiver.AsString();
 
                 Json::Value json;
@@ -300,10 +326,8 @@ void RealtimeAsrSession::WorkerLoop() {
                     }
                 } else if (type == "conversation.item.input_audio_transcription.completed") {
                     std::string transcript = json.get("transcript", "").asString();
-                    // 判定这是否最终 item：End commit 已发出 且 在途 commit 只剩这一个
-                    // （WS 事件有序保证旧周期 item 的 completed 先于最终 item 到达）
-                    bool isFinalItem = endCommitSent && commitsInFlight <= 1;
-                    if (commitsInFlight > 0) --commitsInFlight;
+                    const std::string itemId = json.get("item_id", "").asString();
+                    const bool isFinalItem = commits.OnCompleted(itemId);
                     fullTranscript += transcript;
                     if (isFinalItem) {
                         // 最终结果（整句累积），上报 final 并结束会话
@@ -317,11 +341,28 @@ void RealtimeAsrSession::WorkerLoop() {
                         currentTranscript.clear();
                     }
                 } else if (type == "conversation.item.input_audio_transcription.failed") {
-                    if (ecb) ecb("Transcription failed");
+                    // failed 事件带 item_id：只移除对应 item，避免误删其他在途 item
+                    commits.OnFailed(json.get("item_id", "").asString());
                     currentTranscript.clear();
-                    if (commitsInFlight > 0) --commitsInFlight;  // 保持与 completed 一致的计数
+                    const std::string message = DescribeError(json);
+                    if (ecb) ecb("Transcription failed" +
+                                 (message.empty() ? std::string() : ": " + message));
+                } else if (type == "input_audio_buffer.committed") {
+                    // 服务端确认 commit：把将要生成转写的 item 记入在途集合。
+                    // 以服务端确认而非本地发送为准，避免把被服务端拒绝的 commit 计入；
+                    // End commit 的 item 另外记下 id，用于精确判定最终 item。
+                    commits.OnCommitted(json.get("item_id", "").asString(),
+                                        commits.EndCommitSent());
+                } else if (type == "error") {
+                    // 服务端错误必须可见（issue #44：原先完全静默，用户无法区分
+                    // 「网络慢」与「服务端拒绝」）。错误不会产生转写 item，
+                    // 故不计入在途集合，也无法（不应）靠它推进终态判定。
+                    const std::string message = DescribeError(json);
+                    FCITX_WARN() << "[voice-input:realtime] server error session=" << sid
+                                 << (message.empty() ? std::string() : ": " + message);
+                    if (ecb) ecb(message.empty() ? "Realtime server error" : message);
                 }
-                // 其他事件（response.*/error 等）忽略
+                // 其他事件（response.*/session.* 等）忽略
             }
             return RealtimeServerOutcome::Continue;
         };
@@ -358,18 +399,18 @@ void RealtimeAsrSession::WorkerLoop() {
                     publishFinal(fullTranscript);
                     break;
                 }
-                endCommitSent = true;
-                ++commitsInFlight;
+                commits.MarkEndCommitSent();
                 while (!state_->cancelled && !terminal.IsPublished() &&
-                       !endBudget_.Expired()) {
+                       !endBudget_.Expired() && !endWaitIdleExpired()) {
                     const auto decision = DecideRealtimeServerOutcome(
                         handleServer(50ms), true);
                     if (decision.publishFallback) publishFinal(fullTranscript);
                     if (decision.stop) break;
                 }
                 if (!terminal.IsPublished() && !state_->cancelled) {
-                    // End 总预算耗尽仍未收到最终 completed → 以已累积文本兜底 final，
-                    // 并结束会话（否则 for 循环会重连后空转挂死）。
+                    // End 等待结束（总预算耗尽或服务端空闲超时）仍未收到最终
+                    // completed → 以已累积文本兜底 final，并结束会话
+                    // （否则 for 循环会重连后空转挂死）。
                     FCITX_WARN() << "[voice-input:realtime] End wait timeout session=" << sid;
                     publishFinal(fullTranscript);
                 }
@@ -397,12 +438,16 @@ void RealtimeAsrSession::WorkerLoop() {
                 if (!SendWebSocketText(curl, buildCommitEvent(),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
+                    // 中止可能来自 End()（finished 置位）：此时不能按传输失败处理
+                    // 而退出连接循环——End 的收尾路径（flush + commit + 等待终态）
+                    // 在循环内，误判会让语音尾部与最终结果一起丢失。回到循环顶部
+                    // 消费 End 哨兵即可。
+                    if (state_->finished || state_->cancelled) continue;
                     reconnectNeeded = true;
                     break;
                 }
                 lastCommitTime = now;
                 appendedSinceCommit = false;
-                ++commitsInFlight;
             }
 
             // 推送足够粒度的音频
@@ -412,6 +457,8 @@ void RealtimeAsrSession::WorkerLoop() {
                 if (!SendWebSocketText(curl, buildAppendEvent(toSend),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
+                    // 同上：End() 触发的中止不是传输失败，交由 End 收尾路径处理。
+                    if (state_->finished || state_->cancelled) continue;
                     reconnectNeeded = true;
                     break;
                 }
@@ -430,7 +477,7 @@ void RealtimeAsrSession::WorkerLoop() {
                 if (SendWebSocketText(curl, buildCommitEvent(),
                                       WsAbort::CancelOrFinished(
                                           state_->cancelled, state_->finished))) {
-                    ++commitsInFlight;
+                    // 在途 item 由服务端的 input_audio_buffer.committed 确认后登记
                 } else {
                     FCITX_ERROR() << "[voice-input:realtime] 30min commit failed session=" << sid;
                 }
