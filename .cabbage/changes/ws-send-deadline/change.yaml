@@ -1,0 +1,14 @@
+id: ws-send-deadline
+type: bugfix
+status: active
+impact:
+  product: false
+  architecture: true
+  api: false
+  database: false
+  security: false
+  testing: true
+  deployment: false
+  operations: true
+  data: false
+  performance: false

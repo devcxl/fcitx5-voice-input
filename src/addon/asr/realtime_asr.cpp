@@ -12,6 +12,7 @@
 
 #include "utils/base64.h"
 #include "utils/ws_frame_receiver.h"
+#include "utils/ws_frame_sender.h"
 
 using namespace std::chrono_literals;
 
@@ -47,32 +48,13 @@ std::string JsonToString(const Json::Value& json) {
     return Json::writeString(builder, json);
 }
 
-int CancelProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t,
-                           curl_off_t) {
-    auto* cancelled = static_cast<std::atomic<bool>*>(clientp);
-    return cancelled->load(std::memory_order_acquire) ? 1 : 0;
-}
-
 // 发送一个 TEXT WS 帧（OpenAI Realtime 用 JSON 文本帧）。
+// 上游不读 socket 时有界失败（issue #42）：发送预算到期即返回 false，
+// 由调用方走重连/兜底分支，避免 End 路径永久卡死。
 bool SendWebSocketText(CURL* curl, const std::string& data,
-                       const std::atomic<bool>& cancelFlag) {
-    size_t remaining = data.size();
-    const char* ptr = data.data();
-    while (remaining > 0) {
-        if (cancelFlag.load()) return false;
-        size_t sent = 0;
-        CURLcode result =
-            curl_ws_send(curl, ptr, remaining, &sent, 0, CURLWS_TEXT);
-        if (result == CURLE_AGAIN) { std::this_thread::sleep_for(10ms); continue; }
-        if (result != CURLE_OK) {
-            FCITX_ERROR() << "[voice-input:realtime] curl_ws_send failed: "
-                          << curl_easy_strerror(result);
-            return false;
-        }
-        ptr += sent;
-        remaining -= sent;
-    }
-    return true;
+                       const WsAbort& abort,
+                       WsDeadline deadline = WsDeadline{}) {
+    return SendWsMessage(curl, data, CURLWS_TEXT, abort, kLogTag, deadline);
 }
 
 void CloseWebSocket(CURL* curl) {
@@ -149,6 +131,9 @@ void RealtimeAsrSession::FeedAudio(const float* pcm, size_t frames) {
 }
 
 void RealtimeAsrSession::End() {
+    // 先武装 End 总预算，再置 finished：worker 可能在任一时刻观察到 finished，
+    // 提前武装可保证它读到的预算已经生效。
+    endBudget_.Arm();
     state_->finished = true;
     if (audioChunks_) audioChunks_->Push(std::vector<int16_t>());
 }
@@ -240,8 +225,11 @@ void RealtimeAsrSession::WorkerLoop() {
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, CancelProgressCallback);
-        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &state_->cancelled);
+        // 建连也响应 finished：End() 后重试连接没有意义，应立即交出终态
+        // （否则每次重连都要等满 CONNECTTIMEOUT，worker 会被 reaper detach）
+        connectAbort_ = WsAbort::CancelOrFinished(state_->cancelled, state_->finished);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, WsAbortProgressCallback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &connectAbort_);
 
         CURLcode connectResult = curl_easy_perform(curl);
         curl_slist_free_all(headers);
@@ -266,7 +254,9 @@ void RealtimeAsrSession::WorkerLoop() {
         FCITX_INFO() << "[voice-input:realtime] WS connected session=" << sid;
 
         // 会话开始：发送 session.update（语言/模型提示）
-        SendWebSocketText(curl, buildSessionUpdate(), state_->cancelled);
+        SendWebSocketText(curl, buildSessionUpdate(),
+                          WsAbort::CancelOrFinished(state_->cancelled,
+                                                        state_->finished));
         WsFrameReceiver receiver(CURLWS_TEXT);
 
         auto sessionStart = std::chrono::steady_clock::now();
@@ -347,8 +337,13 @@ void RealtimeAsrSession::WorkerLoop() {
                 // 否则 commit 后尾部音频丢失），再提交最终段。
                 // 语音已结束，任何发送失败/超时都不重连（重连后空 chunk 已消费、End 分支
                 // 不会重试），直接以已累积文本兜底 final 退出。
+                // flush 与 commit 共用一份预算：End 路径总发送耗时上界 = 一份预算，
+                // 确保 End 能赶在 SessionReaper 的 15s JoinWithTimeout 之前返回。
+                const WsDeadline endBudget = endBudget_.Deadline();
                 if (!pending24k.empty() && !state_->cancelled) {
-                    if (!SendWebSocketText(curl, buildAppendEvent(pending24k), state_->cancelled)) {
+                    if (!SendWebSocketText(curl, buildAppendEvent(pending24k),
+                                           WsAbort::CancelOnly(state_->cancelled),
+                                           endBudget)) {
                         FCITX_ERROR() << "[voice-input:realtime] End flush failed session=" << sid;
                         // 兜底 final 后经统一清理路径退出（break → CloseWebSocket + cleanup）
                         publishFinal(fullTranscript);
@@ -356,23 +351,24 @@ void RealtimeAsrSession::WorkerLoop() {
                     }
                     pending24k.clear();
                 }
-                if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                if (!SendWebSocketText(curl, buildCommitEvent(),
+                                       WsAbort::CancelOnly(state_->cancelled),
+                                       endBudget)) {
                     FCITX_ERROR() << "[voice-input:realtime] End commit failed session=" << sid;
                     publishFinal(fullTranscript);
                     break;
                 }
                 endCommitSent = true;
                 ++commitsInFlight;
-                auto deadline = std::chrono::steady_clock::now() + 30s;
                 while (!state_->cancelled && !terminal.IsPublished() &&
-                       std::chrono::steady_clock::now() < deadline) {
+                       !endBudget_.Expired()) {
                     const auto decision = DecideRealtimeServerOutcome(
                         handleServer(50ms), true);
                     if (decision.publishFallback) publishFinal(fullTranscript);
                     if (decision.stop) break;
                 }
                 if (!terminal.IsPublished() && !state_->cancelled) {
-                    // 30s 超时仍未收到最终 completed → 以已累积文本兜底 final，
+                    // End 总预算耗尽仍未收到最终 completed → 以已累积文本兜底 final，
                     // 并结束会话（否则 for 循环会重连后空转挂死）。
                     FCITX_WARN() << "[voice-input:realtime] End wait timeout session=" << sid;
                     publishFinal(fullTranscript);
@@ -398,7 +394,9 @@ void RealtimeAsrSession::WorkerLoop() {
             auto elapsedSinceCommit = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - lastCommitTime).count();
             if (appendedSinceCommit && elapsedSinceCommit >= commitIntervalMs_) {
-                if (!SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                if (!SendWebSocketText(curl, buildCommitEvent(),
+                                       WsAbort::CancelOrFinished(
+                                           state_->cancelled, state_->finished))) {
                     reconnectNeeded = true;
                     break;
                 }
@@ -411,7 +409,9 @@ void RealtimeAsrSession::WorkerLoop() {
             if (pending24k.size() >= kAppendChunkSamples && !state_->cancelled) {
                 size_t sendSize = (pending24k.size() / kAppendChunkSamples) * kAppendChunkSamples;
                 std::vector<int16_t> toSend(pending24k.begin(), pending24k.begin() + sendSize);
-                if (!SendWebSocketText(curl, buildAppendEvent(toSend), state_->cancelled)) {
+                if (!SendWebSocketText(curl, buildAppendEvent(toSend),
+                                       WsAbort::CancelOrFinished(
+                                           state_->cancelled, state_->finished))) {
                     reconnectNeeded = true;
                     break;
                 }
@@ -427,7 +427,9 @@ void RealtimeAsrSession::WorkerLoop() {
                 std::chrono::steady_clock::now() - sessionStart).count();
             if (sessionAge >= kSessionMaxDuration.count() && appendedSinceCommit) {
                 FCITX_WARN() << "[voice-input:realtime] 30min session limit, reconnect";
-                if (SendWebSocketText(curl, buildCommitEvent(), state_->cancelled)) {
+                if (SendWebSocketText(curl, buildCommitEvent(),
+                                      WsAbort::CancelOrFinished(
+                                          state_->cancelled, state_->finished))) {
                     ++commitsInFlight;
                 } else {
                     FCITX_ERROR() << "[voice-input:realtime] 30min commit failed session=" << sid;
@@ -447,6 +449,15 @@ void RealtimeAsrSession::WorkerLoop() {
         curl_easy_cleanup(curl);
 
         if (state_->cancelled || terminal.IsPublished()) break;
+        if (reconnectNeeded && (state_->finished || endBudget_.Expired())) {
+            // 语音已结束（End）或 End 预算耗尽：不再重连。
+            // 重连只会再阻塞一轮发送/建连并让 worker 被 reaper detach（issue #42），
+            // 且 End 之后已无新音频需要发送，重连没有可交付的语义。
+            FCITX_WARN() << "[voice-input:realtime] End reached, skipping reconnect "
+                            "session=" << sid;
+            publishFinal(fullTranscript);
+            break;
+        }
         if (reconnectNeeded) {
             FCITX_WARN() << "[voice-input:realtime] Reconnecting session=" << sid;
             // 重连后是全新服务端会话，旧 item 的 delta 上下文已失效：

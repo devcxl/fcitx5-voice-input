@@ -53,7 +53,9 @@ src/addon/
 │   ├── mistral_asr.cpp/.h          # Mistral Realtime 引擎（WS 流式）
 │   └── utils/                      # ASR 内部工具
 │       ├── base64.cpp/.h       # Base64 编解码
-│       └── ws_frame_receiver.h # WS 消息重组（跨 TCP 分片保留已收前缀）
+│       ├── ws_frame_receiver.h # WS 消息重组（跨 TCP 分片保留已收前缀）
+│       ├── ws_frame_sender.h   # WS 发送（单次预算内失败）
+│       └── ws_deadline.h       # 发送/建连截止时间与中止条件
 ├── llm/
 │   ├── llm_client.cpp/.h          # LLM 后处理（流式/非流式，generation 取消）
 │   └── llm_request_cancellation.h
@@ -77,6 +79,7 @@ po/
 - **音频格式统一**: 16kHz mono, int16, 512 samples/window (32ms)
 - **VAD**: 仅 Silero ONNX, predict() 返回 0~1 概率, Idle/Speaking 状态机
 - **Pipeline 管道**: FrameQueue → VADWorker → SpeechEventQueue → AsrDispatcherLoop → AsrSession worker → ResultCoordinator(保序/LLM) → ResultQueue → eventDispatcher → 主线程
+- **WS 收发有界**: 收包用 `WsFrameReceiver`（跨分片保留前缀）；发送用 `SendWsMessage` + `WsDeadline`（单次预算）；`End()` 武装 `WsEndBudget`（总预算）保证收尾路径在 `SessionReaper` 的 15s join 内收敛，且 End 后不重连
 - **Config 热加载**: `setConfig()` → `voiceinput.conf` 保存 + `pipeline_->SetConfig()`
 - **交互方式**: 切换到 Voice Input 即启动 pipeline；VAD 检测到人声分段，静音后提交 ASR；主线程 eventDispatcher 接收结果 commit
 
