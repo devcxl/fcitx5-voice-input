@@ -25,6 +25,7 @@ CI 中由 `ci.yml` 的 `verify` job 开启 `BUILD_TESTS` 并执行 `ctest`（多
 | `asr_ordering_test` | `OrderedResultBuffer` 保序与引擎容量取消 | 单元 |
 | `realtime_terminal_state_test` | Realtime 终态判定与传输失败决策表 | 单元 |
 | `ws_frame_reassembly_test` | WS 消息重组：跨 TCP 分片保留前缀、超限整条丢弃且边界恢复、类型过滤、CLOSE 复位；真实 `RealtimeAsrSession` / `VolcengineAsrSession` 分片端到端 | 单元 + 集成（本地假 WS 服务端） |
+| `ordered_buffer_stall_test` | 保序闸门停滞放行：卡死段在阈值内不误伤、超阈值后以超时错误放行、后续段按序交付、迟到结果被丢弃、显式 `Skip` 语义不变；`ResultCoordinator` 端到端交付 | 单元 + 并发 |
 | `ws_send_budget_test` | WS 发送预算：单次发送到期即失败（不无限重试）、取消优先；真实 Realtime/Mistral/Volcengine 会话在「上游不读 socket」下 `End()` 有界收敛、产出终态、`JoinWithTimeout` 不超时 | 单元 + 集成（本地假 WS 服务端） |
 
 ## 约定

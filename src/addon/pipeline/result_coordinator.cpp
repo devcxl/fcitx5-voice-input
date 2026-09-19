@@ -208,6 +208,16 @@ void ResultCoordinator::Submit(AsrResult result, bool terminal) {
     if (notification) Notify(*notification);
 }
 
+void ResultCoordinator::ExpireStale() {
+    std::optional<std::string> notification;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!accepting_) return;
+        notification = EnqueueLocked(orderedResults_.ExpireStale());
+    }
+    if (notification) Notify(*notification);
+}
+
 void ResultCoordinator::SkipSession(uint64_t sessionId) {
     std::optional<std::string> notification;
     {

@@ -137,3 +137,24 @@ target_link_libraries(ws_send_budget_test PRIVATE
 add_test(NAME ws_send_budget_test COMMAND ws_send_budget_test)
 # 缺陷回归时会挂死（发送循环无截止时间）；超时使其以失败而非挂起结束
 set_tests_properties(ws_send_budget_test PROPERTIES TIMEOUT 90)
+
+add_executable(ordered_buffer_stall_test
+    ordered_buffer_stall_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/pipeline/result_coordinator.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/llm/llm_client.cpp
+)
+
+target_include_directories(ordered_buffer_stall_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+)
+
+target_link_libraries(ordered_buffer_stall_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    CURL::libcurl
+)
+
+add_test(NAME ordered_buffer_stall_test COMMAND ordered_buffer_stall_test)
