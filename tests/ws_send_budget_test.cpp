@@ -410,15 +410,20 @@ bool TestVolcengineEndIsBoundedWhenPeerStopsReading() {
 } // namespace
 
 int main() {
+    // 所有用例都需要一条真实 WS 连接（包括单次预算用例：它要连上假服务端后
+    // 才能制造 CURLE_AGAIN）。Ubuntu 24.04 / Debian 12 的系统 libcurl 未编译
+    // WebSocket 支持，这些平台上流式后端本身不可用，因此整体跳过。
+    if (!LibcurlSupportsWebSocket()) {
+        std::cerr << "SKIP: libcurl has no WebSocket support on this platform "
+                     "(Ubuntu 24.04 / Debian 12 system libcurl); send-budget "
+                     "cases need a real WS connection. Protocol-level coverage "
+                     "runs on distros with WS support.\n";
+        return 0;
+    }
+
     bool ok = true;
     ok = TestSendBudgetBoundsRetryLoop() && ok;
     ok = TestCancelFlagAbortsSend() && ok;
-
-    if (!LibcurlSupportsWebSocket()) {
-        std::cerr << "SKIP: libcurl has no WebSocket support on this platform; "
-                     "send-budget cases need a real WS connection.\n";
-        return ok ? 0 : 1;
-    }
     ok = TestRealtimeEndIsBoundedWhenPeerStopsReading() && ok;
     ok = TestMistralEndIsBoundedWhenPeerStopsReading() && ok;
     ok = TestVolcengineEndIsBoundedWhenPeerStopsReading() && ok;
