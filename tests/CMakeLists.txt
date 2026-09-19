@@ -158,3 +158,36 @@ target_link_libraries(ordered_buffer_stall_test PRIVATE
 )
 
 add_test(NAME ordered_buffer_stall_test COMMAND ordered_buffer_stall_test)
+
+add_executable(realtime_commit_tracking_test
+    realtime_commit_tracking_test.cpp
+)
+
+target_include_directories(realtime_commit_tracking_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+)
+
+add_test(NAME realtime_commit_tracking_test COMMAND realtime_commit_tracking_test)
+
+add_executable(realtime_commit_e2e_test
+    realtime_commit_e2e_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/realtime_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/asr_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/base64.cpp
+)
+
+target_include_directories(realtime_commit_e2e_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+)
+
+target_link_libraries(realtime_commit_e2e_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    CURL::libcurl
+)
+
+add_test(NAME realtime_commit_e2e_test COMMAND realtime_commit_e2e_test)
+set_tests_properties(realtime_commit_e2e_test PROPERTIES TIMEOUT 90)

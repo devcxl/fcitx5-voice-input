@@ -10,6 +10,7 @@
 
 #include "asr_engine.h"
 #include "asr_session.h"
+#include "utils/realtime_commit_tracker.h"
 #include "utils/thread_safe_queue.h"
 #include "utils/ws_deadline.h"
 

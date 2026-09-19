@@ -10,6 +10,8 @@
 |------|------|------|------|
 | `[voice-input:<backend>] WS connected session=N` | INFO | WS 会话已建立 | 正常 |
 | `[voice-input:<backend>] WS recv error` | ERROR | 底层接收错误（非分片），随后可能重连 | 观察是否反复出现 |
+| `[voice-input:realtime] server error session=N: <message>` | WARN | 服务端返回 `error` 事件（如对空 buffer 的 `input_audio_buffer_commit_empty`、鉴权/配额问题） | 按 message 内容处置；不影响最终结果判定（不产生转写 item） |
+| `[voice-input] ASR error: <message>` | ERROR | 引擎错误回调汇总（含上面的服务端 error） | 同上 |
 | `[voice-input:<backend>] WS message exceeds N bytes, dropped` | ERROR | 服务端单条消息超过 16MB，被整条丢弃且不破坏后续解析边界 | 正常防护；持续出现说明上游异常 |
 | `[voice-input:<backend>] WS send timeout after Nms (M bytes pending): peer is not reading` | ERROR | 上游不读 socket（卡死/限流/反代 hang），发送在预算内失败 | 查看下面的「上游不读 socket」一节 |
 | `[voice-input:<backend>] WS send stalled (M bytes pending)` | ERROR | `curl_ws_send` 未报错但零进展，同样按预算失败 | 同上 |
@@ -73,6 +75,13 @@ curl -V | grep -o 'Protocols:.*' | tr ' ' '\n' | grep -x 'ws\|wss'
 结果按语音段创建顺序保序上屏（`OrderedResultBuffer`），因此某段没有终态时，后续段必须等待。为避免「单段故障 = 整链路静默」，闸门提供**停滞放行**（默认 40s）：某段长时间无进展（或阻塞后续段超过 40s）时，该段以超时错误放行，后续段立即按序上屏。
 
 40s 的取值依据：非流式 LLM 后处理的最长等待为 30s（`LLMClient` 的 `CURLOPT_TIMEOUT`），加调度余量；ASR 侧 End 路径已有 8s 上界（见上节），因此 40s 不会误伤正常慢路径。
+
+### 最终结果为什么不再固定等 30s
+
+Realtime 后端此前在 End 后固定等待 30s 才收尾（即使服务端早已返回最终结果）。现在：
+
+- 终态判定按服务端确认的 `item_id` 追踪在途 item——若某次 commit 被服务端以 `error` 拒绝（例如空 buffer），不会造成计数漂移，最终 `completed` 到达即立即上屏（实测 161~192ms）；
+- End 等待的上界是「距最后一个服务端事件 5s」的空闲超时，并与 End 总预算（8s）、reaper join（15s）形成三重上界。
 
 ### 处置
 
