@@ -59,6 +59,8 @@ change_type: bugfix
 
 # Risks
 
-- 端到端用例依赖 libcurl 的 WS 支持（>= 7.86）与本地回环 socket。CI 使用发行版 libcurl 8.x；若未来某个发行版去掉 WS 支持，相关用例会失败而非静默跳过——这是有意的，避免缺陷悄悄回归。
+- **平台限制（已实测）**：Ubuntu 24.04 的 libcurl 8.5 与 Debian 12 的 7.88 在编译时未启用 WebSocket（`curl -V` 的 `Protocols` 无 `ws`/`wss`），这些平台上流式 WS 后端本身不可用。测试的协议级用例通过 `curl_version_info()` 探测 `ws` 协议：不具备时输出 `SKIP` 并跳过，避免把平台限制误报为回归。四个发行版（ubuntu-26.04 / debian-13 / fedora-44 / opensuse-tumbleweed）已验证具备 WS。
+- CI 中新增 `.github/actions/tests` 与新 job `tests`（容器 `ubuntu:26.04`），保证协议级用例在具备 WS 的环境中真实执行；`verify` job 因运行在无 WS 的 Ubuntu 24.04 上而不会执行分片端到端用例。
+- 端到端用例依赖本地回环 socket。CI 使用发行版 libcurl；若未来某个发行版去掉 WS 支持，相关用例会跳过而非静默失败——此时需根据平台策略决定是补充依赖还是接受降级。
 - Mistral 端到端未单独覆盖：其接收路径与 Realtime 同为 TEXT 且已改用同一实现，重复搭建一套假服务端不增加判别力。若后续 Mistral 事件解析逻辑变动，需在 `mistral_asr.cpp` 相关改动中补充用例。
 - 假服务端只验证服务端到客户端方向；客户端到服务端的发送路径由 issue #42 单独修复与测试。

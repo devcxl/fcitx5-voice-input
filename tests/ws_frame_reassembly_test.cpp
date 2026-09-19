@@ -45,6 +45,18 @@ bool Check(bool condition, const std::string& message) {
 
 std::string Repeat(char c, size_t n) { return std::string(n, c); }
 
+/// 本测试需要一个带 WebSocket 支持的 libcurl。Ubuntu 24.04 / Debian 12 的
+/// 系统 libcurl（8.5 / 7.88）编译时未启用 WS，这些平台上流式后端本身不可用，
+/// 因此跳过依赖真实传输的用例，而不是把它们误报为失败。
+bool LibcurlSupportsWebSocket() {
+    curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
+    if (!info || !info->protocols) return false;
+    for (const char* const* p = info->protocols; *p; ++p) {
+        if (std::strcmp(*p, "ws") == 0) return true;
+    }
+    return false;
+}
+
 // ── WsFrameReceiver 单元用例 ──────────────────────────────────
 
 bool TestWholeMessageInOneChunk() {
@@ -546,6 +558,13 @@ int main() {
     ok = TestOtherMessageKindIsIgnored() && ok;
     ok = TestFragmentedMessageAcrossFrames() && ok;
     ok = TestCloseResetsReceiver() && ok;
+
+    if (!LibcurlSupportsWebSocket()) {
+        std::cerr << "SKIP: libcurl has no WebSocket support on this platform "
+                     "(Ubuntu 24.04 / Debian 12 system libcurl); protocol-level "
+                     "cases are covered on distros with WS support.\n";
+        return ok ? 0 : 1;
+    }
     ok = TestReceiveWsMessageOverRealSocket() && ok;
     ok = TestSplitRealtimeDeltaIsReassembled() && ok;
     ok = TestSplitVolcengineFrameIsReassembled() && ok;

@@ -31,3 +31,15 @@ CI 中由 `ci.yml` 的 `verify` job 开启 `BUILD_TESTS` 并执行 `ctest`（多
 - 测试不依赖外部网络与真实 API Key：网络类用例在进程内起假服务端（回环端口），协议握手由测试自实现。
 - 并发/线程用例必须有界：等待使用固定上限轮询，会话统一 `Cancel()` + `JoinWithTimeout`。
 - 修复缺陷时遵循 RED → GREEN：先在未修复代码上运行同一用例确认失败，再实施修复并确认通过。
+
+## 平台限制（已实测）
+
+流式 WS 后端需要 libcurl 编译时启用 WebSocket。实测：
+
+| 发行版 | 系统 libcurl | `ws`/`wss` 协议 |
+|--------|-------------|----------------|
+| Ubuntu 24.04 | 8.5.0 | 不可用 |
+| Debian 12 | 7.88 | 不可用 |
+| Ubuntu 26.04 / Debian 13 / Fedora 44 / openSUSE Tumbleweed | 8.x 新版 | 可用 |
+
+`ws_frame_reassembly_test` 通过 `curl_version_info()` 探测 `ws` 协议：不具备时打印 `SKIP` 并跳过协议级用例（接收器状态机单测仍然执行），避免把平台限制误报为回归。CI 中新增 `tests` job（容器 `ubuntu-26.04`）保证协议级用例在具备 WS 的环境中真实执行。

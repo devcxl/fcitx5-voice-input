@@ -14,7 +14,8 @@ flowchart TD
     T1 --> T4["Task 4: Volcengine 接入"]
     T2 --> T5["Task 5: 分片端到端测试"]
     T4 --> T5
-    T5 --> T6["Task 6: 文档同步与门禁"]
+    T5 --> T6["Task 6: 平台限制与 CI 执行路径"]
+    T6 --> T7["Task 7: 文档同步与门禁"]
 ```
 
 ## Parallel Execution Strategy
@@ -69,10 +70,20 @@ flowchart TD
 - [x] 既有 6 个测试无回归：`ctest` 7/7 通过。
 - [x] 更新 `docs/03-architecture/system-design/ARCHITECTURE.md` 中流式 WS 后端与错误处理策略的当前态描述。
 
+## Task 6: 平台限制与 CI 执行路径
+- **Builds**: 协议级用例在具备 WS 的 libcurl 上真实执行，在无 WS 的平台上优雅跳过。
+- **Blocked By**: Task 5
+- **Parallel Group**: Group 4
+- **Verification**: `ctest`（两种平台）；CI `tests` job
+- [x] 测试用 `curl_version_info()` 探测 `ws` 协议，不具备时打印 `SKIP` 并跳过协议级用例（接收器单测仍执行，退出码 0）。
+- [x] 实测四个发行版（ubuntu-26.04 / debian-13 / fedora-44 / opensuse-tumbleweed）具备 WS；Ubuntu 24.04 / Debian 12 不具备。
+- [x] CI 新增 `tests` job（`ubuntu:26.04`，`BUILD_TESTS=ON` + `ctest`），使协议级用例在 CI 中真实执行；`verify` job 因运行在无 WS 的 Ubuntu 24.04 上不会执行它们。
+
 # Verification
 
 - [x] `cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON && cmake --build build -j$(nproc)`：构建通过。
 - [x] `ctest --test-dir build --output-on-failure`：7/7 通过（含新增 `ws_frame_reassembly_test`）。
 - [x] 修复前对照（RED）：`git stash` 三个后端改动后重建测试，`realtime split-delta: max partial len=0`、`volcengine split-binary: max partial len=0`；恢复后为 `24000`/`24000`。
+- [x] 平台对照：ubuntu-26.04 容器内实测 7/7 通过（含协议级分片用例）；Ubuntu 24.04 的系统 libcurl 无 `ws` 协议 → 测试打印 `SKIP` 并仅跑接收器单测，退出码 0。
 - [x] `cabbage validate ws-frame-reassembly` 与 `cabbage gate ws-frame-reassembly merge` 通过。
 - [x] 回滚就绪性：本变更无持久化状态、无配置项、无外部契约变化，revert 即为回滚。

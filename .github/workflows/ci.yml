@@ -115,6 +115,45 @@ jobs:
           onnx_strategy: download
           run_verify: "true"
 
+  # 单元/集成测试：Ubuntu 24.04 的系统 libcurl 8.5 未编译 WebSocket 支持
+  # （`curl -V` 的 Protocols 无 ws），流式后端在该平台不可用；因此测试跑在
+  # 具备 WS 的发行版（ubuntu-26.04）上，避免协议级用例被永久跳过。
+  # 只构建与测试，不打包（打包由上面的 build 矩阵负责）。
+  tests:
+    name: unit & integration tests
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Install git (container bootstrap)
+        shell: bash
+        run: apt-get update -qq && apt-get install -y -qq git
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Bootstrap ubuntu-26.04
+        shell: bash
+        env:
+          ONNX_STRATEGY: system
+        run: bash "${GITHUB_WORKSPACE}/.github/actions/build/distro/ubuntu-26.04.sh"
+
+      - name: Configure
+        shell: bash
+        run: >-
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_PREFIX=/usr
+          -DBUILD_TESTS=ON
+
+      - name: Compile
+        shell: bash
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run tests
+        shell: bash
+        run: ctest --test-dir build --output-on-failure
+
   # 回归防护：PulseAudio 是必需基线，PipeWire 为可选回退，
   # 确保缺失 PipeWire 时仍能构建，且产物不引用 PipeWire 符号。
   build-no-pipewire:
