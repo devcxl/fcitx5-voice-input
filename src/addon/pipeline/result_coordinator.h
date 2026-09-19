@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -23,6 +24,11 @@ class ResultCoordinator final
 public:
     using ResultCallback = std::function<void(const std::string& text)>;
 
+    /// maxStall：保序闸门中单个语音段的最大停滞时长（见 OrderedResultBuffer）。
+    explicit ResultCoordinator(
+        std::chrono::milliseconds maxStall = OrderedResultBuffer::kDefaultMaxStall)
+        : orderedResults_(maxStall) {}
+
     struct SessionMetadata {
         uint64_t generation = 0;
         uint64_t utteranceId = 0;
@@ -38,6 +44,9 @@ public:
     void SetLLMStream(bool stream);
 
     void RegisterSession(uint64_t sessionId, SessionMetadata metadata);
+    /// 放行停滞的队首语音段（下推一条超时错误结果）。由 Pipeline 的 ASR 分发循环
+    /// 周期性调用：若被阻塞段此后不再有新回调，就没有提交动作能触发检查。
+    void ExpireStale();
     void SkipSession(uint64_t sessionId);
     void SkipUtterance(uint64_t utteranceId);
     void SkipAllSessions();

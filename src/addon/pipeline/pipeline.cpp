@@ -254,10 +254,18 @@ bool Pipeline::StartCapture() {
 }
 
 void Pipeline::AsrDispatcherLoop() {
+    auto lastStaleCheck = std::chrono::steady_clock::now();
     while (running_) {
         SpeechEvent ev;
         if (!speechEventQueue_.TryPop(ev)) {
             std::this_thread::sleep_for(5ms);
+            // 保序闸门兜底：被阻塞的语音段此后可能不再有任何回调，因此需要定时
+            // 检查停滞并放行，避免单段故障把后续所有结果永久扣住（issue #43）。
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastStaleCheck >= 500ms) {
+                lastStaleCheck = now;
+                results_->ExpireStale();
+            }
             continue;
         }
 

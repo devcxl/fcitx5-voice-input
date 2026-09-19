@@ -400,6 +400,9 @@ class AsrEngine {
 
 // OrderedResultBuffer — 并发会话结果按语音段创建顺序重排（ResultCoordinator 内部）
 // 以 utteranceId 为序键，序号不连续/乱序到达时先暂存后交付
+// 停滞放行：某段超过 maxStall（默认 40s）无新进展/阻塞后续段时，清掉该段缓存并
+// 下推一条 isError 超时结果，随后推进闸门；Pipeline 分发循环每 500ms 检查一次
+// （被阻塞段可能不再有任何回调，需要主动检查），避免单段故障演变为整链路静默
 ```
 
 **为什么 ThreadSafeQueue 而不是 ring buffer 贯穿全局？**
@@ -498,6 +501,7 @@ void VoiceInputEngine::deactivate(...) {
 | 发送超时 / 上游卡死 | 日志打印待发字节数与预算；调用方走重连（仅非 End 路径）或兜底终态 |
 | 会话 worker 未按时退出 | SessionReaper `JoinWithTimeout` 超时后丢弃，不阻塞清理 |
 | 结果乱序/迟到（并发会话） | OrderedResultBuffer 按 utteranceId 保序，旧 generation 结果丢弃 |
+| 某段 ASR 永久无终态（会话卡死） | 保序闸门停滞放行：超过 40s 时该段以超时错误上屏（`语音识别失败` 提示），后续段结果照常交付，不再被永久扣住 |
 | OpenAI API 返回空结果 | 丢弃不上屏 |
 
 ---
@@ -651,7 +655,7 @@ A: 当前阶段以中文语音输入为主，云端 Whisper 在中文准确率�
 A: 是的。`FCITX_CONFIGURATION` 宏已能满足当前所有配置需求（ASR 后端 + OpenAI/Mistral/Volcengine 子配置 + VAD 参数 + LLM 后处理）。将来场景系统需要复杂结构时可能重新引入 JSON 配置。
 
 ### Q: 会话结果会乱序吗？
-A: 不会。v4 的 `ResultCoordinator + OrderedResultBuffer` 以 utteranceId 为序键重排并发会话的最终结果，并按 generation 过滤过期激活；连续语音段的最终结果永远按说话顺序上屏。
+A: 不会。v4 的 `ResultCoordinator + OrderedResultBuffer` 以 utteranceId 为序键重排并发会话的最终结果，并按 generation 过滤过期激活；连续语音段的最终结果永远按说话顺序上屏。若某段会话永久无终态，闸门会在其停滞超过 40s 后以超时错误放行该段并推进，后续段仍按序上屏（不会出现「后面全部消失」）。
 
 ---
 
