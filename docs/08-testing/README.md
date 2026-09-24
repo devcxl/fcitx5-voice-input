@@ -28,6 +28,7 @@ CI 中由 `ci.yml` 的 `verify` job 开启 `BUILD_TESTS` 并执行 `ctest`（多
 | `realtime_commit_tracking_test` | Realtime 终态判定：按 `item_id` 追踪在途 item、`error` 不造成计数漂移、缺失 ack 时仍能识别最终、`failed` 精确移除、End 空闲超时常量关系 | 单元 |
 | `realtime_commit_e2e_test` | 复刻 issue #44 场景：周期 commit 被 `error` 拒绝 + End 后补发最终 `completed` → final 在 3s 内到达且文本正确 | 集成（真实会话 + 假 WS 服务端） |
 | `ordered_buffer_stall_test` | 保序闸门停滞放行：卡死段在阈值内不误伤、超阈值后以超时错误放行、后续段按序交付、迟到结果被丢弃、显式 `Skip` 语义不变；`ResultCoordinator` 端到端交付 | 单元 + 并发 |
+| `chat_asr_request_test` | chat 模式请求体构造：language 按配置发送、`enable_itn` 可关、空 `asr_options` 省略、model/messages/data URL 形状 | 单元 |
 | `ws_send_budget_test` | WS 发送预算：单次发送到期即失败（不无限重试）、取消优先；真实 Realtime/Mistral/Volcengine 会话在「上游不读 socket」下 `End()` 有界收敛、产出终态、`JoinWithTimeout` 不超时 | 单元 + 集成（本地假 WS 服务端） |
 
 ## 约定
