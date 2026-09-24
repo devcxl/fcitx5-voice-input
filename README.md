@@ -83,7 +83,8 @@ Select your backend from the `ActiveBackend` dropdown, then click the gear butto
 | `ApiKey` | API Key | **(required)** |
 | `Model` | Model name | `whisper-1` |
 | `Language` | Output language | `auto` (English/中文) |
-| `ApiMode` | API mode: `whisper` (standard Whisper API), `chat` (DashScope Chat Completions) or `realtime` (GPT Realtime streaming transcription) | `whisper` |
+| `ApiMode` | API mode: `whisper` (standard Whisper API), `chat` (OpenAI-compatible Chat Completions audio, e.g. DashScope/Xiaomi MiMo) or `realtime` (GPT Realtime streaming transcription) | `whisper` |
+| `EnableItn` | Send DashScope-specific `asr_options.enable_itn`; turn off for providers whose `asr_options` only accepts `language` (e.g. Xiaomi MiMo) | `true` |
 | `CommitIntervalMs` | Periodic commit interval (ms) in realtime mode; keeps emitting partials for long speech with no pauses | `5000` |
 | `LLMEnabled` | LLM post-processing | `false` |
 | `LLMModel` | Post-processing LLM model | (empty) |
@@ -96,6 +97,7 @@ Set `ActiveBackend=openai`, click the gear button, and fill in your API Key. Com
 - [OpenAI](https://platform.openai.com/) — `https://api.openai.com/v1`
 - [Groq](https://console.groq.com/) — `https://api.groq.com/openai/v1`
 - [SiliconFlow](https://cloud.siliconflow.com) — `https://api.siliconflow.com/v1`
+- [Xiaomi MiMo](https://mimo.mi.com/docs/zh-CN/api/audio/Speech-Recognition) — `https://api.xiaomimimo.com/v1`
 - [Alibaba Cloud DashScope](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference) — `https://dashscope.aliyuncs.com/compatible-mode/v1`
 
   **Note:** DashScope's `qwen3-asr-flash` model uses Chat Completions API instead of the standard Whisper API. Set `ApiMode=chat` when using this provider.
@@ -105,6 +107,16 @@ Set `ActiveBackend=openai`, click the gear button, and fill in your API Key. Com
   Model=qwen3-asr-flash
   ApiMode=chat
   Language=zh
+  ```
+
+  **Xiaomi MiMo ASR (chat mode):** `mimo-v2.5-asr` is a batch endpoint exposed through Chat Completions: the addon uploads one WAV segment per utterance and gets the transcript back in a single response (no realtime streaming). MiMo's `asr_options` documents only `language`, so set `EnableItn=false`.
+  ```
+  BaseUrl=https://api.xiaomimimo.com/v1
+  ApiKey=your_mimo_api_key
+  Model=mimo-v2.5-asr
+  ApiMode=chat
+  Language=zh
+  EnableItn=false
   ```
 
   **GPT Realtime streaming (optional):** Set `ApiMode=realtime` to transcribe incrementally (partials update the preedit live, final commits on speech end) via the OpenAI Realtime transcription session. With an OpenAI account, use `gpt-live-transcribe` (recommended, true continuous deltas) or `gpt-realtime-whisper` (compatible alternative).

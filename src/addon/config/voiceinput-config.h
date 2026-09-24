@@ -99,6 +99,9 @@ FCITX_CONFIGURATION(OpenAIAsrConfig,
         apiMode{
             this, "ApiMode", _("API 模式"), "whisper"};
 
+    Option<bool> enableItn{
+        this, "EnableItn", _("ITN 逆文本标准化"), true};
+
     Option<int, IntConstrain> commitIntervalMs{
         this, "CommitIntervalMs", _("实时提交间隔 (毫秒)"), 5000,
         IntConstrain(1000, 30000)};
