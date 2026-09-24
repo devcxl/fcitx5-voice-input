@@ -425,6 +425,7 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         asrConfig.apiKey = *openaiConfig_.apiKey;
         asrConfig.modelName = *openaiConfig_.model;
         asrConfig.apiMode = *openaiConfig_.apiMode;
+        asrConfig.enableItn = *openaiConfig_.enableItn;
         asrConfig.commitIntervalMs = *openaiConfig_.commitIntervalMs;
         auto language = *openaiConfig_.language;
         if (language == "auto") {
@@ -434,7 +435,8 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
         FCITX_INFO() << "[voice-input] OpenAI config: endpoint="
                      << asrConfig.apiEndpoint
                      << " model=" << asrConfig.modelName
-                     << " apiMode=" << asrConfig.apiMode;
+                     << " apiMode=" << asrConfig.apiMode
+                     << " enableItn=" << asrConfig.enableItn;
         if (asrConfig.apiMode == "realtime") {
             asr = std::make_unique<RealtimeAsrEngine>();
         } else {

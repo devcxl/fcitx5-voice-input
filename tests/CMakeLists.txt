@@ -191,3 +191,19 @@ target_link_libraries(realtime_commit_e2e_test PRIVATE
 
 add_test(NAME realtime_commit_e2e_test COMMAND realtime_commit_e2e_test)
 set_tests_properties(realtime_commit_e2e_test PROPERTIES TIMEOUT 90)
+
+add_executable(chat_asr_request_test
+    chat_asr_request_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/chat_asr_request.cpp
+)
+
+target_include_directories(chat_asr_request_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${JSONCPP_INCLUDE_DIRS}
+)
+
+target_link_libraries(chat_asr_request_test PRIVATE
+    ${JSONCPP_LIBRARIES}
+)
+
+add_test(NAME chat_asr_request_test COMMAND chat_asr_request_test)

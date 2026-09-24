@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- OpenAI 兼容 `chat` 模式支持小米 MiMo ASR（`mimo-v2.5-asr`）：新增 `EnableItn`
+  开关（默认开；MiMo 的 `asr_options` 仅定义 `language`，建议关闭）
+
+### Fixed
+- 修复 `chat` 模式 `asr_options.language` 被整体覆盖、实际从未发送的问题；
+  请求体构造抽至 `asr/utils/chat_asr_request` 并加单元测试
+
 ## [0.4.1] - 2026-08-12
 
 ### Changed

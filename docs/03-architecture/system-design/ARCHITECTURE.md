@@ -185,7 +185,8 @@ src/addon/config/
 | `ApiKey` | String | `""` | API Key |
 | `Model` | String | `whisper-1` | 模型名 |
 | `Language` | Enum | `auto` | 输出语言（auto / en / zh） |
-| `ApiMode` | Enum | `whisper` | whisper（批量）/ chat / realtime（流式） |
+| `ApiMode` | Enum | `whisper` | whisper（批量）/ chat（OpenAI 兼容 Chat Completions 音频）/ realtime（流式） |
+| `EnableItn` | Bool | `true` | chat 模式是否发送 DashScope 扩展字段 `asr_options.enable_itn`；仅接受 `language` 的端点（如小米 MiMo）应关闭 |
 | `CommitIntervalMs` | Int 1000-30000 | `5000` | realtime 周期 commit 兜底间隔 |
 | `LLMEnabled` | Bool | `false` | 启用 LLM 后处理 |
 | `LLMModel` | String | `""` | 后处理 LLM 模型 |
@@ -366,7 +367,7 @@ class AsrEngine {
 
 | 引擎 | 后端 | 协议 | 特点 |
 |------|------|------|------|
-| `OpenaiAsrEngine` | openai | OpenAI 兼容 API | `apiMode=whisper` 批量 multipart WAV；`chat` Chat Completions；`realtime` GPT Realtime WS 流式（16k→24k 线性上采样、周期 commit 兜底） |
+| `OpenaiAsrEngine` | openai | OpenAI 兼容 API | `apiMode=whisper` 批量 multipart WAV；`chat` Chat Completions（DashScope qwen3-asr-flash、小米 MiMo mimo-v2.5-asr 等，请求体由 `asr/utils/chat_asr_request.h` 构造）；`realtime` GPT Realtime WS 流式（16k→24k 线性上采样、周期 commit 兜底） |
 | `VolcengineAsrEngine` | volcengine | 火山豆包 WS | 200ms chunk 实时发送，服务端 partial/final 回调；ITN/标点/DDC/二次识别选项 |
 | `MistralAsrEngine` | mistral | Mistral Realtime WS | 16kHz PCM 直推（无需重采样）；`transcription.text.delta` 增量 preedit；周期 flush + 断线重连（保持同一 sessionId）；`TargetStreamingDelayMs` 权衡延迟/准确性 |
 
