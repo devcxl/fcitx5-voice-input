@@ -265,11 +265,20 @@ MiMo 家族中与「语音」相关的有三个不同层次，必须区分：
 - **`enable_itn` 改为可配置**：`OpenAIAsrConfig.EnableItn`（默认 `true`，保持 DashScope 行为）；MiMo 用户设 `false`。
 - 用法（无需新后端）：`ActiveBackend=openai`、`BaseUrl=https://api.xiaomimimo.com/v1`、`Model=mimo-v2.5-asr`、`ApiMode=chat`、`Language=zh`、`EnableItn=false`。
 
-验证进展（2026-10-01，实网探针，复用 `BuildChatAsrRequestBody` + Bearer + 响应解析路径）：
-1. ~~`Authorization: Bearer` 实网可用性~~：**已证实**。按量付费 Key 实测返回 HTTP 402 `insufficient_balance` 而非 401，证明 Bearer 鉴权通过（账户无余额，未产生真实转写）。
-2. ~~MiMo 对 `asr_options.enable_itn` 未知字段的容忍度~~：**由官方文档定论，无需实测**。ASR 页 `asr_options` 仅定义 `language`，平台声明未定义参数会被过滤并可能报错；接入 MiMo 一律关闭 `EnableItn`。
-3. 待补测（需账户余额）：真实转写文本、49s 音频耗时（验证 30s `CURLOPT_TIMEOUT` 是否足够；当前实现未放宽超时）。
-4. SSE 增量（`stream=true`）是否逐 token 到达——当前实现只用 `stream=false`，不影响接入。
+实网验证（2026-10-01，按量付费 Key，探针复用 `BuildChatAsrRequestBody` + Bearer + `choices[0].message.content` 解析路径）：
+
+| # | 样例 | asr_options | 结果 | 耗时 |
+|---|------|-------------|------|------|
+| V1 | 8s 普通话 | `{"language":"zh","enable_itn":true}` | HTTP 200，转写正确 | 740ms |
+| V2 | 8s 普通话 | `{"language":"zh"}` | HTTP 200，转写正确 | 842ms |
+| V3 | 8s 普通话 | 省略 | HTTP 200，转写正确 | 721ms |
+| V4 | 49.2s 普通话 | `{"language":"zh"}` | HTTP 200，全文转写正确 | 2390ms |
+
+- **鉴权**：`Authorization: Bearer` 验证通过（充值前 402、充值后 200，均非 401）。
+- **`enable_itn` 未定义字段**：V1 返回 200，说明当前服务端会过滤未定义字段；但官方 ASR 文档仅定义 `language`，平台声明未定义参数「可能返回请求异常」，因此默认建议仍为 `EnableItn=false`，不依赖未定义行为。
+- **30s 超时**：49.2s 音频 2.39s 完成，远低于 `CURLOPT_TIMEOUT=30`；**无需放宽超时**。
+- **转写质量**：与 Wikibooks《Chinese (Classical Mandarin)》原文逐句一致（繁体原文输出为简体，如「我自己來了」→「我自己来了」、「他常常誇自己」→「他常常夸自己」）。
+- SSE 增量（`stream=true`）未验证——当前实现只用 `stream=false`，不影响接入。
 
 决策变更触发条件：若 MiMo 推出 WS 实时音频接口，或 chat 路径出现多家供应商参数分歧，再评估方案 B（独立 `mimo` 后端）。
 

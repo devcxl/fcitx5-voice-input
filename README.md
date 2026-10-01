@@ -84,7 +84,7 @@ Select your backend from the `ActiveBackend` dropdown, then click the gear butto
 | `Model` | Model name | `whisper-1` |
 | `Language` | Output language | `auto` (English/中文) |
 | `ApiMode` | API mode: `whisper` (standard Whisper API), `chat` (OpenAI-compatible Chat Completions audio, e.g. DashScope/Xiaomi MiMo) or `realtime` (GPT Realtime streaming transcription) | `whisper` |
-| `EnableItn` | Send DashScope-specific `asr_options.enable_itn`; turn off for providers whose `asr_options` only accepts `language` (e.g. Xiaomi MiMo) | `true` |
+| `EnableItn` | Send DashScope-specific `asr_options.enable_itn`; recommended off for Xiaomi MiMo (its API only defines `language`; `true` was also accepted in testing, but relies on undocumented behavior) | `true` |
 | `CommitIntervalMs` | Periodic commit interval (ms) in realtime mode; keeps emitting partials for long speech with no pauses | `5000` |
 | `LLMEnabled` | LLM post-processing | `false` |
 | `LLMModel` | Post-processing LLM model | (empty) |
@@ -109,7 +109,7 @@ Set `ActiveBackend=openai`, click the gear button, and fill in your API Key. Com
   Language=zh
   ```
 
-  **Xiaomi MiMo ASR (chat mode):** `mimo-v2.5-asr` is a batch endpoint exposed through Chat Completions: the addon uploads one WAV segment per utterance and gets the transcript back in a single response (no realtime streaming). MiMo's `asr_options` documents only `language`, so set `EnableItn=false`.
+  **Xiaomi MiMo ASR (chat mode):** `mimo-v2.5-asr` is a batch endpoint exposed through Chat Completions: the addon uploads one WAV segment per utterance and gets the transcript back in a single response (no realtime streaming). MiMo's `asr_options` documents only `language`, so set `EnableItn=false` (`true` was also accepted in testing, but relies on undocumented behavior).
   ```
   BaseUrl=https://api.xiaomimimo.com/v1
   ApiKey=your_mimo_api_key

@@ -48,4 +48,4 @@ flowchart TD
 
 - [x] `cmake -B build -DBUILD_TESTS=ON && cmake --build build -j$(nproc) && ctest --test-dir build --output-on-failure`（12/12 通过）
 - [x] `PYTHONPATH=.cabbage/tooling python3 -m cabbage_cli ci --base origin/main`（本地 Cabbage 校验）
-- [x] 实网探针：Bearer 鉴权与请求体形态已证实（402 `insufficient_balance`，非 401）；真实转写待充值后补测，见调研 §9
+- [x] 实网验证完成（2026-10-01）：三组 `asr_options` 组合与 49.2s 音频全部 HTTP 200、转写与原文一致、耗时 ≤2.39s；见调研 §9
