@@ -13,6 +13,7 @@
 #include <json/json.h>
 
 #include "utils/base64.h"
+#include "utils/chat_asr_request.h"
 
 using namespace std::chrono_literals;
 
@@ -117,6 +118,7 @@ OpenaiAsrSession::OpenaiAsrSession(const AsrEngine::Config& config,
     modelName_ = config.modelName.empty() ? "whisper-1" : config.modelName;
     language_ = config.language;
     apiMode_ = config.apiMode.empty() ? "whisper" : config.apiMode;
+    enableItn_ = config.enableItn;
 
     FCITX_DEBUG() << "[voice-input:openai] Init session=" << sessionId
                  << " endpoint=" << apiEndpoint_
@@ -204,31 +206,13 @@ void OpenaiAsrSession::TranscribeWorker(std::vector<float> pcm) {
     std::string contentType;
 
     if (isChatMode) {
-        // ── Bailian/Chat 模式 ──
+        // ── Chat Completions 模式（DashScope / 小米 MiMo 等）──
         // WAV → base64 data URI
-        std::string b64 = Base64Encode(wavData.data(), wavData.size());
-        std::string dataUri = "data:audio/wav;base64," + b64;
+        std::string dataUri = "data:audio/wav;base64," +
+                              Base64Encode(wavData.data(), wavData.size());
 
-        // Build JSON payload
-        Json::Value msgContent;
-        msgContent["type"] = "input_audio";
-        msgContent["input_audio"]["data"] = dataUri;
-
-        Json::Value userMsg;
-        userMsg["role"] = "user";
-        userMsg["content"].append(msgContent);
-
-        Json::Value body;
-        body["model"] = modelName_;
-        body["messages"].append(userMsg);
-        body["stream"] = false;
-
-        Json::Value asrOpts;
-        asrOpts["enable_itn"] = true;
-        if (!language_.empty() && language_ != "auto") {
-            body["asr_options"]["language"] = language_;
-        }
-        body["asr_options"] = asrOpts;
+        Json::Value body = BuildChatAsrRequestBody(
+            modelName_, language_, enableItn_, dataUri);
 
         Json::StreamWriterBuilder builder;
         builder["indentation"] = "";

@@ -37,6 +37,9 @@ public:
         std::string language = "zh";
         std::string apiMode = "whisper";     // "whisper" or "chat" or "realtime"
 
+        // Chat Completions 模式：DashScope 扩展字段 asr_options.enable_itn
+        bool enableItn = true;
+
         // OpenAI Realtime (streaming): periodic commit interval for long speech
         int commitIntervalMs = 5000;
 

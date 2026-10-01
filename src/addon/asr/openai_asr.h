@@ -32,6 +32,7 @@ private:
     std::string modelName_;
     std::string language_;
     std::string apiMode_;
+    bool enableItn_{true};
     std::vector<float> pcmBuffer_;
     std::mutex bufferMutex_;
     std::unique_ptr<std::thread> workerThread_;

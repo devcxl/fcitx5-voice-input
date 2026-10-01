@@ -1,0 +1,14 @@
+id: mimo-asr-chat-mode
+type: bugfix
+status: active
+impact:
+  product: false
+  architecture: true
+  api: false
+  database: false
+  security: false
+  testing: true
+  deployment: false
+  operations: false
+  data: false
+  performance: false
