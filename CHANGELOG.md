@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-10-01
 
 ### Added
 - OpenAI 兼容 `chat` 模式支持小米 MiMo ASR（`mimo-v2.5-asr`）：新增 `EnableItn`
@@ -9,6 +9,18 @@
 ### Fixed
 - 修复 `chat` 模式 `asr_options.language` 被整体覆盖、实际从未发送的问题；
   请求体构造抽至 `asr/utils/chat_asr_request` 并加单元测试
+- 修复 Realtime 终态判定：按 `item_id` 追踪在途 item，`error` 不再导致 30s
+  兜底等待（#44）
+- 修复保序闸门单段卡死阻塞后续所有语音段：新增停滞放行（#43）
+- 修复 WS 发送与 End 路径无界阻塞：在发送预算与 End 预算内收敛，上游不读
+  socket 时不再拖住会话回收（#42）
+- 修复跨 TCP 分片的 WS 事件消息丢弃已收前缀（#41）
+
+### Changed
+- CI 新增 `tests` job：在具备 WebSocket 的容器中真实执行协议级用例；
+  `BUILD_TESTS` 使用说明同步
+- 文档：入门/安装/配置/排障指南（#40）、产品 PRD 现状基线、测试现状、流式
+  后端运行排查；小米 MiMo 配置融合进 Chat 模式文档（#50）
 
 ## [0.4.1] - 2026-08-12
 
