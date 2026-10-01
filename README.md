@@ -100,17 +100,17 @@ Set `ActiveBackend=openai`, click the gear button, and fill in your API Key. Com
 - [Xiaomi MiMo](https://mimo.mi.com/docs/zh-CN/api/audio/Speech-Recognition) — `https://api.xiaomimimo.com/v1`
 - [Alibaba Cloud DashScope](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference) — `https://dashscope.aliyuncs.com/compatible-mode/v1`
 
-  **Note:** DashScope's `qwen3-asr-flash` model uses Chat Completions API instead of the standard Whisper API. Set `ApiMode=chat` when using this provider.
+  **Chat mode (OpenAI-compatible Chat Completions):** DashScope's `qwen3-asr-flash` and Xiaomi MiMo's `mimo-v2.5-asr` are batch endpoints that use the Chat Completions API instead of the standard Whisper API: the addon uploads one WAV segment per utterance and gets the transcript back in a single response (no realtime streaming). Set `ApiMode=chat` for both; for MiMo also set `EnableItn=false` (its `asr_options` only defines `language`; `true` was also accepted in testing, but relies on undocumented behavior).
   ```
+  # DashScope
   BaseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1
   ApiKey=your_dashscope_api_key
   Model=qwen3-asr-flash
   ApiMode=chat
   Language=zh
   ```
-
-  **Xiaomi MiMo ASR (chat mode):** `mimo-v2.5-asr` is a batch endpoint exposed through Chat Completions: the addon uploads one WAV segment per utterance and gets the transcript back in a single response (no realtime streaming). MiMo's `asr_options` documents only `language`, so set `EnableItn=false` (`true` was also accepted in testing, but relies on undocumented behavior).
   ```
+  # Xiaomi MiMo
   BaseUrl=https://api.xiaomimimo.com/v1
   ApiKey=your_mimo_api_key
   Model=mimo-v2.5-asr

@@ -23,7 +23,7 @@ features:
   - title: 自动分段与无感录音
     details: 切换输入法即自动捕获音频，Silero ONNX VAD 精准识别说话起止，静音后自动提交文本上屏，无需手动长按按键。
   - title: 丰富 ASR 后端支持
-    details: 支持 OpenAI 兼容 API、阿里云百炼 DashScope、火山引擎豆包流式 ASR 以及 Mistral Realtime 等多种语音转写服务。
+    details: 支持 OpenAI 兼容 API（含阿里云百炼 DashScope、小米 MiMo）、火山引擎豆包流式 ASR 以及 Mistral Realtime 等多种语音转写服务。
   - title: 实时增量与智能后处理
     details: 支持实时流式增量预览，并可选通过 LLM 大模型进行错别字修正、排版规范化与标点润色。
   - title: 极致轻量与高韧性

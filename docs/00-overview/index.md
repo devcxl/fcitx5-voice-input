@@ -17,7 +17,7 @@
 
 - **自动人声检测 (VAD)**：集成轻量级 Silero ONNX VAD 模型，自动判定说话起止并分段，完全告别手动按键长按。
 - **多 ASR 后端支持**：
-  - **OpenAI 兼容后端**：支持 OpenAI Whisper 官方 API、Groq、硅基流动（SiliconFlow）以及阿里云百炼 DashScope（`qwen3-asr-flash`）。
+  - **OpenAI 兼容后端**：支持 OpenAI Whisper 官方 API、Groq、硅基流动（SiliconFlow）、阿里云百炼 DashScope（`qwen3-asr-flash`）以及小米 MiMo（`mimo-v2.5-asr`，Chat 模式）。
   - **火山引擎豆包 ASR**：低延迟 WebSocket 流式识别，支持实时增量上屏、逆文本标准化 (ITN) 与二次语义修正。
   - **Mistral Realtime**：原生 16kHz PCM WebSocket 流式转写。
   - **OpenAI Realtime**：24kHz 双向流式增量转录。

@@ -55,9 +55,16 @@
 
 ### 常见错误原因与解决方案
 
-#### 1. 阿里云百炼 (DashScope) 报错 400
-- **原因**：DashScope 的 `qwen3-asr-flash` 模型使用 Chat Completions 协议，而非 OpenAI 兼容的标准 Whisper 文件上传协议。
-- **解决办法**：在 OpenAI 后端子配置中，务必将 `ApiMode` 设为 `chat`。
+#### 1. Chat 模式（OpenAI 兼容）相关报错
+- **阿里云百炼 (DashScope) 返回 400**
+  - **原因**：DashScope 的 `qwen3-asr-flash` 模型使用 Chat Completions 协议，而非 OpenAI 兼容的标准 Whisper 文件上传协议。
+  - **解决办法**：在 OpenAI 后端子配置中，务必将 `ApiMode` 设为 `chat`。
+- **小米 MiMo 返回 402（Insufficient account balance）**
+  - **原因**：MiMo 按量付费账户余额不足（鉴权已通过，计费检查失败）。
+  - **解决办法**：在 MiMo 控制台充值后重试。
+- **小米 MiMo 返回 400（格式错误）**
+  - **原因**：MiMo 的 `asr_options` 仅定义 `language`，官方声明未定义参数可能被过滤或触发异常。
+  - **解决办法**：将 `EnableItn` 设为 `false`，并确认 `BaseUrl=https://api.xiaomimimo.com/v1`、`Model=mimo-v2.5-asr`、`ApiMode=chat`。
 
 #### 2. OpenAI Realtime 模式报错
 - **原因**：OpenAI 官方 Realtime 流式转录接口（如 `gpt-live-transcribe`）仅对付费 Tier 账号开放，免费层（Free Tier）账号调用会返回权限错误。
