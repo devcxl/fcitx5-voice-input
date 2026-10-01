@@ -83,7 +83,8 @@ makepkg -si
 | `ApiKey` | API Key | **（必填）** |
 | `Model` | 模型名 | `whisper-1` |
 | `Language` | 输出语言 | `auto`（English/中文） |
-| `ApiMode` | API 模式：`whisper`（标准 Whisper API）、`chat`（百炼 Chat Completions）或 `realtime`（GPT Realtime 流式实时转录） | `whisper` |
+| `ApiMode` | API 模式：`whisper`（标准 Whisper API）、`chat`（OpenAI 兼容 Chat Completions，如百炼/小米 MiMo）或 `realtime`（GPT Realtime 流式实时转录） | `whisper` |
+| `EnableItn` | chat 模式下是否发送 DashScope 扩展字段 `asr_options.enable_itn`；小米 MiMo 建议关闭（其接口仅定义 `language`） | `true` |
 | `CommitIntervalMs` | Realtime 模式下的周期性提交间隔 (ms)，长句无停顿也能持续出增量 | `5000` |
 | `LLMEnabled` | LLM 后处理 | `false` |
 | `LLMModel` | 后处理 LLM 模型 | （空） |
@@ -96,17 +97,28 @@ makepkg -si
 - [OpenAI](https://platform.openai.com/) — `https://api.openai.com/v1`
 - [Groq](https://console.groq.com/) — `https://api.groq.com/openai/v1`
 - [硅基流动 (SiliconFlow)](https://siliconflow.cn/) — `https://api.siliconflow.cn/v1`
+- [小米 MiMo](https://mimo.mi.com/docs/zh-CN/api/audio/Speech-Recognition) — `https://api.xiaomimimo.com/v1`
 - [阿里云百炼 (DashScope)](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference) — `https://dashscope.aliyuncs.com/compatible-mode/v1`
 
-  **注意：** 阿里云百炼使用的 `qwen3-asr-flash` 模型不走标准的 Whisper API，需要通过 Chat Completions 接口调用。使用时需将 `ApiMode` 设为 `chat`，并补充对应的 DashScope API Key。配置示例：
+  **Chat 模式（OpenAI 兼容 Chat Completions）：** 百炼 `qwen3-asr-flash` 与小米 MiMo `mimo-v2.5-asr` 不走标准 Whisper API，需将 `ApiMode` 设为 `chat`；两者均为整段音频提交的分段转录，不做实时流式识别。MiMo 的 `asr_options` 仅定义 `language`，建议关闭 `EnableItn`。
   ```
+  # 阿里云百炼
   BaseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1
   ApiKey=your_dashscope_api_key
   Model=qwen3-asr-flash
   ApiMode=chat
   Language=zh
   ```
-  百炼 ASR 的具体接口文档请参考[阿里云官方文档](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference)。
+  ```
+  # 小米 MiMo
+  BaseUrl=https://api.xiaomimimo.com/v1
+  ApiKey=your_mimo_api_key
+  Model=mimo-v2.5-asr
+  ApiMode=chat
+  Language=zh
+  EnableItn=false
+  ```
+  接口文档：[阿里云百炼](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference)、[小米 MiMo](https://mimo.mi.com/docs/zh-CN/api/audio/Speech-Recognition)。
 
   **Realtime 流式实时转录（可选）：** 将 `ApiMode` 设为 `realtime`，即可通过 OpenAI Realtime 转录会话实现**边说边出**增量识别结果（实时刷入候选框 preedit，说话结束提交上屏）。使用 OpenAI 官方账号时，模型推荐 `gpt-live-transcribe`（官方推荐，真正连续增量）或 `gpt-realtime-whisper`（兼容备选）。配置示例：
   ```
