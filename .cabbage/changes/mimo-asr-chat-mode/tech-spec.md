@@ -94,7 +94,7 @@ flowchart LR
 
 | Failure mode | Detection | Handling | Recovery |
 |---|---|---|---|
-| MiMo 拒绝 `enable_itn` | HTTP 400 与 `error.message` | 结果为空、不上屏 | 用户关闭 `EnableItn` 后重试 |
+| MiMo 过滤/拒绝未定义参数 | 官方文档策略；HTTP 400 与 `error.message` | 结果为空、不上屏 | 接入 MiMo 时即关闭 `EnableItn`（文档化路径），不依赖服务端容忍度 |
 | 鉴权失败 | HTTP 401 | 空结果与错误回调 | 检查 API Key |
 | 30s 超时 | `CURLE_OPERATION_TIMEDOUT` | 会话以空结果结束 | 使用较短语音段，后续按需评估放宽超时 |
 
@@ -109,5 +109,5 @@ README 配置。
 
 # Open Questions
 
-- 待实网确认：MiMo 对 `enable_itn` 的容忍度、Bearer 可用性、30s 超时是否足够
-  （当前无 API Key，见调研 §9 与 test-plan 退出条件）。
+- 已定论：`enable_itn` 按官方文档不发送（平台声明未定义参数可能被过滤或报错）；Bearer 已实网证实可用（402 而非 401）。
+- 待补测（需账户余额）：真实转写文本与 49s 音频耗时（30s 超时是否足够），见调研 §9。

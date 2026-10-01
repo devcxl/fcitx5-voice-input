@@ -43,9 +43,9 @@ change_type: bugfix
 
 | Risk | Likelihood | Impact | Mitigation | Owner |
 |---|---|---|---|---|
-| MiMo 拒绝 `enable_itn` 未知字段 | Medium | chat 模式返回 400，MiMo 不可用 | 新增 `EnableItn=false` 开关并写入 README 示例；若实测证明字段被忽略则开关无副作用 | maintainer |
+| MiMo 对未定义参数的处理策略 | Low | 官方 ASR 文档未定义 `enable_itn`，平台声明未定义参数可能被过滤或报错，可能导致 chat 模式 400 | 接入 MiMo 时关闭 `EnableItn`（README 示例 + 调研 §9）；DashScope 默认行为不变 | maintainer |
 | `language` 行为变更影响 DashScope 用户 | Low | 此前从未发送 language，修复后按用户配置发送；上游若对 language 敏感可能改变输出 | 仅在显式设置非 auto 语言时发送；默认 auto 行为不变 | maintainer |
-| 无 API Key，实网兼容性未验证 | High | Bearer 可用性、`enable_itn` 容忍度、30s 超时未实测 | 官方 FAQ 已明确两种鉴权头；调研 §9 记录待验证清单与判定顺序 | maintainer |
+| 实网验证未全部完成 | Medium | Bearer 已实测通过（402 而非 401）；真实转写文本与 30s 超时待账户余额充值后补测 | 调研 §9 记录进展与补测清单；不影响请求形态正确性判定 | maintainer |
 
 # Documentation Updates
 

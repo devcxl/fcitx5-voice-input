@@ -19,7 +19,7 @@
 | C6 | **音频格式硬约束**：仅支持 `wav`/`mp3`，base64 编码后 **≤ 10 MB**；不接受原始 PCM（需自行封装 WAV）。派生上限：16kHz mono wav 约 **≤ 3.9 分钟** | 高（限制原文）/ 中（时长换算为推断） | [使用指南][mimo-guide] |
 | C7 | **计费按音频时长**：¥0.5/小时、$0.074/小时；模型规格 8K 上下文 / 2K 最大输出 / 100 RPM / 10K TPM | 高 | [官方定价页][mimo-price]、[模型页][mimo-models] |
 | C8 | **本地推理栈**：需 Python 3.12 + CUDA ≥12 + `flash-attn==2.7.4.post1` + PyTorch（transformers，`model_type: qwen2`）。**无官方 ONNX / llama.cpp / GGUF 路径**；社区有 Apple MLX 4-bit 移植与第三方 OpenASR `q4_k` `.oasr` 包（峰值内存 7.6 GB、约 0.5× 实时） | 中 | [GitHub Getting Started][mimo-gh]、[config.json][mimo-config]、[MLX][mimo-mlx]、[OpenASR][openasr] |
-| C9 | **接入本项目成本很低**：现有 OpenAI **`chat` 模式**已经构造 `data:audio/wav;base64,...` 且解析 `choices[0].message.content`，与 MiMo 云 API 请求/响应高度一致；理论上改 BaseUrl/Model 即可接通。存在 2 个细节风险：`asr_options.enable_itn` 额外字段、`language` 因现有代码覆盖 bug 实际未发送；鉴权已确认 Bearer 可用，不再是风险。两项风险的处置见 §9 | 中-高 | 本地源码 `src/addon/asr/openai_asr.cpp`、[API 文档][mimo-api-zh]、[官方 FAQ][mimo-faq] |
+| C9 | **接入本项目成本很低**：现有 OpenAI **`chat` 模式**已经构造 `data:audio/wav;base64,...` 且解析 `choices[0].message.content`，与 MiMo 云 API 请求/响应高度一致；理论上改 BaseUrl/Model 即可接通。存在 2 个细节风险：`asr_options.enable_itn` 额外字段（按官方文档处置：MiMo 不发送，见 §9）、`language` 因现有代码覆盖 bug 实际未发送（已修复）；鉴权已实测 Bearer 可用（402 而非 401） | 高 | 本地源码 `src/addon/asr/openai_asr.cpp`、[API 文档][mimo-api-zh]、[官方 FAQ][mimo-faq]、[响应 API 兼容页][mimo-responses] |
 | C10 | **不具备「边说边出」能力**：云 API 为一次性分段提交，无实时增量音频流；对语音输入法场景，延迟/交互不如现有 OpenAI Realtime、火山、Mistral 三个 WS 流式后端，但**中文/方言准确率与成本**有优势 | 高 | C5、C7、[官方博客][mimo-blog] |
 | C11 | **截至 2026-09-25，ASR 仍是 `mimo-v2.5-asr`**：2026-09-22 发布的 MiMo-V2.6 系列为语言模型（Pro/Flash/UltraSpeed），不含新 ASR；ASR 定价页仍只有 v2.5-asr | 中-高 | [官方定价页（更新 2026-09-21）][mimo-price]、[模型发布日志][mimo-release]、[V2.6 发布][mimo-v26] |
 | C12 | **官方中文基准领先**：AiShell-2 2.52% CER、Fleurs-Zh 2.41%、Wenet Meeting 5.92%、Wenet Net 5.26%；英文 Open ASR 平均 5.73% WER（LibriSpeech-clean 1.45%）；粤语 WeNet-Yue 7.21%、Fleurs-Yue 3.28%；**均为小米自评，缺独立复现** | 高（官方数字）/ 中（可信度） | [官方博客评测表][mimo-blog] |
@@ -175,8 +175,8 @@ MiMo 家族中与「语音」相关的有三个不同层次，必须区分：
 
 ### 5.2 需要修复/注意的细节与工作量
 
-1. **`language` 覆盖 bug（必看）**：`openai_asr.cpp` 中先 `body["asr_options"]["language"]=...`，随后 `body["asr_options"] = asrOpts;`（仅含 `enable_itn`）整体覆盖，导致 **language 从未真正发送**。若新增 MiMo 后端需修正；若沿用现有 chat 模式则只能走 `auto`（MiMo 默认且推荐，影响可接受，但中文用户失去 `zh` 强制选项）。
-2. **`enable_itn` 额外字段**：MiMo 文档的 `asr_options` 只列 `language`。该字段源自阿里 Bailian 兼容路径，MiMo 可能忽略也可能 400。建议新增专用后端时不发该字段（最小改动：为 MiMo 走一个不带 `enable_itn` 的分支）。
+1. **`language` 覆盖 bug（必看，已修复）**：`openai_asr.cpp` 中先 `body["asr_options"]["language"]=...`，随后 `body["asr_options"] = asrOpts;`（仅含 `enable_itn`）整体覆盖，导致 **language 从未真正发送**。本实现已统一构造，`language` 与 `enable_itn` 均按配置正确发送（见 §9）。
+2. **`enable_itn` 额外字段**：MiMo 文档的 `asr_options` 只定义 `language`；MiMo 平台在响应 API 兼容页声明「未定义参数会被过滤并可能返回请求异常」[mimo-responses]。因此接入 MiMo 时不应发送该字段——本实现新增 `EnableItn` 开关（默认 `true` 保持 DashScope 行为，MiMo 配 `false`），无需实网验证容忍度。
 3. **鉴权头（已解决）**：官方 FAQ 明确 `api-key` 与 `Authorization: Bearer` 两种均可，现有实现的 Bearer 头发送方式**无需改动**。[官方 FAQ][mimo-faq]
 4. **超时**：现有 `CURLOPT_TIMEOUT=30L`。30 秒语音在云上转录通常够用，但长段 + 排队可能超时，建议 MiMo 后端放宽（如 60–120s），并保留取消回调。
 5. **无需新增依赖、无需重采样**：WAV 封装与 base64、libcurl HTTP 均已具备。这是相比 realtime 后端的一大优势。
@@ -232,7 +232,7 @@ MiMo 家族中与「语音」相关的有三个不同层次，必须区分：
 1. **非实时**：无 WS/realtime 音频输入；对本插件「边说边出」的价值有限。属结构性限制，非临时状态。置信度：高。
 2. **输出流式是否真增量未知**：`stream=true` 的 SSE 在 TTS 侧已被官方明确降级为「推理完成后一次性返回」，ASR 侧无同类说明，需最小原型实测。置信度：中。
 3. ~~鉴权头不确定~~（已解决）：官方 FAQ 明确两种头均可，Bearer 可直接用。置信度：高。[官方 FAQ][mimo-faq]
-4. **`enable_itn` 兼容性未知**：现有 chat 模式多发一个 MiMo 未文档化字段，可能被忽略或报错。置信度：中。
+4. ~~`enable_itn` 兼容性未知~~（已按文档处置）：ASR 文档未定义该字段，平台声明未定义参数可能被过滤或触发异常；接入 MiMo 一律关闭 `EnableItn`，无需实测容忍度。置信度：高（文档）。
 5. **License 标注不一致**：HF=MIT、GitHub=Apache-2.0；均为宽松许可，商用风险低，但合规文本需以仓库 `LICENSE` 为准。置信度：中。
 6. **服务稳定性/生命周期**：MiMo 平台迭代很快（V2 → V2.5 已下线旧版；V2.6 已发布），存在模型/端点调整风险；但 ASR 当前为唯一 ASR 型号且仍在售。置信度：中-高。
 7. **本地路径门槛高**：8B+1.2B、CUDA、flash-attn 固定版本（编译易踩坑）、无 ONNX/llama.cpp。C++ 端无直接推理路径。置信度：高。
@@ -251,7 +251,7 @@ MiMo 家族中与「语音」相关的有三个不同层次，必须区分：
 - **最强证据**：模型存在性/命名/开源地址（GitHub+HF 官方双源）、云 API 端点与请求/响应结构（中英文官方文档一致）、格式与 10MB 限制、定价（官方定价页 2026-09-21 更新）。这些置信度高。
 - **未覆盖**：官方仓库 `src/mimo_audio` 源码（抓取 CRAWL_NOT_FOUND）、权重仓库 `LICENSE` 文件正文、`api.xiaomimimo.com/v1/audio/transcriptions` 是否实际存在（未发探测请求）。因此「无独立 transcription 端点」基于文档与第三方 issue，置信度高但非直接探测。
 - **时效提醒**：调研日 2026-09-25；MiMo 平台更新频繁，接入前应复核 [API 文档][mimo-api-zh] 与 [定价页][mimo-price]。
-- **对项目决策的关键提醒**：**不要**把 `language` 覆盖 bug 与 `enable_itn` 兼容性当作可忽略项；建议先写一个 20 行的独立 curl/最小 C++ 探针验证「Bearer + 无 enable_itn + zh」是否能 200。
+- **对项目决策的关键提醒**：`language` 覆盖 bug 与 `enable_itn` 兼容性不可忽略——前者已修复，后者按官方文档处置（接入 MiMo 不发送该字段）；实网探针已证实 Bearer 鉴权与请求形态，真实转写待补测（见 §9）。
 
 ---
 
@@ -265,10 +265,10 @@ MiMo 家族中与「语音」相关的有三个不同层次，必须区分：
 - **`enable_itn` 改为可配置**：`OpenAIAsrConfig.EnableItn`（默认 `true`，保持 DashScope 行为）；MiMo 用户设 `false`。
 - 用法（无需新后端）：`ActiveBackend=openai`、`BaseUrl=https://api.xiaomimimo.com/v1`、`Model=mimo-v2.5-asr`、`ApiMode=chat`、`Language=zh`、`EnableItn=false`。
 
-未实测项（无 API Key，待首次联调按序确认）：
-1. `Authorization: Bearer` 实网可用性（官方 FAQ 称两种头均可）；
-2. MiMo 对 `asr_options.enable_itn` 未知字段的容忍度：若忽略，`EnableItn=false` 无副作用；若 400，则必须为 false（本实现已提供开关）；
-3. 30s `CURLOPT_TIMEOUT` 对长段/排队是否足够（本次未放宽；实测超时再评估 per-backend 超时）；
+验证进展（2026-10-01，实网探针，复用 `BuildChatAsrRequestBody` + Bearer + 响应解析路径）：
+1. ~~`Authorization: Bearer` 实网可用性~~：**已证实**。按量付费 Key 实测返回 HTTP 402 `insufficient_balance` 而非 401，证明 Bearer 鉴权通过（账户无余额，未产生真实转写）。
+2. ~~MiMo 对 `asr_options.enable_itn` 未知字段的容忍度~~：**由官方文档定论，无需实测**。ASR 页 `asr_options` 仅定义 `language`，平台声明未定义参数会被过滤并可能报错；接入 MiMo 一律关闭 `EnableItn`。
+3. 待补测（需账户余额）：真实转写文本、49s 音频耗时（验证 30s `CURLOPT_TIMEOUT` 是否足够；当前实现未放宽超时）。
 4. SSE 增量（`stream=true`）是否逐 token 到达——当前实现只用 `stream=false`，不影响接入。
 
 决策变更触发条件：若 MiMo 推出 WS 实时音频接口，或 chat 路径出现多家供应商参数分歧，再评估方案 B（独立 `mimo` 后端）。
@@ -315,6 +315,8 @@ MiMo 家族中与「语音」相关的有三个不同层次，必须区分：
 [mimo-audio-gh]: https://github.com/XiaomiMiMo/MiMo-Audio
 [mimo-audio-paper]: https://arxiv.org/abs/2512.23808
 [mimo-audio-7b]: https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Instruct
+[mimo-responses]: https://mimo.mi.com/docs/zh-CN/api/chat/responses
+[mimo-errors]: https://mimo.mi.com/docs/zh-CN/api/guidance/error-codes
 [mimo-faq]: https://mimo.mi.com/docs/zh-CN/quick-start/faq/api-integration
 [mimo-api-zh]: https://mimo.mi.com/docs/zh-CN/api/audio/Speech-Recognition
 [mimo-api-en]: https://mimo.mi.com/docs/en-US/api/audio/Speech-Recognition
