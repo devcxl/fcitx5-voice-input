@@ -30,6 +30,7 @@ CI 中由 `ci.yml` 的 `verify` job 开启 `BUILD_TESTS` 并执行 `ctest`（多
 | `ordered_buffer_stall_test` | 保序闸门停滞放行：卡死段在阈值内不误伤、超阈值后以超时错误放行、后续段按序交付、迟到结果被丢弃、显式 `Skip` 语义不变；`ResultCoordinator` 端到端交付 | 单元 + 并发 |
 | `chat_asr_request_test` | chat 模式请求体构造：language 按配置发送、`enable_itn` 可关、空 `asr_options` 省略、model/messages/data URL 形状 | 单元 |
 | `ws_send_budget_test` | WS 发送预算：单次发送到期即失败（不无限重试）、取消优先；真实 Realtime/Mistral/Volcengine 会话在「上游不读 socket」下 `End()` 有界收敛、产出终态、`JoinWithTimeout` 不超时 | 单元 + 集成（本地假 WS 服务端） |
+| `engine_ui_*` | 输入框销毁、有效面板清空、worker 回调排队后销毁、快速重新激活时过滤旧 UI 任务、待提交文本只提交给原输入框 | 集成（真实引擎 + Fcitx dispatcher） |
 
 ## 约定
 
@@ -37,6 +38,7 @@ CI 中由 `ci.yml` 的 `verify` job 开启 `BUILD_TESTS` 并执行 `ctest`（多
 - 并发/线程用例必须有界：等待使用固定上限轮询，会话统一 `Cancel()` + `JoinWithTimeout`。
 - 修复缺陷时遵循 RED → GREEN：先在未修复代码上运行同一用例确认失败，再实施修复并确认通过。
 - 涉及「永久阻塞」类缺陷的用例显式设置 `ctest` `TIMEOUT`（`ws_frame_reassembly_test` 120s、`ws_send_budget_test` 90s）：回归时表现为超时失败，而不是挂住 CI。
+- UI 测试链接本次构建的 addon，以 Linux ELF 符号替换隔离 `Pipeline::Start` 和两个公开回调注册入口；不访问引擎私有状态，不启动录音/云端。每个用例使用构建目录下独立的 XDG 路径，不能读取真实用户配置。若改用 `-Bsymbolic` 等禁用符号替换的链接选项，需同步调整该测试边界。
 
 ## 平台限制（已实测）
 

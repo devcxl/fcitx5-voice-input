@@ -149,7 +149,9 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
     FCITX_UNUSED(entry);
     FCITX_UNUSED(event);
     InitializeIfNeeded();
-    activeIc_ = event.inputContext();
+    activeIc_ = event.inputContext()->watch();
+    pendingPreeditText_.clear();
+    pendingPreeditUtteranceId_ = 0;
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
     pendingStopGeneration_ = generation;
     sessionGeneration_.store(generation);
@@ -161,7 +163,7 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
 
     FCITX_INFO() << "[voice-input] Activate: gen=" << generation
                  << " wasRunning=" << wasRunning
-                 << " ic=" << (activeIc_ != nullptr);
+                 << " ic=" << (activeIc_.get() != nullptr);
 
     statusText_.clear();
     SetStatus(_("语音输入就绪"));
@@ -177,6 +179,7 @@ void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
     FCITX_INFO() << "[voice-input] Deactivate: gen=" << generation;
 
     ClearUI();
+    activeIc_.unwatch();
 
     delayedStopEvent_ = instance_->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC,
@@ -192,7 +195,6 @@ void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
                          << generation;
             sessionGeneration_.store(0);
             pipeline_->Stop();
-            activeIc_ = nullptr;
             return true;
         });
     delayedStopEvent_->setOneShot();
@@ -210,10 +212,11 @@ void VoiceInputEngine::keyEvent(const InputMethodEntry& entry,
                                 KeyEvent& keyEvent) {
     FCITX_UNUSED(entry);
     // Commit pending preedit on any key press
-    if (!pendingPreeditText_.empty() && activeIc_) {
-        activeIc_->commitString(pendingPreeditText_);
-        activeIc_->inputPanel().reset();
-        activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
+    auto* ic = activeIc_.get();
+    if (!pendingPreeditText_.empty() && ic && ic == keyEvent.inputContext()) {
+        ic->commitString(pendingPreeditText_);
+        ic->inputPanel().reset();
+        ic->updateUserInterface(UserInterfaceComponent::InputPanel);
         SetStatus(_("语音输入就绪"));
         pendingPreeditText_.clear();
         pendingPreeditUtteranceId_ = 0;
@@ -238,133 +241,38 @@ void VoiceInputEngine::OnAsrResult(const std::string& text) {
     });
 }
 
-void VoiceInputEngine::PollResults() {
-    auto& queue = pipeline_->ResultQueue();
-    AsrResult result;
-    while (queue.TryPop(result)) {
-        bool valid = (!result.text.empty() || result.isError)
-                  && result.generation != 0
-                  && activeGeneration_.load() == result.generation
-                  && activeIc_ != nullptr;
-
-        FCITX_DEBUG() << "[voice-input] PollResult:"
-                     << " text=\"" << result.text << "\""
-                     << " gen=" << result.generation
-                     << " activeGen=" << activeGeneration_.load()
-                     << " uid=" << result.utteranceId
-                     << " pendingUid=" << pendingPreeditUtteranceId_
-                     << " refined=" << result.isLLMRefined
-                     << " error=" << result.isError
-                     << " valid=" << valid;
-
-        if (valid) {
-            if (result.isError) {
-                FCITX_WARN() << "[voice-input] PollResult: ASR error uid="
-                             << result.utteranceId;
-                activeIc_->inputPanel().reset();
-                activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-                SetStatus(_("语音识别失败"));
-                continue;
-            }
-            if (result.isLLMRefined) {
-                if (result.isPartial) {
-                    // Streaming partial: update preedit in-place
-                    if (result.utteranceId == pendingPreeditUtteranceId_) {
-                        activeIc_->inputPanel().setPreedit(Text(result.text));
-                        activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-                        statusText_ = result.text;
-                        activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-                    }
-                } else if (result.utteranceId == pendingPreeditUtteranceId_) {
-                    FCITX_DEBUG() << "[voice-input] LLM commit: uid="
-                                  << result.utteranceId
-                                  << " len=" << result.text.size();
-                    activeIc_->commitString(result.text);
-                    activeIc_->inputPanel().reset();
-                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-                    SetStatus(_("语音输入就绪"));
-                    pendingPreeditText_.clear();
-                    pendingPreeditUtteranceId_ = 0;
-                } else {
-                    FCITX_DEBUG() << "[voice-input] LLM stale skip: uid="
-                                  << result.utteranceId
-                                  << " pendingUid=" << pendingPreeditUtteranceId_;
-                }
-            } else {
-                bool llmActive = openaiConfig_.llmEnabled.value()
-                              && !openaiConfig_.llmModel.value().empty();
-                FCITX_DEBUG() << "[voice-input] Preedit: uid=" << result.utteranceId
-                             << " len=" << result.text.size()
-                             << " llmActive=" << llmActive;
-
-                if (result.isPartial) {
-                    activeIc_->inputPanel().setPreedit(Text(result.text));
-                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-                    statusText_ = result.text;
-                    activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-                    continue;
-                }
-
-                if (llmActive) {
-                    activeIc_->inputPanel().setPreedit(Text(result.text));
-                    activeIc_->inputPanel().setAuxDown(Text(_("修正中...")));
-                    statusText_ = result.text;
-                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-                    activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-                    pendingPreeditText_ = result.text;
-                    pendingPreeditUtteranceId_ = result.utteranceId;
-                } else if (openaiConfig_.autoCommit.value()) {
-                    activeIc_->commitString(result.text);
-                    activeIc_->inputPanel().reset();
-                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-                    SetStatus(_("语音输入就绪"));
-                    pendingPreeditText_.clear();
-                    pendingPreeditUtteranceId_ = 0;
-                } else {
-                    activeIc_->inputPanel().setPreedit(Text(result.text));
-                    statusText_ = result.text;
-                    activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-                    activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
-                    pendingPreeditText_ = result.text;
-                    pendingPreeditUtteranceId_ = result.utteranceId;
-                }
-            }
-        }
-    }
-}
-
 void VoiceInputEngine::SetStatus(const std::string& text) {
-    eventDispatcher_.schedule([this, text]() {
+    uint64_t generation = activeGeneration_.load();
+    auto context = activeIc_;
+    eventDispatcher_.schedule([this, text, generation, context]() {
+        if (activeGeneration_.load() != generation) return;
         statusText_ = text;
-        if (activeIc_) {
-            activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+        if (auto* ic = context.get()) {
+            ic->updateUserInterface(UserInterfaceComponent::StatusArea);
         }
     });
 }
 
 void VoiceInputEngine::ClearUI() {
-    uint64_t gen = activeGeneration_.load();
-    eventDispatcher_.schedule([this, gen]() {
-        if (activeGeneration_.load() != gen) return;
-        statusText_.clear();
-        if (activeIc_) {
-            // Commit pending preedit before clearing
-            if (!pendingPreeditText_.empty()) {
-                activeIc_->commitString(pendingPreeditText_);
-                pendingPreeditText_.clear();
-                pendingPreeditUtteranceId_ = 0;
-            }
-            activeIc_->inputPanel().reset();
-            activeIc_->updateUserInterface(UserInterfaceComponent::InputPanel);
-            activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea);
+    // deactivate already runs on the main thread. Finish the old context now:
+    // deferring this until dispatch can commit its preedit to a new context.
+    statusText_.clear();
+    if (auto* ic = activeIc_.get()) {
+        if (!pendingPreeditText_.empty()) {
+            ic->commitString(pendingPreeditText_);
         }
-    });
+        ic->inputPanel().reset();
+        ic->updateUserInterface(UserInterfaceComponent::InputPanel);
+        ic->updateUserInterface(UserInterfaceComponent::StatusArea);
+    }
+    pendingPreeditText_.clear();
+    pendingPreeditUtteranceId_ = 0;
 }
 
 std::string VoiceInputEngine::subModeLabelImpl(const InputMethodEntry& entry,
                                                 InputContext& ic) {
     FCITX_UNUSED(entry);
-    if (&ic == activeIc_ && !statusText_.empty()) {
+    if (&ic == activeIc_.get() && !statusText_.empty()) {
         return statusText_;
     }
     return {};
@@ -473,20 +381,7 @@ void VoiceInputEngine::InitializeIfNeeded() {
         });
 
     pipeline_->SetVadStatusCallback(
-        [this](bool speaking) {
-            if (speaking) {
-                SetStatus(_("正在录音中..."));
-                eventDispatcher_.schedule([this]() {
-                    if (!activeIc_) return;
-                    activeIc_->inputPanel().setPreedit(Text(" "));
-                    activeIc_->inputPanel().setAuxDown(Text(_("正在录音中...")));
-                    activeIc_->updateUserInterface(
-                        UserInterfaceComponent::InputPanel);
-                });
-            } else {
-                SetStatus(_("语音输入就绪"));
-            }
-        });
+        [this](bool speaking) { OnVadStatus(speaking); });
 
     pipeline_->Init(config_);
 

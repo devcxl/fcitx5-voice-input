@@ -145,7 +145,7 @@ private:
     unique_ptr<Pipeline> pipeline_;
     EventDispatcher eventDispatcher_;
     VoiceInputConfig config_;
-    InputContext* activeIc_;
+    TrackableObjectReference<InputContext> activeIc_; // 仅主线程访问
     atomic<uint64_t> activeGeneration_;   // 当前有效 generation
     atomic<uint64_t> sessionGeneration_;  // 当前 session generation
 };
@@ -153,6 +153,8 @@ private:
 
 **关键设计：**
 - `activeGeneration_` 随每次 activate/deactivate 递增，用于过滤过期结果
+- 输入框存活由 `watch()` 引用保证可检查；generation 只判断结果归属，不能代替生命周期检查。worker 仅排队值数据，主线程检查 generation 后才读取引用。
+- `deactivate()` 在主线程同步提交/清空原输入框的待提交文本并解除引用，避免延迟 UI 回调访问已销毁输入框或把文本提交给新输入框（[ADR-0002](../adr/ADR-0002-input-context-lifetime.md)）。
 - `deactivate()` 延迟 200ms 才真正停止，防止快速切换窗口时误停
 - `setConfig()` 保存到 `conf/voiceinput.conf`，热更新 pipeline
 

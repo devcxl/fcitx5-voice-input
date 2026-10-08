@@ -105,6 +105,7 @@ message(STATUS "Silero VAD enabled with model: ${SILERO_VAD_MODEL_SOURCE}")
 # ─── Sources ──────────────────────────────────────────────────────────────────
 set(ADDON_SOURCES
     src/addon/engine.cpp
+    src/addon/engine_results.cpp
     src/addon/vad/vad.cpp
     src/addon/vad/silero_vad.cpp
     src/addon/pipeline/pipeline.cpp

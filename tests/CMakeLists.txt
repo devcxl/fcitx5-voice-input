@@ -207,3 +207,31 @@ target_link_libraries(chat_asr_request_test PRIVATE
 )
 
 add_test(NAME chat_asr_request_test COMMAND chat_asr_request_test)
+
+add_executable(engine_ui_lifecycle_test engine_ui_lifecycle_test.cpp)
+target_include_directories(engine_ui_lifecycle_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+)
+# MODULE targets cannot be linked by target name. Link the exact filename so the
+# test's Pipeline::Start substitutes the public boundary via ELF interposition.
+# Never load an installed addon: the test must exercise this build's engine.
+target_link_libraries(engine_ui_lifecycle_test PRIVATE
+    "-l:voice-input-addon.so"
+    ${FCITX5_LIBRARIES}
+)
+target_link_directories(engine_ui_lifecycle_test PRIVATE "$<TARGET_FILE_DIR:voice-input-addon>")
+set_target_properties(engine_ui_lifecycle_test PROPERTIES
+    BUILD_RPATH "$<TARGET_FILE_DIR:voice-input-addon>")
+add_dependencies(engine_ui_lifecycle_test voice-input-addon)
+foreach(scenario destroy live active-destroy reactivate pending-switch)
+    foreach(directory config data cache)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/${directory}/conf")
+    endforeach()
+    add_test(NAME engine_ui_${scenario}
+        COMMAND engine_ui_lifecycle_test ${scenario})
+    set_tests_properties(engine_ui_${scenario} PROPERTIES
+        TIMEOUT 5
+        ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/config;XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/data;XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/cache"
+    )
+endforeach()
