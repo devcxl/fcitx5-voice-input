@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <json/json.h>
@@ -14,6 +15,31 @@
 
 namespace fcitx {
 namespace realtime_protocol {
+
+enum class EventType { Ignored, Delta, Completed, Failed, Committed, Error };
+
+struct ServerEvent {
+    EventType type = EventType::Ignored;
+    std::string text;
+    std::string itemId;
+    std::string error;
+};
+
+inline bool IsOptionalString(const Json::Value& object, const char* field) {
+    const auto& value = object[field];
+    return value.isNull() || value.isString();
+}
+
+inline bool ValidateError(const Json::Value& json) {
+    if (json.isMember("error")) {
+        const auto& error = json["error"];
+        if (!error.isObject()) return false;
+        for (const char* field : {"message", "code", "type"}) {
+            if (!IsOptionalString(error, field)) return false;
+        }
+    }
+    return IsOptionalString(json, "message");
+}
 
 // 16k → 24k 线性插值（比例 3/2）。输出样本数 = floor(1.5 * N)。
 // 对每个输出下标 j，其对应的源位置 pos = j * 2/3，在相邻源样本间线性插值。
@@ -48,6 +74,45 @@ inline std::string DescribeError(const Json::Value& json) {
     }
     const std::string message = json.get("message", "").asString();
     return message;
+}
+
+// Validate before conversion. JsonCpp defaults cover missing fields, not bad
+// types. Unknown event kinds are ignored for forward-compatible extensions.
+inline bool ParseServerEvent(const std::string& payload, ServerEvent& event) {
+    Json::Value json;
+    Json::Reader reader;
+    if (!reader.parse(payload, json) || !json.isObject() ||
+        !json["type"].isString()) return false;
+    const std::string type = json["type"].asString();
+    ServerEvent decoded;
+    if (type == "conversation.item.input_audio_transcription.delta") {
+        decoded.type = EventType::Delta;
+        // OpenAI's delta is optional/nullable; null means no text, not failure.
+        if (!IsOptionalString(json, "delta")) return false;
+        decoded.text = json.get("delta", "").asString();
+    } else if (type == "conversation.item.input_audio_transcription.completed") {
+        decoded.type = EventType::Completed;
+        if (!json["transcript"].isString()) return false;
+        decoded.text = json["transcript"].asString();
+    } else if (type == "conversation.item.input_audio_transcription.failed") {
+        decoded.type = EventType::Failed;
+    } else if (type == "input_audio_buffer.committed") {
+        decoded.type = EventType::Committed;
+    } else if (type == "error") {
+        decoded.type = EventType::Error;
+    }
+    if (decoded.type != EventType::Ignored) {
+        // Missing IDs retain the legacy commit-tracker fallback; present IDs
+        // must be strings and must never be coerced from scalar JSON values.
+        if (json.isMember("item_id") && !json["item_id"].isString()) return false;
+        decoded.itemId = json.get("item_id", "").asString();
+    }
+    if (decoded.type == EventType::Failed || decoded.type == EventType::Error) {
+        if (!ValidateError(json)) return false;
+        decoded.error = DescribeError(json);
+    }
+    event = std::move(decoded);
+    return true;
 }
 
 inline std::string JsonToString(const Json::Value& json) {

@@ -213,16 +213,13 @@ target_include_directories(engine_ui_lifecycle_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/addon
     ${FCITX5_INCLUDE_DIRS}
 )
-# MODULE targets cannot be linked by target name. Link the exact filename so the
-# test's Pipeline::Start substitutes the public boundary via ELF interposition.
-# Never load an installed addon: the test must exercise this build's engine.
+# MODULE targets cannot be linked by target name. Pass the absolute file to the
+# linker without CMake's SONAME inference, so LD_LIBRARY_PATH cannot select an
+# installed addon. The executable substitutes the public Pipeline boundary.
 target_link_libraries(engine_ui_lifecycle_test PRIVATE
-    "-l:voice-input-addon.so"
+    "-Wl,$<TARGET_FILE:voice-input-addon>"
     ${FCITX5_LIBRARIES}
 )
-target_link_directories(engine_ui_lifecycle_test PRIVATE "$<TARGET_FILE_DIR:voice-input-addon>")
-set_target_properties(engine_ui_lifecycle_test PROPERTIES
-    BUILD_RPATH "$<TARGET_FILE_DIR:voice-input-addon>")
 add_dependencies(engine_ui_lifecycle_test voice-input-addon)
 foreach(scenario destroy live active-destroy reactivate pending-switch)
     foreach(directory config data cache)
@@ -234,4 +231,67 @@ foreach(scenario destroy live active-destroy reactivate pending-switch)
         TIMEOUT 5
         ENVIRONMENT "XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/config;XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/data;XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/cache"
     )
+endforeach()
+
+# ── WS 非法服务端消息回归（仅追加，不影响上方 UI 测试块）──────────
+add_executable(ws_invalid_response_test
+    ws_invalid_response_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/realtime_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/volcengine_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/asr_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/base64.cpp
+)
+
+target_include_directories(ws_invalid_response_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+)
+
+target_link_libraries(ws_invalid_response_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    CURL::libcurl
+    ZLIB::ZLIB
+)
+
+add_test(NAME ws_invalid_response_realtime COMMAND ws_invalid_response_test realtime)
+set_tests_properties(ws_invalid_response_realtime
+    PROPERTIES
+    TIMEOUT 60
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT "NO_PROXY=127.0.0.1;no_proxy=127.0.0.1"
+)
+
+add_executable(ws_worker_boundary_test
+    ws_worker_boundary_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/realtime_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/volcengine_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/asr_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/base64.cpp
+)
+target_include_directories(ws_worker_boundary_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+)
+target_link_libraries(ws_worker_boundary_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    CURL::libcurl
+    ZLIB::ZLIB
+)
+foreach(backend realtime)
+    set(boundary_scenarios partial unknown error final)
+    foreach(scenario IN LISTS boundary_scenarios)
+        add_test(NAME ws_worker_${backend}_${scenario}
+            COMMAND ws_worker_boundary_test ${backend} ${scenario})
+        set_tests_properties(ws_worker_${backend}_${scenario} PROPERTIES
+            TIMEOUT 8
+            SKIP_RETURN_CODE 77
+            ENVIRONMENT "NO_PROXY=127.0.0.1;no_proxy=127.0.0.1"
+        )
+    endforeach()
 endforeach()
