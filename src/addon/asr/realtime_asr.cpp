@@ -3,14 +3,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstring>
 #include <thread>
 
 #include <curl/curl.h>
 #include <fcitx-utils/log.h>
 #include <json/json.h>
 
-#include "utils/base64.h"
+#include "protocol/realtime_protocol.h"
 #include "utils/ws_frame_receiver.h"
 #include "utils/ws_frame_sender.h"
 
@@ -24,46 +23,7 @@ constexpr int kTargetSampleRate = 24000;  // OpenAI Realtime 要求 >= 24kHz
 constexpr int kAppendChunkSamples = 2400; // ~100ms @24k 音频推送粒度（含重采样后）
 constexpr const char* kLogTag = "[voice-input:realtime]";
 
-// 16k → 24k 线性插值（比例 3/2）。输出样本数 = floor(1.5 * N)。
-// 对每个输出下标 j，其对应的源位置 pos = j * 2/3，在相邻源样本间线性插值。
-void Upsample16kTo24k(const std::vector<float>& in, std::vector<float>& out) {
-    out.clear();
-    if (in.empty()) return;
-    size_t outCount = in.size() * 3 / 2;
-    if (outCount == 0) return;
-    out.reserve(outCount);
-    for (size_t j = 0; j < outCount; ++j) {
-        double pos = j * (2.0 / 3.0);
-        size_t i = static_cast<size_t>(pos);
-        double frac = pos - static_cast<double>(i);
-        float a = in[i];
-        float b = (i + 1 < in.size()) ? in[i + 1] : a;  // 末端 clamp
-        out.push_back(a + static_cast<float>((b - a) * frac));
-    }
-}
-
-/// 从服务端 error 事件中提取可读信息（issue #44：原实现完全忽略 error）。
-/// OpenAI Realtime 的 error 事件形如
-/// {"type":"error","error":{"type":"...","code":"...","message":"..."}}。
-std::string DescribeError(const Json::Value& json) {
-    const Json::Value& error = json["error"];
-    if (error.isObject()) {
-        const std::string message = error.get("message", "").asString();
-        if (!message.empty()) return message;
-        const std::string code = error.get("code", "").asString();
-        if (!code.empty()) return code;
-        const std::string type = error.get("type", "").asString();
-        if (!type.empty()) return type;
-    }
-    const std::string message = json.get("message", "").asString();
-    return message;
-}
-
-std::string JsonToString(const Json::Value& json) {
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-    return Json::writeString(builder, json);
-}
+using namespace realtime_protocol;
 
 // 发送一个 TEXT WS 帧（OpenAI Realtime 用 JSON 文本帧）。
 // 上游不读 socket 时有界失败（issue #42）：发送预算到期即返回 false，
@@ -182,31 +142,6 @@ void RealtimeAsrSession::WorkerLoop() {
     auto cb = resultCb_;
     auto ecb = errorCb_;
 
-    auto buildAppendEvent = [this](const std::vector<int16_t>& pcm24k) -> std::string {
-        Json::Value ev;
-        ev["type"] = "input_audio_buffer.append";
-        std::vector<uint8_t> bytes(pcm24k.size() * 2);
-        std::memcpy(bytes.data(), pcm24k.data(), bytes.size());
-        ev["audio"] = Base64Encode(bytes.data(), bytes.size());
-        return JsonToString(ev);
-    };
-    auto buildCommitEvent = []() -> std::string {
-        Json::Value ev;
-        ev["type"] = "input_audio_buffer.commit";
-        return JsonToString(ev);
-    };
-    auto buildSessionUpdate = [this]() -> std::string {
-        Json::Value ev;
-        ev["type"] = "session.update";
-        if (!language_.empty()) {
-            ev["session"]["transcription"]["language"] = language_;
-        }
-        if (!modelName_.empty()) {
-            ev["session"]["transcription"]["model"] = modelName_;
-        }
-        return JsonToString(ev);
-    };
-
     RealtimeTerminalState terminal;
     auto publishFinal = [&](const std::string& transcript) {
         if (!terminal.TryMarkPublished()) return;
@@ -270,7 +205,7 @@ void RealtimeAsrSession::WorkerLoop() {
         FCITX_INFO() << "[voice-input:realtime] WS connected session=" << sid;
 
         // 会话开始：发送 session.update（语言/模型提示）
-        SendWebSocketText(curl, buildSessionUpdate(),
+        SendWebSocketText(curl, BuildSessionUpdate(language_, modelName_),
                           WsAbort::CancelOrFinished(state_->cancelled,
                                                         state_->finished));
         WsFrameReceiver receiver(CURLWS_TEXT);
@@ -382,7 +317,7 @@ void RealtimeAsrSession::WorkerLoop() {
                 // 确保 End 能赶在 SessionReaper 的 15s JoinWithTimeout 之前返回。
                 const WsDeadline endBudget = endBudget_.Deadline();
                 if (!pending24k.empty() && !state_->cancelled) {
-                    if (!SendWebSocketText(curl, buildAppendEvent(pending24k),
+                    if (!SendWebSocketText(curl, BuildAppendEvent(pending24k),
                                            WsAbort::CancelOnly(state_->cancelled),
                                            endBudget)) {
                         FCITX_ERROR() << "[voice-input:realtime] End flush failed session=" << sid;
@@ -392,7 +327,7 @@ void RealtimeAsrSession::WorkerLoop() {
                     }
                     pending24k.clear();
                 }
-                if (!SendWebSocketText(curl, buildCommitEvent(),
+                if (!SendWebSocketText(curl, BuildCommitEvent(),
                                        WsAbort::CancelOnly(state_->cancelled),
                                        endBudget)) {
                     FCITX_ERROR() << "[voice-input:realtime] End commit failed session=" << sid;
@@ -435,7 +370,7 @@ void RealtimeAsrSession::WorkerLoop() {
             auto elapsedSinceCommit = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - lastCommitTime).count();
             if (appendedSinceCommit && elapsedSinceCommit >= commitIntervalMs_) {
-                if (!SendWebSocketText(curl, buildCommitEvent(),
+                if (!SendWebSocketText(curl, BuildCommitEvent(),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
                     // 中止可能来自 End()（finished 置位）：此时不能按传输失败处理
@@ -454,7 +389,7 @@ void RealtimeAsrSession::WorkerLoop() {
             if (pending24k.size() >= kAppendChunkSamples && !state_->cancelled) {
                 size_t sendSize = (pending24k.size() / kAppendChunkSamples) * kAppendChunkSamples;
                 std::vector<int16_t> toSend(pending24k.begin(), pending24k.begin() + sendSize);
-                if (!SendWebSocketText(curl, buildAppendEvent(toSend),
+                if (!SendWebSocketText(curl, BuildAppendEvent(toSend),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
                     // 同上：End() 触发的中止不是传输失败，交由 End 收尾路径处理。
@@ -474,7 +409,7 @@ void RealtimeAsrSession::WorkerLoop() {
                 std::chrono::steady_clock::now() - sessionStart).count();
             if (sessionAge >= kSessionMaxDuration.count() && appendedSinceCommit) {
                 FCITX_WARN() << "[voice-input:realtime] 30min session limit, reconnect";
-                if (SendWebSocketText(curl, buildCommitEvent(),
+                if (SendWebSocketText(curl, BuildCommitEvent(),
                                       WsAbort::CancelOrFinished(
                                           state_->cancelled, state_->finished))) {
                     // 在途 item 由服务端的 input_audio_buffer.committed 确认后登记
