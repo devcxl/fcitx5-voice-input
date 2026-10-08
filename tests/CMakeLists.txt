@@ -257,7 +257,8 @@ target_link_libraries(ws_invalid_response_test PRIVATE
 )
 
 add_test(NAME ws_invalid_response_realtime COMMAND ws_invalid_response_test realtime)
-set_tests_properties(ws_invalid_response_realtime
+add_test(NAME ws_invalid_response_volcengine COMMAND ws_invalid_response_test volcengine)
+set_tests_properties(ws_invalid_response_realtime ws_invalid_response_volcengine
     PROPERTIES
     TIMEOUT 60
     SKIP_RETURN_CODE 77
@@ -283,8 +284,11 @@ target_link_libraries(ws_worker_boundary_test PRIVATE
     CURL::libcurl
     ZLIB::ZLIB
 )
-foreach(backend realtime)
+foreach(backend realtime volcengine)
     set(boundary_scenarios partial unknown error final)
+    if(backend STREQUAL "volcengine")
+        list(APPEND boundary_scenarios empty-ack)
+    endif()
     foreach(scenario IN LISTS boundary_scenarios)
         add_test(NAME ws_worker_${backend}_${scenario}
             COMMAND ws_worker_boundary_test ${backend} ${scenario})

@@ -376,6 +376,7 @@ class AsrEngine {
 - OpenAI `realtime` 与 Mistral 的流式会话在 `StartWorker()` 即建立持久 WS 连接，断线自动重连并保持 sessionId
 - Realtime 的终态判定按服务端确认的 `item_id` 追踪在途 item（`utils/realtime_commit_tracker.h`）：`error` 事件不再造成计数漂移，最终 `completed` 到达即上屏；`error` 事件的内容（message/code）进入日志与错误回调；End 等待以「距最后服务端事件 5s」的空闲超时为上界（见错误处理策略表）
 - 三个流式 WS 后端共用 `src/addon/asr/utils/ws_frame_receiver.h` 的 `WsFrameReceiver` + `ReceiveWsMessage()` 收包：跨 TCP 分片（含 WS `CURLWS_CONT`）的事件消息跨调用保留已收前缀，单条累计超过 16MB 时整条丢弃且在消息边界恢复解析（`Skipped` 不触发重连）
+- Realtime/豆包的 `asr/protocol/` 模块先校验已知事件再转换为会话事件，不把 JsonCpp 对象传入编排层；错误类型、非法 gzip 或过深结果立即失败并发布一次空 final，不重连。两者共用 worker 异常边界与 curl 资源所有权，异常路径也设置 `finished/workerDone`；final callback 抛异常不重试（[ADR-0003](../adr/ADR-0003-ws-session-failure-boundary.md)）。Mistral 的同类防护仍是独立后续任务。
 - 发送与建连同样有界：`src/addon/asr/utils/ws_deadline.h` 的 `WsDeadline`（单次发送预算，默认 10s）、`WsEndBudget`（End 路径总预算，默认 8s）与 `WsAbort`（`cancelled` 始终生效，`finished` 用于非 End 路径的推流与建连）；`ws_frame_sender.h` 的 `SendWsMessage()` 在 `CURLE_AGAIN`/零进展时按预算失败。上游不读 socket 时 `End()` 在 End 预算内收敛并交出兜底终态，`SessionReaper::JoinWithTimeout(15s)` 不再超时，且 `End()` 后不再重连
 - Volcengine 每个语音段建立独立 WebSocket 连接，使用完毕后关闭
 - `SessionReaper`（独立回收线程）对完成/取消的会话做超时 join，防止僵尸线程（详见 [v4-asr-session-model.md](v4-asr-session-model.md)）
@@ -500,6 +501,7 @@ void VoiceInputEngine::deactivate(...) {
 | Volcengine 服务端错误 | 日志打印响应中的 `message` 和 `X-Tt-Logid` |
 | WS 事件消息跨 TCP 分片 | `WsFrameReceiver` 跨 `CURLE_AGAIN` 保留已收前缀，消息边界到齐后才解析（不丢 delta/completed） |
 | WS 单条消息超过 16MB | 整条丢弃（`Skipped`），在消息边界恢复解析；不当作传输错误，不触发重连 |
+| Realtime/豆包已知事件字段类型错误或 worker 异常 | 固定协议/线程错误通知 + 一次空 final；释放资源并完成 worker，不让 C++ 异常越过线程入口；正常 Realtime `error` 不改变 commit 追踪 |
 | OpenAI realtime / Mistral WS 断线 | 自动重连（保持同一 sessionId），周期 commit/flush 兜底；`End()` 后不再重连，改以已累积文本兜底 final |
 | 上游不读 socket（发送持续 `CURLE_AGAIN`） | `SendWsMessage` 按单次预算（默认 10s）失败；`End` 路径受 `WsEndBudget`（默认 8s）约束，预算内交出兜底 final，不会拖到 `JoinWithTimeout(15s)` 超时 |
 | 发送超时 / 上游卡死 | 日志打印待发字节数与预算；调用方走重连（仅非 End 路径）或兜底终态 |

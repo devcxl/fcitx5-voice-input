@@ -6,9 +6,10 @@
 
 #include <curl/curl.h>
 #include <fcitx-utils/log.h>
-#include <json/json.h>
 
 #include "protocol/volcengine_protocol.h"
+#include "utils/asr_worker_boundary.h"
+#include "utils/curl_resources.h"
 #include "utils/ws_frame_receiver.h"
 #include "utils/ws_frame_sender.h"
 
@@ -18,8 +19,6 @@ namespace fcitx {
 namespace {
 
 constexpr int kVolcengineSampleRate = 16000;
-constexpr int kVolcengineBigmodelSuccessCode = 20000000;
-constexpr int kVolcengineLegacySuccessCode = 1000;
 constexpr const char* kLogTag = "[voice-input:volcengine]";
 
 using namespace volcengine_protocol;
@@ -116,8 +115,9 @@ void VolcengineAsrSession::StartWorker() {
         auto self = std::static_pointer_cast<VolcengineAsrSession>(shared_from_this());
         state_->workerDone.store(false, std::memory_order_release);
         workerThread_ = std::make_unique<std::thread>([self]() {
-            self->WorkerLoop();
-            self->state_->workerDone.store(true, std::memory_order_release);
+            RunAsrWorker(*self->state_, kLogTag, self->errorCb_,
+                         [self] { self->WorkerLoop(); },
+                         [self] { self->PublishFinal({}); });
         });
     }
 }
@@ -165,22 +165,28 @@ void VolcengineAsrSession::WorkerLoop() {
     auto audioChunks = audioChunks_;  // keep queue alive
     auto cb = resultCb_;
     auto ecb = errorCb_;
+    auto reportError = [&](const std::string& message) {
+        NotifyAsrError(ecb, message, kLogTag, sid);
+    };
 
     const size_t chunkSamples = static_cast<size_t>(kVolcengineSampleRate * chunkMs_ / 1000);
 
-    CURL* curl = curl_easy_init();
+    // curl cleanup may invoke its callbacks. Their state and headers must
+    // outlive the handle, including exception unwinding before connect ends.
+    std::string responseHeaders;
+    CurlHeaders headers;
+    CurlHandle connection(curl_easy_init());
+    CURL* curl = connection.get();
     if (!curl) {
-        if (ecb) ecb("Failed to init curl");
-        if (cb) cb("", true, sid);
+        reportError("Failed to init curl");
+        PublishFinal({});
         return;
     }
 
-    struct curl_slist* headers = nullptr;
     std::string requestId = GenerateRequestId();
-    std::vector<std::string> headerStrings;
+    bool headersOk = true;
     auto addHeader = [&](const std::string& h) {
-        headerStrings.push_back(h);
-        headers = curl_slist_append(headers, headerStrings.back().c_str());
+        if (headersOk) headersOk = headers.Append(h);
     };
     addHeader("X-Api-Resource-Id: " + resourceId_);
     addHeader("X-Api-Request-Id: " + requestId);
@@ -192,10 +198,14 @@ void VolcengineAsrSession::WorkerLoop() {
         addHeader("X-Api-App-Key: " + appKey_);
         addHeader("X-Api-Access-Key: " + accessKey_);
     }
+    if (!headersOk) {
+        reportError("Failed to allocate curl headers");
+        PublishFinal({});
+        return;
+    }
 
-    std::string responseHeaders;
     curl_easy_setopt(curl, CURLOPT_URL, endpoint_.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers.Get());
     curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
@@ -207,13 +217,19 @@ void VolcengineAsrSession::WorkerLoop() {
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, WsAbortProgressCallback);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &connectAbort_);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
-                     +[](char* buf, size_t s, size_t n, void* u) -> size_t {
-                         static_cast<std::string*>(u)->append(buf, s * n); return s * n;
+                     +[](char* buf, size_t s, size_t n, void* u) noexcept -> size_t {
+                         try {
+                             static_cast<std::string*>(u)->append(buf, s * n);
+                             return s * n;
+                         } catch (...) {
+                             // Return a short write so curl reports an error;
+                             // no C++ exception may cross its C callback ABI.
+                             return 0;
+                         }
                      });
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &responseHeaders);
 
     CURLcode connectResult = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
 
     if (state_->cancelled) {
         if (connectResult != CURLE_OK) {
@@ -222,16 +238,14 @@ void VolcengineAsrSession::WorkerLoop() {
         } else {
             FCITX_DEBUG() << "[voice-input:volcengine] Cancelled during connect";
         }
-        curl_easy_cleanup(curl);
         return;
     }
 
     if (connectResult != CURLE_OK) {
         FCITX_ERROR() << "[voice-input:volcengine] WS connect failed: "
                       << curl_easy_strerror(connectResult);
-        if (ecb) ecb("Volcengine connect failed: " + std::string(curl_easy_strerror(connectResult)));
-        if (cb) cb("", true, sid);
-        curl_easy_cleanup(curl);
+        reportError("Volcengine connect failed: " + std::string(curl_easy_strerror(connectResult)));
+        PublishFinal({});
         return;
     }
 
@@ -239,14 +253,12 @@ void VolcengineAsrSession::WorkerLoop() {
     FCITX_INFO() << "[voice-input:volcengine] WS connected session=" << sid << " logId=" << logId;
 
     // Send full client request
-    Json::Value requestJson = BuildRequestJson(modelName_, enableItN_, enablePunc_,
-                                               enableDdc_, enableNonstream_, endWindowMs_);
-    auto compressedRequest = GzipCompress(JsonToString(requestJson));
+    auto compressedRequest = GzipCompress(BuildRequest(
+        modelName_, enableItN_, enablePunc_, enableDdc_, enableNonstream_, endWindowMs_));
     if (compressedRequest.empty()) {
-        if (ecb) ecb("Failed to gzip request");
-        if (cb) cb("", true, sid);
+        reportError("Failed to gzip request");
+        PublishFinal({});
         CloseWebSocket(curl);
-        curl_easy_cleanup(curl);
         return;
     }
 
@@ -254,9 +266,8 @@ void VolcengineAsrSession::WorkerLoop() {
                                    kSerializationJson, kCompressionGzip, compressedRequest);
     if (!SendWebSocketBinary(curl, requestFrame.data(), requestFrame.size(),
                              WsAbort::CancelOnly(state_->cancelled))) {
-        if (ecb) ecb("Failed to send request");
-        if (cb) cb("", true, sid);
-        curl_easy_cleanup(curl);
+        reportError("Failed to send request");
+        PublishFinal({});
         return;
     }
 
@@ -274,28 +285,27 @@ void VolcengineAsrSession::WorkerLoop() {
             if (r == RecvStatus::Again) { std::this_thread::sleep_for(10ms); continue; }
             if (r == RecvStatus::Skipped) continue;
             if (r == RecvStatus::Closed) { gotFinal = true; return; }
-            if (r == RecvStatus::Error) { if (ecb) ecb("WS recv error"); gotFinal = true; return; }
+            if (r == RecvStatus::Error) { reportError("WS recv error"); gotFinal = true; return; }
 
-            ServerMessage msg;
-            if (!ParseServerMessage(rawFrame, msg)) continue;
-            if (msg.type == kMsgError || msg.payload.empty()) continue;
-
-            Json::Value json;
-            Json::Reader reader;
-            if (!reader.parse(msg.payload, json)) continue;
-
-            int code = json.get("code", kVolcengineBigmodelSuccessCode).asInt();
-            if (code != kVolcengineBigmodelSuccessCode && code != kVolcengineLegacySuccessCode) {
-                if (ecb) ecb("API error: " + json.get("message", "").asString());
+            ServerResponse response;
+            if (!ParseServerResponse(rawFrame, response)) {
+                reportError("Invalid Volcengine response");
+                latestText.clear();
+                gotFinal = true; return;
+            }
+            if (response.type == ResponseType::Ignored) continue;
+            if (response.type == ResponseType::Error) {
+                reportError(response.error);
+                latestText.clear();
                 gotFinal = true; return;
             }
 
-            std::string text = ExtractTextFromResult(json["result"]);
+            const std::string& text = response.text;
             if (!text.empty() && text != latestText) {
                 latestText = text;
                 if (cb) cb(text, false, sid);
             }
-            if (msg.flags == kFlagFinalSequence || ResponseHasDefiniteUtterance(json)) {
+            if (response.isFinal) {
                 gotFinal = true; return;
             }
         }
@@ -354,7 +364,7 @@ void VolcengineAsrSession::WorkerLoop() {
     }
 
     CloseWebSocket(curl);
-    curl_easy_cleanup(curl);
+    connection.reset();
 
     if (state_->cancelled) {
         FCITX_DEBUG() << "[voice-input:volcengine] Cancelled session=" << sid;
@@ -362,13 +372,13 @@ void VolcengineAsrSession::WorkerLoop() {
     }
     if (latestText.empty()) {
         FCITX_WARN() << "[voice-input:volcengine] Empty transcript session=" << sid;
-        if (cb) cb("", true, sid);
+        PublishFinal({});
         return;
     }
-    // 转写文本属敏感个人信息，降级为 DEBUG（默认 INFO 级别不落盘内容）
+    // 故障诊断保留会话与长度，不记录用户转写内容。
     FCITX_DEBUG() << "[voice-input:volcengine] final session=" << sid
-                  << " \"" << latestText << "\"";
-    if (cb) cb(latestText, true, sid);
+                  << " len=" << latestText.size();
+    PublishFinal(latestText);
 }
 
 // ── VolcengineAsrEngine ──────────────────────────────────────

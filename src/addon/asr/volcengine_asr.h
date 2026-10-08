@@ -29,6 +29,12 @@ public:
 
 private:
     void WorkerLoop();
+    void PublishFinal(const std::string& transcript) {
+        if (state_->cancelled || finalPublished_) return;
+        finalPublished_ = true;
+        if (resultCb_) resultCb_(transcript, true, state_->sessionId);
+    }
+    bool finalPublished_ = false; // worker-only, includes exceptional exits
 
     // Config snapshot (copied at construction, safe for worker)
     std::string endpoint_;
