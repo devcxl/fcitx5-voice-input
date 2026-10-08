@@ -8,13 +8,9 @@
 // 本测试同时覆盖两个层面：
 //   1. WsFrameReceiver 单测（边界、超限丢弃、类型过滤、CLOSE）；
 //   2. 真实 AsrSession + 假 WS 服务端的端到端分片投递（Realtime TEXT / Volcengine BINARY）。
+//
+// 假服务端与帧编码器已提取到 support/fake_ws_server.h，供非法响应回归测试复用。
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -28,8 +24,9 @@
 #include <curl/curl.h>
 
 #include "asr/realtime_asr.h"
-#include "asr/volcengine_asr.h"
 #include "asr/utils/ws_frame_receiver.h"
+#include "asr/volcengine_asr.h"
+#include "support/fake_ws_server.h"
 
 namespace {
 
@@ -37,6 +34,10 @@ using namespace std::chrono_literals;
 using fcitx::ReceiveWsMessage;
 using fcitx::WsFrameReceiver;
 using fcitx::WsMessageStatus;
+using fcitxws::EncodeBinaryFrame;
+using fcitxws::EncodeTextFrame;
+using fcitxws::FakeWsServer;
+using fcitxws::VolcengineResponseFrame;
 
 bool Check(bool condition, const std::string& message) {
     if (!condition) std::cerr << message << '\n';
@@ -178,245 +179,6 @@ bool TestCloseResetsReceiver() {
                  "CLOSE must be reported") &&
            Check(r.Bytes().empty(), "CLOSE must reset any preserved prefix");
 }
-
-// ── 测试用 WS 服务端 ─────────────────────────────────────────
-
-/// 精简 SHA1（仅用于测试中的 WS 握手校验）。
-struct Sha1 {
-    uint32_t h[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
-    static uint32_t Rol(uint32_t v, int b) { return (v << b) | (v >> (32 - b)); }
-    void Block(const uint8_t* p) {
-        uint32_t w[80];
-        for (int i = 0; i < 16; ++i) {
-            w[i] = (uint32_t(p[i * 4]) << 24) | (uint32_t(p[i * 4 + 1]) << 16) |
-                   (uint32_t(p[i * 4 + 2]) << 8) | uint32_t(p[i * 4 + 3]);
-        }
-        for (int i = 16; i < 80; ++i) {
-            w[i] = Rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-        }
-        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
-        for (int i = 0; i < 80; ++i) {
-            uint32_t f, k;
-            if (i < 20) {
-                f = (b & c) | (~b & d);
-                k = 0x5A827999;
-            } else if (i < 40) {
-                f = b ^ c ^ d;
-                k = 0x6ED9EBA1;
-            } else if (i < 60) {
-                f = (b & c) | (b & d) | (c & d);
-                k = 0x8F1BBCDC;
-            } else {
-                f = b ^ c ^ d;
-                k = 0xCA62C1D6;
-            }
-            const uint32_t t = Rol(a, 5) + f + e + k + w[i];
-            e = d;
-            d = c;
-            c = Rol(b, 30);
-            b = a;
-            a = t;
-        }
-        h[0] += a;
-        h[1] += b;
-        h[2] += c;
-        h[3] += d;
-        h[4] += e;
-    }
-    std::array<uint8_t, 20> Digest(const std::string& s) {
-        std::vector<uint8_t> msg(s.begin(), s.end());
-        const uint64_t bits = uint64_t(msg.size()) * 8;
-        msg.push_back(0x80);
-        while (msg.size() % 64 != 56) msg.push_back(0);
-        for (int i = 7; i >= 0; --i) msg.push_back(uint8_t(bits >> (i * 8)));
-        for (size_t i = 0; i < msg.size(); i += 64) Block(&msg[i]);
-        std::array<uint8_t, 20> out{};
-        for (int i = 0; i < 5; ++i) {
-            out[i * 4] = uint8_t(h[i] >> 24);
-            out[i * 4 + 1] = uint8_t(h[i] >> 16);
-            out[i * 4 + 2] = uint8_t(h[i] >> 8);
-            out[i * 4 + 3] = uint8_t(h[i]);
-        }
-        return out;
-    }
-};
-
-std::string Base64(const uint8_t* d, size_t n) {
-    static const char* t =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string o;
-    for (size_t i = 0; i < n; i += 3) {
-        uint32_t v = uint32_t(d[i]) << 16;
-        if (i + 1 < n) v |= uint32_t(d[i + 1]) << 8;
-        if (i + 2 < n) v |= uint32_t(d[i + 2]);
-        o += t[(v >> 18) & 63];
-        o += t[(v >> 12) & 63];
-        o += (i + 1 < n) ? t[(v >> 6) & 63] : '=';
-        o += (i + 2 < n) ? t[v & 63] : '=';
-    }
-    return o;
-}
-
-std::vector<uint8_t> EncodeDataFrame(uint8_t firstByte,
-                                     const std::vector<uint8_t>& payload) {
-    std::vector<uint8_t> frame;
-    frame.push_back(firstByte);
-    if (payload.size() < 126) {
-        frame.push_back(uint8_t(payload.size()));
-    } else if (payload.size() < 65536) {
-        frame.push_back(126);
-        frame.push_back(uint8_t(payload.size() >> 8));
-        frame.push_back(uint8_t(payload.size() & 0xff));
-    } else {
-        frame.push_back(127);
-        for (int i = 7; i >= 0; --i) {
-            frame.push_back(uint8_t((uint64_t(payload.size()) >> (i * 8)) & 0xff));
-        }
-    }
-    frame.insert(frame.end(), payload.begin(), payload.end());
-    return frame;
-}
-
-std::vector<uint8_t> EncodeTextFrame(const std::string& payload) {
-    return EncodeDataFrame(
-        0x81, std::vector<uint8_t>(payload.begin(), payload.end()));
-}
-
-std::vector<uint8_t> EncodeBinaryFrame(const std::vector<uint8_t>& payload) {
-    return EncodeDataFrame(0x82, payload);
-}
-
-void AppendUint32Be(std::vector<uint8_t>& out, uint32_t value) {
-    out.push_back(uint8_t((value >> 24) & 0xff));
-    out.push_back(uint8_t((value >> 16) & 0xff));
-    out.push_back(uint8_t((value >> 8) & 0xff));
-    out.push_back(uint8_t(value & 0xff));
-}
-
-/// 火山引擎 bigmodel 服务端响应帧：带 sequence 的 full server response。
-/// 布局：[0x11][type|flags][ser|comp][0x00][sequence:4][payload size:4][payload]
-std::vector<uint8_t> VolcengineResponseFrame(const std::string& json,
-                                             uint32_t sequence,
-                                             uint8_t flags = 0x3 /* final */) {
-    std::vector<uint8_t> frame;
-    frame.push_back(0x11);
-    frame.push_back(uint8_t((0x9 << 4) | flags));
-    frame.push_back(uint8_t(0x10));  // JSON, no compression
-    frame.push_back(0x00);
-    AppendUint32Be(frame, sequence);
-    const auto payload = std::vector<uint8_t>(json.begin(), json.end());
-    AppendUint32Be(frame, static_cast<uint32_t>(payload.size()));
-    frame.insert(frame.end(), payload.begin(), payload.end());
-    return frame;
-}
-
-/// 假 WS 服务端：完成握手后把预置的原始字节按 writeSize 分片 + 间隔写出。
-class FakeWsServer {
-public:
-    FakeWsServer(std::vector<uint8_t> response,
-                 size_t writeSize,
-                 std::chrono::milliseconds gap)
-        : response_(std::move(response)), writeSize_(writeSize), gap_(gap) {}
-
-    ~FakeWsServer() { Stop(); }
-
-    bool Start() {
-        listenFd_ = socket(AF_INET, SOCK_STREAM, 0);
-        if (listenFd_ < 0) return false;
-        int one = 1;
-        setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = 0;
-        if (bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-            return false;
-        }
-        socklen_t len = sizeof(addr);
-        if (getsockname(listenFd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
-            return false;
-        }
-        port_ = ntohs(addr.sin_port);
-        if (listen(listenFd_, 4) != 0) return false;
-        thread_ = std::thread([this] { Serve(); });
-        return true;
-    }
-
-    void Stop() {
-        stopping_ = true;
-        if (listenFd_ >= 0) {
-            shutdown(listenFd_, SHUT_RDWR);
-            close(listenFd_);
-            listenFd_ = -1;
-        }
-        if (thread_.joinable()) thread_.join();
-    }
-
-    uint16_t Port() const { return port_; }
-    std::string Url() const {
-        return "ws://127.0.0.1:" + std::to_string(port_) + "/";
-    }
-
-private:
-    void Serve() {
-        const int cfd = accept(listenFd_, nullptr, nullptr);
-        if (cfd < 0) return;
-
-        std::string request;
-        std::array<char, 4096> buf{};
-        while (request.find("\r\n\r\n") == std::string::npos) {
-            const ssize_t n = read(cfd, buf.data(), buf.size());
-            if (n <= 0) {
-                close(cfd);
-                return;
-            }
-            request.append(buf.data(), size_t(n));
-        }
-
-        std::string key;
-        const size_t pos = request.find("Sec-WebSocket-Key:");
-        if (pos != std::string::npos) {
-            size_t start = pos + std::strlen("Sec-WebSocket-Key:");
-            while (start < request.size() && request[start] == ' ') ++start;
-            const size_t end = request.find("\r\n", start);
-            key = request.substr(start, end - start);
-        }
-        Sha1 sha;
-        const auto digest = sha.Digest(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-        const std::string accept = Base64(digest.data(), digest.size());
-        const std::string responseHeaders =
-            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-            "Connection: Upgrade\r\nX-Tt-Logid: test-log-id\r\n"
-            "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
-        if (write(cfd, responseHeaders.data(), responseHeaders.size()) < 0) {
-            close(cfd);
-            return;
-        }
-
-        // 让客户端先发完握手后的事件（session.update / 请求帧 / 音频），
-        // 不做解析——本测试只验证服务端到客户端方向的分片重组。
-        std::this_thread::sleep_for(150ms);
-
-        size_t off = 0;
-        while (off < response_.size() && !stopping_) {
-            const size_t n = std::min(writeSize_, response_.size() - off);
-            const ssize_t written = write(cfd, response_.data() + off, n);
-            if (written <= 0) break;
-            off += size_t(written);
-            std::this_thread::sleep_for(gap_);
-        }
-        std::this_thread::sleep_for(300ms);
-        close(cfd);
-    }
-
-    std::vector<uint8_t> response_;
-    size_t writeSize_;
-    std::chrono::milliseconds gap_;
-    int listenFd_ = -1;
-    uint16_t port_ = 0;
-    std::atomic<bool> stopping_{false};
-    std::thread thread_;
-};
 
 // ── 端到端：真实 RealtimeAsrSession + 分片 TEXT 帧 ────────────
 
