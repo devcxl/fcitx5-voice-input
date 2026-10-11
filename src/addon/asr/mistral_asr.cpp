@@ -1,16 +1,15 @@
 #include "mistral_asr.h"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
-#include <cstring>
 #include <thread>
 
 #include <curl/curl.h>
 #include <fcitx-utils/log.h>
-#include <json/json.h>
 
-#include "utils/base64.h"
+#include "protocol/mistral_protocol.h"
+#include "utils/asr_worker_boundary.h"
+#include "utils/curl_resources.h"
 #include "utils/ws_frame_receiver.h"
 #include "utils/ws_frame_sender.h"
 
@@ -19,70 +18,57 @@ using namespace std::chrono_literals;
 namespace fcitx {
 namespace {
 
-constexpr int kAppendChunkSamples = 1600; // ~100ms @16k 音频推送粒度
+constexpr int kAppendChunkSamples = 1600; // ~100ms @16k
 constexpr const char* kLogTag = "[voice-input:mistral]";
+using namespace mistral_protocol;
 
-std::string JsonToString(const Json::Value& json) {
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-    return Json::writeString(builder, json);
+std::string DescribeConnectFailure(CURLcode result, long status) {
+    if (status != 0 && status != 101) {
+        std::string message = "Mistral WS handshake failed: HTTP " + std::to_string(status);
+        if (status == 401 || status == 403) message += " (check API key and permissions)";
+        if (status == 404) message += " (check base URL and model)";
+        if (status == 429) message += " (rate limited)";
+        return message;
+    }
+    return "Mistral connect failed: " + std::string(curl_easy_strerror(result));
 }
 
-// 发送一个 TEXT WS 帧（Mistral Realtime 用 JSON 文本帧）。
-// 上游不读 socket 时有界失败（issue #42）：发送预算到期即返回 false。
-bool SendWebSocketText(CURL* curl, const std::string& data,
-                       const WsAbort& abort,
-                       WsDeadline deadline = WsDeadline{}) {
-    return SendWsMessage(curl, data, CURLWS_TEXT, abort, kLogTag, deadline);
+bool PermanentHttpFailure(long status) {
+    return status >= 300 && status < 500 && status != 408 && status != 429;
 }
 
 void CloseWebSocket(CURL* curl) {
-    if (!curl) return;
     size_t sent = 0;
-    CURLcode res = curl_ws_send(curl, "", 0, &sent, 0, CURLWS_CLOSE);
-    if (res != CURLE_OK)
-        FCITX_WARN() << "[voice-input:mistral] WS close failed: "
-                     << curl_easy_strerror(res);
+    const auto result = curl_ws_send(curl, "", 0, &sent, 0, CURLWS_CLOSE);
+    if (result != CURLE_OK)
+        FCITX_WARN() << kLogTag << " WS close failed: " << curl_easy_strerror(result);
 }
 
 } // namespace
 
-// ── MistralAsrSession ────────────────────────────────────────
-
 MistralAsrSession::MistralAsrSession(const AsrEngine::Config& config,
-                                     AsrSession::ErrorCallback errorCb,
-                                     uint64_t sessionId) {
+                                   AsrSession::ErrorCallback errorCb,
+                                   uint64_t sessionId) {
     state_->sessionId = sessionId;
     errorCb_ = std::move(errorCb);
     audioChunks_ = std::make_shared<ThreadSafeQueue<std::vector<int16_t>>>(512);
-
-    // Mistral Realtime 端点固定为官方地址（自托管需走代理/网关时可在配置中改 baseUrl）
-    std::string base = config.apiEndpoint;
-    if (base.empty()) base = "https://api.mistral.ai/v1";
-    const std::string httpsPrefix = "https://";
-    const std::string wssPrefix = "wss://";
-    if (base.compare(0, httpsPrefix.size(), httpsPrefix) == 0)
-        base.replace(0, httpsPrefix.size(), wssPrefix);
-    if (!base.empty() && base.back() != '/') base += '/';
-
-    modelName_ = config.modelName.empty()
-                     ? "voxtral-mini-transcribe-realtime-2602"
-                     : config.modelName;
-    // base 形如 wss://api.mistral.ai/v1/
+    std::string base = config.apiEndpoint.empty() ? "https://api.mistral.ai/v1"
+                                                 : config.apiEndpoint;
+    if (base.starts_with("https://")) base.replace(0, 8, "wss://");
+    else if (base.starts_with("http://")) base.replace(0, 7, "ws://");
+    if (base.back() != '/') base += '/';
+    modelName_ = config.modelName.empty() ? "voxtral-mini-transcribe-realtime-2602"
+                                         : config.modelName;
     endpoint_ = base + "audio/transcriptions/realtime?model=" + modelName_;
     apiKey_ = config.apiKey;
     commitIntervalMs_ = std::clamp(config.commitIntervalMs, 1000, 30000);
     targetStreamingDelayMs_ = std::clamp(config.targetStreamingDelayMs, 0, 1000);
-
+    // Constructor/start failure notification remains CRASH-ASR-002's scope.
     if (apiKey_.empty()) {
         state_->finished = true;
         if (errorCb_) errorCb_("Mistral API key not configured");
         if (resultCb_) resultCb_("", true, state_->sessionId);
-        return;
     }
-
-    FCITX_DEBUG() << "[voice-input:mistral] Init session=" << sessionId
-                  << " endpoint=" << endpoint_;
 }
 
 MistralAsrSession::~MistralAsrSession() {
@@ -95,8 +81,9 @@ void MistralAsrSession::StartWorker() {
         auto self = std::static_pointer_cast<MistralAsrSession>(shared_from_this());
         state_->workerDone.store(false, std::memory_order_release);
         workerThread_ = std::make_unique<std::thread>([self]() {
-            self->WorkerLoop();
-            self->state_->workerDone.store(true, std::memory_order_release);
+            RunAsrWorker(*self->state_, kLogTag, self->errorCb_,
+                         [self] { self->WorkerLoop(); },
+                         [self] { self->PublishFinal({}); });
         });
     }
 }
@@ -126,13 +113,12 @@ void MistralAsrSession::Cancel() {
 void MistralAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout) {
     if (workerThread_ && workerThread_->joinable()) {
         if (workerThread_->get_id() == std::this_thread::get_id()) {
-            // worker 持有最后一个会话引用时，析构会在自身线程执行，不能 join 自身。
+            // The worker may own the last reference; never join itself.
             workerThread_->detach();
         } else if (WaitForWorkerCompletion(state_->workerDone, timeout)) {
             workerThread_->join();
         } else {
-            FCITX_WARN() << "[voice-input:mistral] Join timeout session="
-                         << state_->sessionId;
+            FCITX_WARN() << kLogTag << " Join timeout session=" << state_->sessionId;
             workerThread_->detach();
         }
     }
@@ -140,236 +126,184 @@ void MistralAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout) {
 }
 
 void MistralAsrSession::WorkerLoop() {
-    uint64_t sid = state_->sessionId;
-    auto audioChunks = audioChunks_;  // keep queue alive
-    auto cb = resultCb_;
-    auto ecb = errorCb_;
-
-    auto buildAppendEvent = [this](const std::vector<int16_t>& pcm) -> std::string {
-        Json::Value ev;
-        ev["type"] = "input_audio.append";
-        std::vector<uint8_t> bytes(pcm.size() * 2);
-        std::memcpy(bytes.data(), pcm.data(), bytes.size());
-        ev["audio"] = Base64Encode(bytes.data(), bytes.size());
-        return JsonToString(ev);
+    const auto sid = state_->sessionId;
+    auto reportError = [&](const std::string& message) {
+        NotifyAsrError(errorCb_, message, kLogTag, sid);
     };
-    auto buildFlushEvent = []() -> std::string {
-        Json::Value ev;
-        ev["type"] = "input_audio.flush";
-        return JsonToString(ev);
+    auto fail = [&](const std::string& message, const std::string& fallback = std::string{}) {
+        reportError(message);
+        PublishFinal(fallback);
     };
-    auto buildEndEvent = []() -> std::string {
-        Json::Value ev;
-        ev["type"] = "input_audio.end";
-        return JsonToString(ev);
-    };
-    auto buildSessionUpdate = [this]() -> std::string {
-        Json::Value ev;
-        ev["type"] = "session.update";
-        // 音频格式：Mistral Realtime 原生接受 16k s16le PCM
-        ev["session"]["audio_format"]["encoding"] = "pcm_s16le";
-        ev["session"]["audio_format"]["sample_rate"] = 16000;
-        // 目标流式延迟：等更多上下文换取同音字/准确率（0 = 不等待，最快）
-        ev["session"]["target_streaming_delay_ms"] = targetStreamingDelayMs_;
-        return JsonToString(ev);
-    };
+    std::string previousTranscript;
+    std::vector<int16_t> pending16k;
+    std::string lastConnectFailure;
 
-    bool gotDone = false;         // 是否已收到 transcription.done（最终终止）
-    bool endSent = false;         // input_audio.end 是否已发出
-    std::string fullTranscript;   // 会话级累积文本（整句，preedit 显示的依据）
-    std::string currentTranscript; // 当前段 delta 累积
-    std::vector<int16_t> pending16k; // 提升到连接循环外，重连时保留未发送缓冲
-
-    // 连接循环：处理首次连接 + 断线/30min 重连（保持同一 sessionId）
-    for (int attempt = 0;
-         attempt < kMaxReconnectAttempts && !gotDone; ++attempt) {
-        if (state_->cancelled) break;
-
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            if (ecb) ecb("Failed to init curl");
-            if (cb) cb("", true, sid);
+    for (int attempt = 0; attempt < kMaxReconnectAttempts; ++attempt) {
+        if (state_->cancelled) return;
+        if (state_->finished) {
+            if (!lastConnectFailure.empty()) reportError(lastConnectFailure);
+            PublishFinal(previousTranscript);
+            return; // End must never start another connection.
+        }
+        CurlHeaders headers;
+        CurlHandle connection(curl_easy_init());
+        CURL* curl = connection.get();
+        if (!curl) { fail("Failed to init curl", previousTranscript); return; }
+        if (!headers.Append("Authorization: Bearer " + apiKey_)) {
+            fail("Failed to allocate curl headers", previousTranscript);
             return;
         }
-
-        struct curl_slist* headers = nullptr;
-        std::string authHeader = "Authorization: Bearer " + apiKey_;
-        headers = curl_slist_append(headers, authHeader.c_str());
-
         curl_easy_setopt(curl, CURLOPT_URL, endpoint_.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers.Get());
         curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "fcitx5-voice-input/0.1.0");
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        // 建连也响应 finished：End() 后重试连接没有意义，应立即交出终态
         connectAbort_ = WsAbort::CancelOrFinished(state_->cancelled, state_->finished);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, WsAbortProgressCallback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &connectAbort_);
-
-        CURLcode connectResult = curl_easy_perform(curl);
-        curl_slist_free_all(headers);
-
-        if (state_->cancelled) {
-            curl_easy_cleanup(curl);
-            break;
-        }
+        const auto connectResult = curl_easy_perform(curl);
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        if (state_->cancelled) return;
         if (connectResult != CURLE_OK) {
-            FCITX_ERROR() << "[voice-input:mistral] WS connect failed: "
-                          << curl_easy_strerror(connectResult) << " attempt=" << attempt;
-            curl_easy_cleanup(curl);
-            if (attempt == kMaxReconnectAttempts - 1) {
-                if (ecb) ecb("Mistral connect failed: " + std::string(curl_easy_strerror(connectResult)));
-                if (cb) cb("", true, sid);
+            // End abort is control flow, not a replacement for an earlier HTTP
+            // rejection. Never log URL, headers, or server response bodies.
+            if (connectResult == CURLE_ABORTED_BY_CALLBACK && state_->finished &&
+                status == 0 && lastConnectFailure.empty()) {
+                // No HTTP response was observed. End is not a transport fault;
+                // do not invent an "application callback" error as its cause.
+                PublishFinal(previousTranscript);
                 return;
             }
-            std::this_thread::sleep_for(1s);
+            if (status != 0 || connectResult != CURLE_ABORTED_BY_CALLBACK ||
+                lastConnectFailure.empty())
+                lastConnectFailure = DescribeConnectFailure(connectResult, status);
+            FCITX_ERROR() << kLogTag << " " << lastConnectFailure
+                          << " attempt=" << attempt << " session=" << sid;
+            if (PermanentHttpFailure(status) || state_->finished ||
+                attempt == kMaxReconnectAttempts - 1) {
+                fail(lastConnectFailure, previousTranscript);
+                return;
+            }
+            connection.reset();
+            const auto retryAt = std::chrono::steady_clock::now() + 1s;
+            while (!state_->cancelled && !state_->finished &&
+                   std::chrono::steady_clock::now() < retryAt)
+                std::this_thread::sleep_for(10ms);
             continue;
         }
-
-        FCITX_INFO() << "[voice-input:mistral] WS connected session=" << sid;
-
-        // 会话开始：发送 session.update（音频格式/语言提示）
-        SendWebSocketText(curl, buildSessionUpdate(),
-                          WsAbort::CancelOnly(state_->cancelled));
+        lastConnectFailure.clear();
+        FCITX_INFO() << kLogTag << " WS connected session=" << sid;
         WsFrameReceiver receiver(CURLWS_TEXT);
-
-        auto sessionStart = std::chrono::steady_clock::now();
-        auto lastFlushTime = sessionStart;
-        bool appendedSinceFlush = false; // 自上次 flush 后是否 append 过音频
-
-        // 处理服务端事件；返回 false 表示传输失败（需重连/结束）
-        auto handleServer = [&](std::chrono::milliseconds timeout) -> bool {
-            auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!state_->cancelled && !gotDone &&
-                   std::chrono::steady_clock::now() < deadline) {
-                WsMessageStatus r =
-                    ReceiveWsMessage(curl, receiver, kLogTag);
-                if (r == WsMessageStatus::Again) {
-                    std::this_thread::sleep_for(10ms);
+        bool created = false;
+        std::string segmentTranscript;
+        std::string deltaTranscript;
+        auto transcript = [&] { return previousTranscript + segmentTranscript + deltaTranscript; };
+        auto publishPartial = [&] {
+            const auto text = transcript();
+            if (resultCb_ && !text.empty()) resultCb_(text, false, sid);
+        };
+        auto receive = [&](std::chrono::milliseconds timeout) -> bool {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (!state_->cancelled && !finalPublished_ &&
+                   !endBudget_.Expired() && std::chrono::steady_clock::now() < deadline) {
+                const auto result = ReceiveWsMessage(curl, receiver, kLogTag);
+                if (result == WsMessageStatus::Again) {
+                    std::this_thread::sleep_for(5ms);
                     continue;
                 }
-                if (r == WsMessageStatus::Skipped) continue;
-                if (r == WsMessageStatus::Closed) return false;
-                if (r == WsMessageStatus::Error) {
-                    if (ecb) ecb("WS recv error");
+                if (result == WsMessageStatus::Skipped) continue;
+                if (result == WsMessageStatus::Closed || result == WsMessageStatus::Error) {
+                    reportError("Mistral WebSocket disconnected before transcription.done");
+                    PublishFinal(transcript());
                     return false;
                 }
-                const std::string text = receiver.AsString();
-
-                Json::Value json;
-                Json::Reader reader;
-                if (!reader.parse(text, json)) continue;
-
-                std::string type = json.get("type", "").asString();
-                if (type == "transcription.text.delta") {
-                    currentTranscript += json.get("text", "").asString();
-                    // preedit 显示整句累积：fullTranscript + 当前段增量
-                    if (cb && !currentTranscript.empty()) {
-                        std::string partial = fullTranscript + currentTranscript;
-                        cb(partial, false, sid);
-                    }
-                } else if (type == "transcription.segment") {
-                    // 服务端返回一个已完成的段（类似 GPT 的 completed）。
-                    // Mistral 的 segment 事件携带完整段落文本；若与 delta 累积
-                    // 语义重叠，则以 delta 累积为准，此处仅做完整性兜底。
-                    std::string seg = json.get("text", "").asString();
-                    if (seg.empty() && json.isMember("segments")) {
-                        const auto& segs = json["segments"];
-                        if (segs.isArray() && segs.size() > 0) {
-                            seg = segs[0].get("text", "").asString();
-                        }
-                    }
-                    if (!seg.empty()) {
-                        fullTranscript += seg;
-                        currentTranscript.clear();
-                        if (cb) cb(fullTranscript, false, sid);
-                    }
-                } else if (type == "transcription.done") {
-                    // 流终止：服务端已处理完所有音频，返回最终文本（也可能为空）。
-                    // 若服务端未单独发 segment，则 done 的 text 是最终完整结果。
-                    std::string finalText = json.get("text", "").asString();
-                    if (!finalText.empty() && fullTranscript.find(finalText) == std::string::npos) {
-                        fullTranscript += finalText;
-                    }
-                    gotDone = true;
-                    if (cb && !fullTranscript.empty()) cb(fullTranscript, true, sid);
-                    else if (cb) cb("", true, sid);
-                    return true;
-                } else if (type == "error") {
-                    std::string msg = json.get("message", "").asString();
-                    if (msg.empty()) msg = "Mistral realtime error";
-                    if (ecb) ecb(msg);
-                    // 错误后服务端可能直接关闭；若未关闭则继续等待 done/关闭
-                    FCITX_WARN() << "[voice-input:mistral] server error: " << msg
-                                 << " session=" << sid;
+                ServerEvent event;
+                if (!ParseServerEvent(receiver.AsString(), event)) {
+                    fail("Invalid Mistral event");
+                    return false;
                 }
-                // 其他事件（session.created/updated 等）忽略
+                switch (event.type) {
+                case EventType::Created: created = true; return true;
+                case EventType::Delta:
+                    deltaTranscript += event.text;
+                    publishPartial();
+                    break;
+                case EventType::Segment:
+                    // Segment text confirms the deltas for that segment, not
+                    // an additional copy. Done is authoritative per connection.
+                    segmentTranscript += event.text;
+                    deltaTranscript.clear();
+                    publishPartial();
+                    break;
+                case EventType::Done:
+                    PublishFinal(previousTranscript + event.text);
+                    return true;
+                case EventType::Error:
+                    fail(event.error);
+                    return false;
+                case EventType::Ignored: break;
+                }
             }
             return true;
         };
-
+        // Match official SDK: await application-level creation before update
+        // or audio. End during this wait still observes its total budget.
+        const WsDeadline creationBudget;
+        while (!created && !state_->cancelled && !finalPublished_ &&
+               !creationBudget.Expired() && !endBudget_.Expired()) {
+            if (!receive(20ms)) break;
+        }
+        if (state_->cancelled || finalPublished_) return;
+        if (!created) {
+            fail("Mistral session creation timed out", previousTranscript);
+            return;
+        }
+        auto send = [&](const std::string& payload, bool ending = false) {
+            return SendWsMessage(curl, payload, CURLWS_TEXT,
+                                 ending ? WsAbort::CancelOnly(state_->cancelled)
+                                        : WsAbort::CancelOrFinished(state_->cancelled, state_->finished),
+                                 kLogTag, endBudget_.Deadline());
+        };
+        if (!send(BuildSessionUpdate(targetStreamingDelayMs_), true)) {
+            fail("Mistral session update failed", previousTranscript);
+            return;
+        }
+        const auto sessionStart = std::chrono::steady_clock::now();
+        auto lastFlushTime = sessionStart;
+        bool appendedSinceFlush = false;
         bool reconnectNeeded = false;
-        while (!state_->cancelled && !gotDone && !reconnectNeeded) {
+        while (!state_->cancelled && !finalPublished_) {
+            if (endBudget_.Expired()) {
+                reportError("Mistral End wait timed out");
+                PublishFinal(transcript());
+                break;
+            }
             std::vector<int16_t> chunk;
-            bool hasChunk = audioChunks->TryPop(chunk);
-
+            const bool hasChunk = audioChunks_->TryPop(chunk);
             if (hasChunk && chunk.empty() && state_->finished) {
-                // 语音结束：先把 pending16k 剩余音频全部 flush，再发 end 终止流。
-                // 结束后任何发送失败/超时都不重连（空 chunk 已消费、End 分支不会重试），
-                // 直接以已累积文本兜底 final 退出。
-                // flush 与 end 共用一份预算：End 路径总发送耗时上界 = 一份预算，
-                // 确保 End 能赶在 SessionReaper 的 15s JoinWithTimeout 之前返回。
-                const WsDeadline endBudget = endBudget_.Deadline();
-                if (!pending16k.empty() && !state_->cancelled) {
-                    if (!SendWebSocketText(curl, buildAppendEvent(pending16k),
-                                           WsAbort::CancelOnly(state_->cancelled),
-                                           endBudget)) {
-                        FCITX_ERROR() << "[voice-input:mistral] End flush failed session=" << sid;
-                        if (cb) cb(fullTranscript, true, sid);
-                        gotDone = true;
-                        break;
-                    }
-                    pending16k.clear();
-                }
-                if (!SendWebSocketText(curl, buildEndEvent(),
-                                       WsAbort::CancelOnly(state_->cancelled),
-                                       endBudget)) {
-                    FCITX_ERROR() << "[voice-input:mistral] End send failed session=" << sid;
-                    if (cb) cb(fullTranscript, true, sid);
-                    gotDone = true;
+                if ((!pending16k.empty() && !send(BuildAppendEvent(pending16k), true)) ||
+                    !send(BuildControlEvent("input_audio.flush"), true) ||
+                    !send(BuildControlEvent("input_audio.end"), true)) {
+                    reportError("Mistral End send failed");
+                    PublishFinal(transcript());
                     break;
                 }
-                endSent = true;
-                while (!state_->cancelled && !gotDone && !endBudget_.Expired()) {
-                    if (!handleServer(50ms)) { gotDone = true; break; }
-                }
-                if (!gotDone && !state_->cancelled) {
-                    // End 总预算耗尽仍未收到 done → 以已累积文本兜底 final，结束会话。
-                    FCITX_WARN() << "[voice-input:mistral] End wait timeout session=" << sid;
-                    if (cb) cb(fullTranscript, true, sid);
-                    gotDone = true;
+                while (!state_->cancelled && !finalPublished_ && !endBudget_.Expired())
+                    if (!receive(20ms)) break;
+                if (!state_->cancelled && !finalPublished_) {
+                    reportError("Mistral End wait timed out");
+                    PublishFinal(transcript());
                 }
                 break;
             }
-            if (hasChunk && !chunk.empty()) {
-                // Mistral Realtime 原生接受 16k s16le PCM，无需重采样，直接累积。
-                pending16k.insert(pending16k.end(), chunk.begin(), chunk.end());
-            }
-
-            // 周期 flush 兜底（长句无停顿也能出增量）
-            // 条件：距上次 flush 超时 且 期间确实 append 过音频（服务端有待 flush 内容）
-            auto now = std::chrono::steady_clock::now();
-            auto elapsedSinceFlush = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - lastFlushTime).count();
-            if (appendedSinceFlush && elapsedSinceFlush >= commitIntervalMs_) {
-                if (!SendWebSocketText(curl, buildFlushEvent(),
-                                       WsAbort::CancelOrFinished(
-                                           state_->cancelled, state_->finished))) {
-                    // End() 触发的中止不是传输失败：回到循环顶部消费 End 哨兵，
-                    // 由 End 收尾路径（flush + end + 等待 done）处理。
+            if (hasChunk) pending16k.insert(pending16k.end(), chunk.begin(), chunk.end());
+            const auto now = std::chrono::steady_clock::now();
+            if (appendedSinceFlush && now - lastFlushTime >= std::chrono::milliseconds(commitIntervalMs_)) {
+                if (!send(BuildControlEvent("input_audio.flush"))) {
                     if (state_->finished || state_->cancelled) continue;
                     reconnectNeeded = true;
                     break;
@@ -377,81 +311,41 @@ void MistralAsrSession::WorkerLoop() {
                 lastFlushTime = now;
                 appendedSinceFlush = false;
             }
-
-            // 推送足够粒度的音频
-            if (pending16k.size() >= kAppendChunkSamples && !state_->cancelled) {
-                size_t sendSize = (pending16k.size() / kAppendChunkSamples) * kAppendChunkSamples;
-                std::vector<int16_t> toSend(pending16k.begin(), pending16k.begin() + sendSize);
-                if (!SendWebSocketText(curl, buildAppendEvent(toSend),
-                                       WsAbort::CancelOrFinished(
-                                           state_->cancelled, state_->finished))) {
-                    // 同上：End() 触发的中止交由 End 收尾路径处理。
+            if (pending16k.size() >= kAppendChunkSamples) {
+                if (!send(BuildAppendEvent(pending16k))) {
                     if (state_->finished || state_->cancelled) continue;
                     reconnectNeeded = true;
                     break;
                 }
-                pending16k.erase(pending16k.begin(), pending16k.begin() + sendSize);
+                pending16k.clear();
                 appendedSinceFlush = true;
-                // 注意：不要在此刷新 lastFlushTime。
-                // lastFlushTime 的语义是「距上次 flush 的时间」，只在 flush 时更新；
-                // 若在 append 后刷新，持续说话时周期 flush 将永远不会触发。
             }
-
-            // 30min 会话上限：强制 flush + 重连（仅当有待 flush 音频时）
-            auto sessionAge = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - sessionStart).count();
-            if (sessionAge >= kSessionMaxDuration.count() && appendedSinceFlush) {
-                FCITX_WARN() << "[voice-input:mistral] 30min session limit, reconnect";
-                if (SendWebSocketText(curl, buildFlushEvent(),
-                                      WsAbort::CancelOrFinished(
-                                          state_->cancelled, state_->finished))) {
-                    appendedSinceFlush = false;
-                } else {
-                    FCITX_ERROR() << "[voice-input:mistral] 30min flush failed session=" << sid;
+            if (now - sessionStart >= kSessionMaxDuration && appendedSinceFlush) {
+                if (!send(BuildControlEvent("input_audio.flush"))) {
+                    if (state_->finished || state_->cancelled) continue;
                 }
                 reconnectNeeded = true;
                 break;
             }
-
-            if (!handleServer(20ms)) { gotDone = true; break; }
+            if (!receive(20ms)) break;
             std::this_thread::sleep_for(5ms);
         }
-
         CloseWebSocket(curl);
-        curl_easy_cleanup(curl);
-
-        if (state_->cancelled || gotDone) break;
-        if (reconnectNeeded && (state_->finished || endBudget_.Expired())) {
-            // 语音已结束（End）或 End 预算耗尽：不再重连。
-            // 重连只会再阻塞一轮发送/建连并让 worker 被 reaper detach（issue #42）。
-            FCITX_WARN() << "[voice-input:mistral] End reached, skipping reconnect "
-                            "session=" << sid;
-            if (!endSent && cb) cb(fullTranscript, true, sid);
-            gotDone = true;
+        if (state_->cancelled || finalPublished_) return;
+        if (!reconnectNeeded || state_->finished) {
+            previousTranscript = transcript();
             break;
         }
-        if (reconnectNeeded) {
-            FCITX_WARN() << "[voice-input:mistral] Reconnecting session=" << sid;
-            // 重连后是全新服务端会话，旧段 delta 上下文已失效：
-            // 清掉当前段半截累积，避免 preedit 显示幽灵残文（fullTranscript 保留）
-            currentTranscript.clear();
-            std::this_thread::sleep_for(1s);
-            continue;
-        }
+        // The new server session has no in-flight segment context. Only retain
+        // confirmed segments, not speculative deltas that could be replayed.
+        previousTranscript += segmentTranscript;
     }
-
-    if (state_->cancelled) {
-        FCITX_DEBUG() << "[voice-input:mistral] Cancelled session=" << sid;
-        return;
-    }
-    if (!gotDone && !endSent) {
-        // 未正常结束（连接断开/失败）：以空 final 触发 pipeline 错误/清理分支。
-        // endSent 已发时说明已走 End 兜底分支，不必重复上报。
-        if (cb) cb("", true, sid);
+    if (!state_->cancelled) {
+        reportError(lastConnectFailure.empty() ? "Mistral connection ended before completion"
+                                               : lastConnectFailure);
+        PublishFinal(previousTranscript);
     }
 }
-
-// ── MistralAsrEngine ─────────────────────────────────────────
 
 bool MistralAsrEngine::Init(const Config& config) {
     config_ = config;
@@ -466,10 +360,8 @@ AsrSessionStart MistralAsrEngine::StartSession() {
         cancelledSessionId = CancelOldestSessionIfLimitReachedLocked();
         sid = NextSessionId();
     }
-
     auto session = std::make_shared<MistralAsrSession>(config_, errorCb_, sid);
     session->SetResultCallback(resultCb_);
-
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         sessions_[sid] = session;
