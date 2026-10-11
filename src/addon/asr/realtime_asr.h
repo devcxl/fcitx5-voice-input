@@ -76,6 +76,11 @@ public:
 
 private:
     void WorkerLoop();
+    void PublishFinal(const std::string& transcript) {
+        if (state_->cancelled || !terminal_.TryMarkPublished()) return;
+        if (resultCb_) resultCb_(transcript, true, state_->sessionId);
+    }
+    RealtimeTerminalState terminal_; // worker-only, includes exceptional exits
 
     // Config snapshot (copied at construction, safe for worker)
     std::string endpoint_;

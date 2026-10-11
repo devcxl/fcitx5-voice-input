@@ -48,6 +48,7 @@ public:
 private:
     void InitializeIfNeeded();
     void OnAsrResult(const std::string& text);
+    void OnVadStatus(bool speaking);
     void PollResults();
     void ClearUI();
     void SetStatus(const std::string& text);
@@ -63,7 +64,8 @@ private:
     VolcengineAsrConfig volcengineConfig_;
     MistralAsrConfig mistralConfig_;
 
-    InputContext* activeIc_ = nullptr;
+    // Main-thread only: generation checks do not keep an InputContext alive.
+    TrackableObjectReference<InputContext> activeIc_;
     std::atomic<uint64_t> activeGeneration_{0};
     std::atomic<uint64_t> sessionGeneration_{0};
     uint64_t pendingStopGeneration_ = 0;

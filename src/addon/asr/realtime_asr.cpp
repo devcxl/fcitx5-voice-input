@@ -3,14 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstring>
 #include <thread>
 
 #include <curl/curl.h>
 #include <fcitx-utils/log.h>
-#include <json/json.h>
 
-#include "utils/base64.h"
+#include "protocol/realtime_protocol.h"
+#include "utils/asr_worker_boundary.h"
+#include "utils/curl_resources.h"
 #include "utils/ws_frame_receiver.h"
 #include "utils/ws_frame_sender.h"
 
@@ -24,46 +24,7 @@ constexpr int kTargetSampleRate = 24000;  // OpenAI Realtime 要求 >= 24kHz
 constexpr int kAppendChunkSamples = 2400; // ~100ms @24k 音频推送粒度（含重采样后）
 constexpr const char* kLogTag = "[voice-input:realtime]";
 
-// 16k → 24k 线性插值（比例 3/2）。输出样本数 = floor(1.5 * N)。
-// 对每个输出下标 j，其对应的源位置 pos = j * 2/3，在相邻源样本间线性插值。
-void Upsample16kTo24k(const std::vector<float>& in, std::vector<float>& out) {
-    out.clear();
-    if (in.empty()) return;
-    size_t outCount = in.size() * 3 / 2;
-    if (outCount == 0) return;
-    out.reserve(outCount);
-    for (size_t j = 0; j < outCount; ++j) {
-        double pos = j * (2.0 / 3.0);
-        size_t i = static_cast<size_t>(pos);
-        double frac = pos - static_cast<double>(i);
-        float a = in[i];
-        float b = (i + 1 < in.size()) ? in[i + 1] : a;  // 末端 clamp
-        out.push_back(a + static_cast<float>((b - a) * frac));
-    }
-}
-
-/// 从服务端 error 事件中提取可读信息（issue #44：原实现完全忽略 error）。
-/// OpenAI Realtime 的 error 事件形如
-/// {"type":"error","error":{"type":"...","code":"...","message":"..."}}。
-std::string DescribeError(const Json::Value& json) {
-    const Json::Value& error = json["error"];
-    if (error.isObject()) {
-        const std::string message = error.get("message", "").asString();
-        if (!message.empty()) return message;
-        const std::string code = error.get("code", "").asString();
-        if (!code.empty()) return code;
-        const std::string type = error.get("type", "").asString();
-        if (!type.empty()) return type;
-    }
-    const std::string message = json.get("message", "").asString();
-    return message;
-}
-
-std::string JsonToString(const Json::Value& json) {
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-    return Json::writeString(builder, json);
-}
+using namespace realtime_protocol;
 
 // 发送一个 TEXT WS 帧（OpenAI Realtime 用 JSON 文本帧）。
 // 上游不读 socket 时有界失败（issue #42）：发送预算到期即返回 false，
@@ -130,8 +91,9 @@ void RealtimeAsrSession::StartWorker() {
         auto self = std::static_pointer_cast<RealtimeAsrSession>(shared_from_this());
         state_->workerDone.store(false, std::memory_order_release);
         workerThread_ = std::make_unique<std::thread>([self]() {
-            self->WorkerLoop();
-            self->state_->workerDone.store(true, std::memory_order_release);
+            RunAsrWorker(*self->state_, kLogTag, self->errorCb_,
+                         [self] { self->WorkerLoop(); },
+                         [self] { self->PublishFinal({}); });
         });
     }
 }
@@ -181,36 +143,8 @@ void RealtimeAsrSession::WorkerLoop() {
     auto audioChunks = audioChunks_;  // keep queue alive
     auto cb = resultCb_;
     auto ecb = errorCb_;
-
-    auto buildAppendEvent = [this](const std::vector<int16_t>& pcm24k) -> std::string {
-        Json::Value ev;
-        ev["type"] = "input_audio_buffer.append";
-        std::vector<uint8_t> bytes(pcm24k.size() * 2);
-        std::memcpy(bytes.data(), pcm24k.data(), bytes.size());
-        ev["audio"] = Base64Encode(bytes.data(), bytes.size());
-        return JsonToString(ev);
-    };
-    auto buildCommitEvent = []() -> std::string {
-        Json::Value ev;
-        ev["type"] = "input_audio_buffer.commit";
-        return JsonToString(ev);
-    };
-    auto buildSessionUpdate = [this]() -> std::string {
-        Json::Value ev;
-        ev["type"] = "session.update";
-        if (!language_.empty()) {
-            ev["session"]["transcription"]["language"] = language_;
-        }
-        if (!modelName_.empty()) {
-            ev["session"]["transcription"]["model"] = modelName_;
-        }
-        return JsonToString(ev);
-    };
-
-    RealtimeTerminalState terminal;
-    auto publishFinal = [&](const std::string& transcript) {
-        if (!terminal.TryMarkPublished()) return;
-        if (cb) cb(transcript, true, sid);
+    auto reportError = [&](const std::string& message) {
+        NotifyAsrError(ecb, message, kLogTag, sid);
     };
     std::string fullTranscript;      // 会话级累积文本（整句，preedit 显示的依据）
     std::string currentTranscript;   // 当前 item 的 delta 累积
@@ -218,23 +152,28 @@ void RealtimeAsrSession::WorkerLoop() {
 
     // 连接循环：处理首次连接 + 断线/30min 重连（保持同一 sessionId）
     for (int attempt = 0;
-         attempt < kMaxReconnectAttempts && !terminal.IsPublished(); ++attempt) {
+         attempt < kMaxReconnectAttempts && !terminal_.IsPublished(); ++attempt) {
         if (state_->cancelled) break;
 
-        CURL* curl = curl_easy_init();
+        CurlHeaders headers;
+        CurlHandle connection(curl_easy_init());
+        CURL* curl = connection.get();
         if (!curl) {
-            if (ecb) ecb("Failed to init curl");
-            publishFinal({});
+            reportError("Failed to init curl");
+            PublishFinal({});
             return;
         }
 
-        struct curl_slist* headers = nullptr;
         std::string authHeader = "Authorization: Bearer " + apiKey_;
-        headers = curl_slist_append(headers, authHeader.c_str());
+        if (!headers.Append(authHeader)) {
+            reportError("Failed to allocate curl headers");
+            PublishFinal({});
+            return;
+        }
         // GA 接口无需 OpenAI-Beta 头
 
         curl_easy_setopt(curl, CURLOPT_URL, endpoint_.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers.Get());
         curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
@@ -248,19 +187,17 @@ void RealtimeAsrSession::WorkerLoop() {
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &connectAbort_);
 
         CURLcode connectResult = curl_easy_perform(curl);
-        curl_slist_free_all(headers);
 
         if (state_->cancelled) {
-            curl_easy_cleanup(curl);
             break;
         }
         if (connectResult != CURLE_OK) {
             FCITX_ERROR() << "[voice-input:realtime] WS connect failed: "
                           << curl_easy_strerror(connectResult) << " attempt=" << attempt;
-            curl_easy_cleanup(curl);
+            connection.reset();
             if (attempt == kMaxReconnectAttempts - 1) {
-                if (ecb) ecb("Realtime connect failed: " + std::string(curl_easy_strerror(connectResult)));
-                publishFinal({});
+                reportError("Realtime connect failed: " + std::string(curl_easy_strerror(connectResult)));
+                PublishFinal({});
                 return;
             }
             std::this_thread::sleep_for(1s);
@@ -270,7 +207,7 @@ void RealtimeAsrSession::WorkerLoop() {
         FCITX_INFO() << "[voice-input:realtime] WS connected session=" << sid;
 
         // 会话开始：发送 session.update（语言/模型提示）
-        SendWebSocketText(curl, buildSessionUpdate(),
+        SendWebSocketText(curl, BuildSessionUpdate(language_, modelName_),
                           WsAbort::CancelOrFinished(state_->cancelled,
                                                         state_->finished));
         WsFrameReceiver receiver(CURLWS_TEXT);
@@ -293,7 +230,7 @@ void RealtimeAsrSession::WorkerLoop() {
         auto handleServer = [&](std::chrono::milliseconds timeout)
             -> RealtimeServerOutcome {
             auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (!state_->cancelled && !terminal.IsPublished() &&
+            while (!state_->cancelled && !terminal_.IsPublished() &&
                    std::chrono::steady_clock::now() < deadline) {
                 WsMessageStatus r =
                     ReceiveWsMessage(curl, receiver, kLogTag);
@@ -306,32 +243,30 @@ void RealtimeAsrSession::WorkerLoop() {
                     return RealtimeServerOutcome::TransportFailure;
                 }
                 if (r == WsMessageStatus::Error) {
-                    if (ecb) ecb("WS recv error");
+                    reportError("WS recv error");
                     return RealtimeServerOutcome::TransportFailure;
                 }
                 lastServerEventAt = std::chrono::steady_clock::now();
-                const std::string text = receiver.AsString();
+                ServerEvent event;
+                if (!ParseServerEvent(receiver.AsString(), event)) {
+                    reportError("Invalid Realtime event");
+                    PublishFinal({});
+                    return RealtimeServerOutcome::FinalReceived;
+                }
 
-                Json::Value json;
-                Json::Reader reader;
-                if (!reader.parse(text, json)) continue;
-
-                std::string type = json.get("type", "").asString();
-                if (type == "conversation.item.input_audio_transcription.delta") {
-                    currentTranscript += json.get("delta", "").asString();
+                if (event.type == realtime_protocol::EventType::Delta) {
+                    currentTranscript += event.text;
                     // preedit 显示整句累积：fullTranscript + 当前段增量
                     if (cb && !currentTranscript.empty()) {
                         std::string partial = fullTranscript + currentTranscript;
                         cb(partial, false, sid);
                     }
-                } else if (type == "conversation.item.input_audio_transcription.completed") {
-                    std::string transcript = json.get("transcript", "").asString();
-                    const std::string itemId = json.get("item_id", "").asString();
-                    const bool isFinalItem = commits.OnCompleted(itemId);
-                    fullTranscript += transcript;
+                } else if (event.type == realtime_protocol::EventType::Completed) {
+                    const bool isFinalItem = commits.OnCompleted(event.itemId);
+                    fullTranscript += event.text;
                     if (isFinalItem) {
                         // 最终结果（整句累积），上报 final 并结束会话
-                        publishFinal(fullTranscript);
+                        PublishFinal(fullTranscript);
                         currentTranscript.clear();
                         return RealtimeServerOutcome::FinalReceived;
                     } else {
@@ -340,27 +275,25 @@ void RealtimeAsrSession::WorkerLoop() {
                         if (cb && !fullTranscript.empty()) cb(fullTranscript, false, sid);
                         currentTranscript.clear();
                     }
-                } else if (type == "conversation.item.input_audio_transcription.failed") {
+                } else if (event.type == realtime_protocol::EventType::Failed) {
                     // failed 事件带 item_id：只移除对应 item，避免误删其他在途 item
-                    commits.OnFailed(json.get("item_id", "").asString());
+                    commits.OnFailed(event.itemId);
                     currentTranscript.clear();
-                    const std::string message = DescribeError(json);
-                    if (ecb) ecb("Transcription failed" +
-                                 (message.empty() ? std::string() : ": " + message));
-                } else if (type == "input_audio_buffer.committed") {
+                    reportError("Transcription failed" +
+                                (event.error.empty() ? std::string() : ": " + event.error));
+                } else if (event.type == realtime_protocol::EventType::Committed) {
                     // 服务端确认 commit：把将要生成转写的 item 记入在途集合。
                     // 以服务端确认而非本地发送为准，避免把被服务端拒绝的 commit 计入；
                     // End commit 的 item 另外记下 id，用于精确判定最终 item。
-                    commits.OnCommitted(json.get("item_id", "").asString(),
+                    commits.OnCommitted(event.itemId,
                                         commits.EndCommitSent());
-                } else if (type == "error") {
+                } else if (event.type == realtime_protocol::EventType::Error) {
                     // 服务端错误必须可见（issue #44：原先完全静默，用户无法区分
                     // 「网络慢」与「服务端拒绝」）。错误不会产生转写 item，
                     // 故不计入在途集合，也无法（不应）靠它推进终态判定。
-                    const std::string message = DescribeError(json);
                     FCITX_WARN() << "[voice-input:realtime] server error session=" << sid
-                                 << (message.empty() ? std::string() : ": " + message);
-                    if (ecb) ecb(message.empty() ? "Realtime server error" : message);
+                                 << (event.error.empty() ? std::string() : ": " + event.error);
+                    reportError(event.error.empty() ? "Realtime server error" : event.error);
                 }
                 // 其他事件（response.*/session.* 等）忽略
             }
@@ -368,7 +301,7 @@ void RealtimeAsrSession::WorkerLoop() {
         };
 
         bool reconnectNeeded = false;
-        while (!state_->cancelled && !terminal.IsPublished() &&
+        while (!state_->cancelled && !terminal_.IsPublished() &&
                !reconnectNeeded) {
             std::vector<int16_t> chunk;
             bool hasChunk = audioChunks->TryPop(chunk);
@@ -382,37 +315,37 @@ void RealtimeAsrSession::WorkerLoop() {
                 // 确保 End 能赶在 SessionReaper 的 15s JoinWithTimeout 之前返回。
                 const WsDeadline endBudget = endBudget_.Deadline();
                 if (!pending24k.empty() && !state_->cancelled) {
-                    if (!SendWebSocketText(curl, buildAppendEvent(pending24k),
+                    if (!SendWebSocketText(curl, BuildAppendEvent(pending24k),
                                            WsAbort::CancelOnly(state_->cancelled),
                                            endBudget)) {
                         FCITX_ERROR() << "[voice-input:realtime] End flush failed session=" << sid;
                         // 兜底 final 后经统一清理路径退出（break → CloseWebSocket + cleanup）
-                        publishFinal(fullTranscript);
+                        PublishFinal(fullTranscript);
                         break;
                     }
                     pending24k.clear();
                 }
-                if (!SendWebSocketText(curl, buildCommitEvent(),
+                if (!SendWebSocketText(curl, BuildCommitEvent(),
                                        WsAbort::CancelOnly(state_->cancelled),
                                        endBudget)) {
                     FCITX_ERROR() << "[voice-input:realtime] End commit failed session=" << sid;
-                    publishFinal(fullTranscript);
+                    PublishFinal(fullTranscript);
                     break;
                 }
                 commits.MarkEndCommitSent();
-                while (!state_->cancelled && !terminal.IsPublished() &&
+                while (!state_->cancelled && !terminal_.IsPublished() &&
                        !endBudget_.Expired() && !endWaitIdleExpired()) {
                     const auto decision = DecideRealtimeServerOutcome(
                         handleServer(50ms), true);
-                    if (decision.publishFallback) publishFinal(fullTranscript);
+                    if (decision.publishFallback) PublishFinal(fullTranscript);
                     if (decision.stop) break;
                 }
-                if (!terminal.IsPublished() && !state_->cancelled) {
+                if (!terminal_.IsPublished() && !state_->cancelled) {
                     // End 等待结束（总预算耗尽或服务端空闲超时）仍未收到最终
                     // completed → 以已累积文本兜底 final，并结束会话
                     // （否则 for 循环会重连后空转挂死）。
                     FCITX_WARN() << "[voice-input:realtime] End wait timeout session=" << sid;
-                    publishFinal(fullTranscript);
+                    PublishFinal(fullTranscript);
                 }
                 break;
             }
@@ -435,7 +368,7 @@ void RealtimeAsrSession::WorkerLoop() {
             auto elapsedSinceCommit = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - lastCommitTime).count();
             if (appendedSinceCommit && elapsedSinceCommit >= commitIntervalMs_) {
-                if (!SendWebSocketText(curl, buildCommitEvent(),
+                if (!SendWebSocketText(curl, BuildCommitEvent(),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
                     // 中止可能来自 End()（finished 置位）：此时不能按传输失败处理
@@ -454,7 +387,7 @@ void RealtimeAsrSession::WorkerLoop() {
             if (pending24k.size() >= kAppendChunkSamples && !state_->cancelled) {
                 size_t sendSize = (pending24k.size() / kAppendChunkSamples) * kAppendChunkSamples;
                 std::vector<int16_t> toSend(pending24k.begin(), pending24k.begin() + sendSize);
-                if (!SendWebSocketText(curl, buildAppendEvent(toSend),
+                if (!SendWebSocketText(curl, BuildAppendEvent(toSend),
                                        WsAbort::CancelOrFinished(
                                            state_->cancelled, state_->finished))) {
                     // 同上：End() 触发的中止不是传输失败，交由 End 收尾路径处理。
@@ -474,7 +407,7 @@ void RealtimeAsrSession::WorkerLoop() {
                 std::chrono::steady_clock::now() - sessionStart).count();
             if (sessionAge >= kSessionMaxDuration.count() && appendedSinceCommit) {
                 FCITX_WARN() << "[voice-input:realtime] 30min session limit, reconnect";
-                if (SendWebSocketText(curl, buildCommitEvent(),
+                if (SendWebSocketText(curl, BuildCommitEvent(),
                                       WsAbort::CancelOrFinished(
                                           state_->cancelled, state_->finished))) {
                     // 在途 item 由服务端的 input_audio_buffer.committed 确认后登记
@@ -493,16 +426,16 @@ void RealtimeAsrSession::WorkerLoop() {
         }
 
         CloseWebSocket(curl);
-        curl_easy_cleanup(curl);
+        connection.reset();
 
-        if (state_->cancelled || terminal.IsPublished()) break;
+        if (state_->cancelled || terminal_.IsPublished()) break;
         if (reconnectNeeded && (state_->finished || endBudget_.Expired())) {
             // 语音已结束（End）或 End 预算耗尽：不再重连。
             // 重连只会再阻塞一轮发送/建连并让 worker 被 reaper detach（issue #42），
             // 且 End 之后已无新音频需要发送，重连没有可交付的语义。
             FCITX_WARN() << "[voice-input:realtime] End reached, skipping reconnect "
                             "session=" << sid;
-            publishFinal(fullTranscript);
+            PublishFinal(fullTranscript);
             break;
         }
         if (reconnectNeeded) {
@@ -519,9 +452,9 @@ void RealtimeAsrSession::WorkerLoop() {
         FCITX_DEBUG() << "[voice-input:realtime] Cancelled session=" << sid;
         return;
     }
-    if (!terminal.IsPublished()) {
+    if (!terminal_.IsPublished()) {
         // 未收到最终转录（连接断开/失败）：以空 final 触发 pipeline 错误/清理分支
-        publishFinal({});
+        PublishFinal({});
     }
 }
 
