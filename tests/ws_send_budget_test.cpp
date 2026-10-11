@@ -33,6 +33,7 @@
 #include <curl/curl.h>
 
 #include "asr/mistral_asr.h"
+#include "support/fake_ws_server.h"
 #include "asr/realtime_asr.h"
 #include "asr/utils/ws_frame_sender.h"
 #include "asr/volcengine_asr.h"
@@ -136,6 +137,8 @@ bool LibcurlSupportsWebSocket() {
 /// 假 WS 服务端：完成握手后**停止读取 socket**（并收紧接收缓冲），模拟上游卡死。
 class NonReadingWsServer {
 public:
+    explicit NonReadingWsServer(bool createMistralSession = false)
+        : createMistralSession_(createMistralSession) {}
     ~NonReadingWsServer() { Stop(); }
 
     bool Start() {
@@ -214,6 +217,13 @@ private:
             "Connection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n";
         if (write(clientFd_, response.data(), response.size()) < 0) return;
 
+        if (createMistralSession_) {
+            // Reach actual audio backpressure, not the new creation timeout.
+            const auto created = fcitxws::EncodeTextFrame(
+                R"({"type":"session.created","session":{}})");
+            if (write(clientFd_, created.data(), created.size()) < 0) return;
+        }
+
         // 握手完成后不再读取 socket：客户端发送最终会被窗口关闭挡住
         while (!stopping_.load()) {
             std::this_thread::sleep_for(50ms);
@@ -225,6 +235,7 @@ private:
     std::atomic<int> clientFd_{-1};
     uint16_t port_ = 0;
     std::atomic<bool> stopping_{false};
+    const bool createMistralSession_;
     std::thread thread_;
 };
 
@@ -346,7 +357,7 @@ bool TestRealtimeEndIsBoundedWhenPeerStopsReading() {
 }
 
 bool TestMistralEndIsBoundedWhenPeerStopsReading() {
-    NonReadingWsServer server;
+    NonReadingWsServer server(true);
     if (!Check(server.Start(), "server must listen")) return false;
 
     fcitx::AsrEngine::Config config;

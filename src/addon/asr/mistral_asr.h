@@ -17,13 +17,14 @@ namespace fcitx {
 
 /// Mistral Realtime 流式实时转录会话。
 ///
-/// 协议与 OpenAI Realtime（realtime_asr.cpp）同构但事件名不同：
+/// Provider 独立协议；共享传输/线程边界，不共享 OpenAI commit/item 语义：
 ///   - 客户端事件：input_audio.append（base64 PCM s16le 16kHz，无需重采样）/
 ///                  input_audio.flush / input_audio.end / session.update
 ///   - 服务端事件：session.created / transcription.text.delta /
 ///                  transcription.segment / transcription.done / error
 /// delta 事件驱动 preedit 增量（resultCb_(partial, false)），
-/// transcription.done 后上报最终结果（resultCb_(full, true)）。
+/// 等待 session.created 后推流；transcription.done 的 text 为权威最终全文。
+/// 协议错误一次空 final；断连/End 超时以合法累积文本兜底，取消不发 final。
 /// 支持周期 flush 兜底与断线重连（保持同一 sessionId）。
 class MistralAsrSession : public AsrSession {
 public:
@@ -40,6 +41,14 @@ public:
 
 private:
     void WorkerLoop();
+    void PublishFinal(const std::string& transcript) {
+        if (state_->cancelled || finalPublished_) return;
+        // Callback side effects may happen before it throws; never retry it.
+        finalPublished_ = true;
+        if (resultCb_) resultCb_(transcript, true, state_->sessionId);
+    }
+    // Kept provider-local: unlike OpenAI, Mistral has no commit/item tracker.
+    bool finalPublished_ = false; // worker-only, includes exceptional exits
 
     // Config snapshot (copied at construction, safe for worker)
     std::string endpoint_;

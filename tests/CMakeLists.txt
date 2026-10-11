@@ -299,3 +299,39 @@ foreach(backend realtime volcengine)
         )
     endforeach()
 endforeach()
+
+# ── Mistral Realtime 会话回归（交互式本地 WS 夹具）──────────────
+add_executable(mistral_session_test
+    mistral_session_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/mistral_asr.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/asr_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/base64.cpp
+)
+
+target_include_directories(mistral_session_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+)
+
+target_link_libraries(mistral_session_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    CURL::libcurl
+)
+
+foreach(scenario
+    http-401 http-404 normal nested-error error-message-dict
+    invalid-text-array invalid-root invalid-message-array
+    close-after-delta-end callback-throw-partial callback-throw-final
+    callback-throw-error cancel silent-no-created
+    end-during-handshake end-during-retry-transient-503 end-before-created-delayed)
+    add_test(NAME mistral_session_${scenario}
+        COMMAND mistral_session_test ${scenario})
+    set_tests_properties(mistral_session_${scenario} PROPERTIES
+        TIMEOUT 30
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "NO_PROXY=127.0.0.1;no_proxy=127.0.0.1"
+    )
+endforeach()

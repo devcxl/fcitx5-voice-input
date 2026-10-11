@@ -33,6 +33,7 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 | `engine_ui_*` | 输入框销毁、有效面板清空、worker 回调排队后销毁、快速重新激活时过滤旧 UI 任务、待提交文本只提交给原输入框 | 集成（真实引擎 + Fcitx dispatcher） |
 | `ws_invalid_response_*` | Realtime/豆包异常 JSON、字段类型/数值溢出、嵌套结果深度、非法 gzip；断言一次错误/一次空 final、无非法文本、worker 在 Cancel 前自行完成；可空字段后仍交付正常 delta | 集成（真实会话 + 本地假 WS 服务端） |
 | `ws_worker_*` | partial/error/final callback 抛异常、非标准异常、final 不重试；豆包空确认帧后仍正常交付 | 集成（真实会话 + 本地假 WS 服务端） |
+| `mistral_*` | HTTP 握手状态码与永久拒绝、创建/配置/推流/flush/end 顺序、正常全文、嵌套错误/非法字段、回调异常、取消与断连收尾 | 集成（真实 Mistral 会话 + 本地交互式 WS 服务端） |
 
 ## 约定
 
@@ -43,12 +44,19 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 - UI 测试链接本次构建的 addon，以 Linux ELF 符号替换隔离 `Pipeline::Start` 和两个公开回调注册入口；不访问引擎私有状态，不启动录音/云端。每个用例使用构建目录下独立的 XDG 路径，不能读取真实用户配置。若改用 `-Bsymbolic` 等禁用符号替换的链接选项，需同步调整该测试边界。
 - WS 回归共用 `tests/support/fake_ws_server.h`：停用可中止收发/accept，join 后回收 socket；投递后保留连接，避免 EOF 触发的重连让未处理消息假通过。异常响应必须先观察 `workerDone` 再清理，不能先 Cancel 掩盖错误；回调观察值由共享测试夹具持有，超时也不能留下悬空捕获。
 - `ws_invalid_response_*` / `ws_worker_*` 缺少运行期 WS 能力时返回 77，由 CTest 明确记录为跳过，不能据此宣称后端已通过协议验证。
+- `mistral_*` 同样以 77 表示缺少 WS；交互夹具复用共用帧编码与握手工具，验证客户端发送事件，而不只预置返回文本。测试只覆盖本地协议/生命周期，真实 HTTP 拒绝的账户/模型原因必须结合更新后的状态码日志排查。
 
 ## 崩溃修复验证记录（2026-10-09）
 
 - 未修复时：公开 UI 销毁场景 SIGSEGV；两个非法字段场景均因 `Json::LogicError` SIGABRT。旧基线上的 8 个回调异常场景也均 SIGABRT。
 - 修复后：Release 全套 28/28 通过；独立 Debug + AddressSanitizer/UndefinedBehaviorSanitizer 构建全套 28/28 通过。初版遗漏豆包空确认帧的兼容性，新增用例先失败后修复。
 - UI 核心 5 个场景连续 10 轮通过；无真实账号、云端、录音或安装操作。这不等于真实云端兼容性/七发行版 WS 运行矩阵已经验证，见下方平台限制和 [后续任务](../06-development/tasks/asr-crash-follow-ups.md)。
+
+## Mistral 修复验证记录（2026-10-11）
+
+- 新增 17 个会话场景：旧实现 16 个失败、合法取消对照通过，其中非法 text/root 与三个回调异常共 5 个 SIGABRT。HTTP 401/404 原样重试三次、正常终态文本重复、End 重试覆盖真实 HTTP 拒绝均已复现。
+- 修复后全套 Release 与 Debug ASan/UBSan 均 45/45，无跳过。测试 callback 共享持有观测状态，失败清理也不能留下悬空栈引用；客户端事件时序检查包含 delayed-created 前是否已发送数据。
+- 这些测试没有使用真实账户或安装 addon；用户实际握手拒绝的 HTTP 状态码与云端正常转写仍需更新后人工复测。
 
 ## 平台限制（已实测）
 
