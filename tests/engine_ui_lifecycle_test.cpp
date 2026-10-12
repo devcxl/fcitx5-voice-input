@@ -21,6 +21,12 @@ struct PipelineBoundary {
     fcitx::Pipeline* pipeline = nullptr;
     fcitx::Pipeline::ResultCallback resultCallback;
     fcitx::VADWorker::VadStatusCallback vadCallback;
+    int starts = 0;
+    int stops = 0;
+    int pauses = 0;
+    bool capturing = false;
+    bool captureHealthy = true;
+    int captureOpens = 0;
 
     void EmitResult(uint64_t generation) {
         fcitx::AsrResult result;
@@ -49,7 +55,25 @@ protected:
 
 } // namespace
 
-void fcitx::Pipeline::Start() { boundary.pipeline = this; }
+void fcitx::Pipeline::Start() {
+    boundary.pipeline = this;
+    ++boundary.starts;
+    if (!boundary.capturing) ++boundary.captureOpens;
+    boundary.capturing = true;
+    running_ = true;
+}
+void fcitx::Pipeline::Pause() {
+    ++boundary.pauses;
+    running_ = false;
+}
+void fcitx::Pipeline::Stop() {
+    ++boundary.stops;
+    boundary.capturing = false;
+    running_ = false;
+}
+bool fcitx::Pipeline::IsCapturing() const {
+    return boundary.capturing && boundary.captureHealthy;
+}
 void fcitx::Pipeline::SetResultCallback(ResultCallback callback) {
     boundary.resultCallback = std::move(callback);
 }
@@ -63,7 +87,8 @@ int main(int argc, char** argv) {
     char disabled[] = "--disable=all";
     char* arguments[] = {program, disabled, nullptr};
     fcitx::Instance instance(2, arguments);
-    fcitx::InputContextManager manager;
+    instance.initialize();
+    auto& manager = instance.inputContextManager();
     auto context = std::make_unique<FixtureInputContext>(manager);
     std::unique_ptr<FixtureInputContext> nextContext;
     fcitx::VoiceInputEngine engine(&instance);
@@ -97,8 +122,13 @@ int main(int argc, char** argv) {
                 context.reset();
                 return false;
             }
-            fcitx::InputMethodDeactivatedEvent deactivated("voiceinput", context.get());
-            engine.deactivate(entry, deactivated);
+            if (scenario.starts_with("focus-")) {
+                fcitx::FocusOutEvent focusOut(context.get());
+                engine.deactivate(entry, focusOut);
+            } else {
+                fcitx::InputMethodDeactivatedEvent deactivated("voiceinput", context.get());
+                engine.deactivate(entry, deactivated);
+            }
             if (scenario == "destroy") context.reset();
             if (scenario == "reactivate") {
                 nextContext = std::make_unique<FixtureInputContext>(manager);
@@ -112,6 +142,11 @@ int main(int argc, char** argv) {
     auto switchTimer = instance.eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 15000, 1,
         [&](fcitx::EventSourceTime*, uint64_t) {
+            if (scenario == "focus-out") {
+                boundary.EmitResult(1);
+                boundary.vadCallback(true);
+                return false;
+            }
             if (scenario != "pending-switch") return false;
             pendingWasDisplayed = context->inputPanel().preedit().toString() == "fixture transcript";
             fcitx::InputMethodDeactivatedEvent deactivated("voiceinput", context.get());
@@ -123,13 +158,67 @@ int main(int argc, char** argv) {
             engine.keyEvent(entry, key);
             return false;
         });
+    auto focusTimer = instance.eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 250000, 1,
+        [&](fcitx::EventSourceTime*, uint64_t) {
+            if (scenario == "focus-resume") {
+                fcitx::FocusInEvent focusIn(context.get());
+                engine.activate(entry, focusIn);
+                boundary.EmitResult(1);
+                boundary.EmitResult(3);
+            } else if (scenario == "focus-close" || scenario == "focus-dead-close") {
+                if (scenario == "focus-dead-close") boundary.captureHealthy = false;
+                fcitx::InputContextSwitchInputMethodEvent switched(
+                    fcitx::InputMethodSwitchedReason::Enumerate, "voiceinput", context.get());
+                // Unfocused switches skip the engine callback in Fcitx core.
+                instance.postEvent(switched);
+            } else if (scenario == "focus-unrelated-switch") {
+                nextContext = std::make_unique<FixtureInputContext>(manager);
+                fcitx::InputContextSwitchInputMethodEvent switched(
+                    fcitx::InputMethodSwitchedReason::Enumerate, "keyboard-us", nextContext.get());
+                instance.postEvent(switched);
+            }
+            return false;
+        });
     auto exitTimer = instance.eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 50000, 1,
+        CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) +
+            (scenario.starts_with("focus-") ? 350000 : 50000), 1,
         [&](fcitx::EventSourceTime*, uint64_t) {
             instance.eventLoop().exit();
             return false;
         });
     instance.eventLoop().exec();
+    if (scenario == "focus-out" &&
+        (boundary.starts != 1 || boundary.stops != 0 || boundary.pauses != 1 ||
+         !boundary.capturing)) {
+        std::cerr << "FAIL: focus loss released the capture stream\n";
+        return 1;
+    }
+    if (scenario == "focus-out" &&
+        (!context->commits.empty() || !context->inputPanel().preedit().empty())) {
+        std::cerr << "FAIL: a late recognition callback reached the unfocused context\n";
+        return 1;
+    }
+    if (scenario == "focus-resume" &&
+        (boundary.captureOpens != 1 || boundary.starts != 2 ||
+         context->commits != std::vector<std::string>{"fixture transcript"})) {
+        std::cerr << "FAIL: focus resume reopened capture or accepted an old generation\n";
+        return 1;
+    }
+    if ((scenario == "focus-close" || scenario == "focus-dead-close") &&
+        (boundary.capturing || boundary.stops != 1)) {
+        std::cerr << "FAIL: an unfocused input-method switch did not release capture\n";
+        return 1;
+    }
+    if (scenario == "focus-unrelated-switch" && (!boundary.capturing || boundary.stops != 0)) {
+        std::cerr << "FAIL: another context's non-voice switch closed the retained stream\n";
+        return 1;
+    }
+    if (scenario == "active-destroy" &&
+        (!boundary.capturing || boundary.pauses != 1 || boundary.pipeline->IsRunning())) {
+        std::cerr << "FAIL: destroying the active context did not pause recognition while retaining capture\n";
+        return 1;
+    }
     if (scenario == "live" && !context->inputPanel().preedit().empty()) {
         std::cerr << "FAIL: live input panel was not cleared\n";
         return 1;

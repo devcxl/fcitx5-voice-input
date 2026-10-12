@@ -39,9 +39,12 @@ public:
     void SetGeneration(uint64_t gen) { generation_.store(gen); }
 
     void Start();
+    // Stop recognition and discard audio, but keep the routable capture stream.
+    void Pause();
     void Stop();
     void Abort();
     bool IsRunning() const { return running_.load(); }
+    bool IsCapturing() const;
 
     ThreadSafeQueue<AsrResult>& ResultQueue() {
         return results_->ResultQueue();

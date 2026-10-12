@@ -2,10 +2,7 @@
 
 #include <array>
 #include <chrono>
-#include <cstdio>
-#include <cstring>
 #include <dlfcn.h>
-#include <string>
 
 #include <fcitx-utils/log.h>
 #include <pulse/error.h>
@@ -19,57 +16,6 @@ constexpr const char* kPulseLibCandidates[] = {
     "libpulse-simple.so.0",
     "libpulse-simple.so.1",
 };
-
-constexpr size_t kPactlLineMax = 512;
-
-const char* ExtractSourceName(char* line) {
-    char* tab = std::strchr(line, '\t');
-    if (!tab) return nullptr;
-    char* name = tab + 1;
-    tab = std::strchr(name, '\t');
-    if (tab) *tab = '\0';
-    return *name ? name : nullptr;
-}
-
-bool EndsWith(const char* s, const char* suffix) {
-    size_t len = std::strlen(s);
-    size_t suffixLen = std::strlen(suffix);
-    return len >= suffixLen && std::strcmp(s + len - suffixLen, suffix) == 0;
-}
-
-std::string FindBestSourceName() {
-    FILE* fp = popen("pactl list sources short 2>/dev/null", "r");
-    if (!fp) {
-        FCITX_WARN() << "[voice-input:pulse] Failed to run pactl";
-        return "";
-    }
-
-    std::string bestSource;
-    char line[kPactlLineMax];
-
-    while (fgets(line, sizeof(line), fp)) {
-        const char* name = ExtractSourceName(line);
-        if (!name) continue;
-        if (EndsWith(name, ".monitor")) continue;
-        if (std::strstr(name, "echoCancel")) continue;
-
-        if (std::strncmp(name, "alsa_input.", sizeof("alsa_input.") - 1) == 0) {
-            if (bestSource.empty()) bestSource = name;
-            if (std::strstr(name, "Mic1")) { bestSource = name; break; }
-        }
-        if (bestSource.empty()) bestSource = name;
-    }
-
-    int exitCode = pclose(fp);
-    if (exitCode != 0) {
-        FCITX_WARN() << "[voice-input:pulse] pactl exited with code " << exitCode;
-    }
-
-    if (!bestSource.empty()) {
-        FCITX_INFO() << "[voice-input:pulse] Auto-selected source: " << bestSource;
-    }
-    return bestSource;
-}
 
 } // namespace
 
@@ -141,23 +87,22 @@ bool PulseAudioCapture::Start() {
     sampleSpec.rate = 16000;
     sampleSpec.channels = 1;
 
-    std::string sourceName = FindBestSourceName();
-    const char* device = sourceName.empty() ? nullptr : sourceName.c_str();
-
     int error = 0;
+    // dev = nullptr：不指定物理录音源，把路由委托给音频服务与音频管理器。
+    // 它们负责默认源、按应用偏好与运行中移流；应用身份（应用名/流名）保持不变，
+    // 以免破坏已保存的应用设备偏好（issue #54）。
     stream_ = pulse_.pa_simple_new(nullptr,
                                    "fcitx5-voice-input",
                                    PA_STREAM_RECORD,
-                                   device,
+                                   nullptr,
                                    "voice input",
                                    &sampleSpec,
                                    nullptr,
                                    nullptr,
                                    &error);
     if (!stream_) {
-        FCITX_ERROR() << "[voice-input:pulse] Failed to open source: "
-                      << (device ? device : "(default)")
-                      << " — " << pulse_.pa_strerror(error);
+        FCITX_ERROR() << "[voice-input:pulse] Failed to open capture stream: "
+                      << pulse_.pa_strerror(error);
         UnloadLib();
         return false;
     }
@@ -166,7 +111,8 @@ bool PulseAudioCapture::Start() {
     captureThread_ = std::make_unique<std::thread>(
         &PulseAudioCapture::CaptureLoop, this);
     FCITX_INFO() << "[voice-input:pulse] Capture started (16kHz mono int16, "
-                 << kWindowSize << " sample frames)";
+                 << kWindowSize
+                 << " sample frames; routing managed by the audio service)";
     return true;
 }
 
@@ -196,6 +142,7 @@ void PulseAudioCapture::CaptureLoop() {
     std::array<int16_t, kWindowSize> buffer{};
 
     while (running_) {
+        const auto epoch = DeliveryEpoch();
         int error = 0;
         if (pulse_.pa_simple_read(stream_, buffer.data(),
                                   buffer.size() * sizeof(int16_t), &error) < 0) {
@@ -207,14 +154,14 @@ void PulseAudioCapture::CaptureLoop() {
             break;
         }
 
-        if (!frameQueue_) continue;
+        if (!running_) break;
 
         AudioFrame frame;
         frame.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now().time_since_epoch())
                                  .count();
         frame.pcm = buffer;
-        frameQueue_->Push(frame);
+        DeliverFrame(std::move(frame), epoch);
     }
 }
 

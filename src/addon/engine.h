@@ -3,6 +3,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <fcitx-utils/eventdispatcher.h>
 #include <fcitx-utils/event.h>
@@ -51,6 +52,7 @@ private:
     void OnVadStatus(bool speaking);
     void PollResults();
     void ClearUI();
+    void DeactivateContext(bool keepCapture);
     void SetStatus(const std::string& text);
     std::unique_ptr<AsrEngine> CreateAsrEngine();
     void ReloadActiveAsrClient();
@@ -58,7 +60,7 @@ private:
     Instance* instance_;
     std::unique_ptr<Pipeline> pipeline_;
     EventDispatcher eventDispatcher_;
-    std::unique_ptr<EventSourceTime> delayedStopEvent_;
+    std::vector<std::unique_ptr<HandlerTableEntry<EventHandler>>> eventWatchers_;
     VoiceInputConfig config_;
     OpenAIAsrConfig openaiConfig_;
     VolcengineAsrConfig volcengineConfig_;
@@ -68,7 +70,6 @@ private:
     TrackableObjectReference<InputContext> activeIc_;
     std::atomic<uint64_t> activeGeneration_{0};
     std::atomic<uint64_t> sessionGeneration_{0};
-    uint64_t pendingStopGeneration_ = 0;
     bool initialized_ = false;
 
     std::string statusText_;
