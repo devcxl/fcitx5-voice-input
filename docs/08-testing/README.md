@@ -33,6 +33,10 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 | `engine_ui_*` | 输入框销毁、有效面板清空、worker 回调排队后销毁、快速重新激活时过滤旧 UI 任务、待提交文本只提交给原输入框 | 集成（真实引擎 + Fcitx dispatcher） |
 | `ws_invalid_response_*` | Realtime/豆包异常 JSON、字段类型/数值溢出、嵌套结果深度、非法 gzip；断言一次错误/一次空 final、无非法文本、worker 在 Cancel 前自行完成；可空字段后仍交付正常 delta | 集成（真实会话 + 本地假 WS 服务端） |
 | `ws_worker_*` | partial/error/final callback 抛异常、非标准异常、final 不重试；豆包空确认帧后仍正常交付 | 集成（真实会话 + 本地假 WS 服务端） |
+| `engine_ui_focus-*` | 失焦保流、回焦复用、新旧 generation、无焦点关闭、死亡流关闭、其他上下文切换/停用 Voice Input 不误关 | 集成（真实引擎 + Fcitx dispatcher） |
+| `pulse_capture_routing_test` | dev=nullptr/身份/格式、无 pactl、建流失败、暂停丢弃、在途 read 跨快速暂停/恢复 | 集成（真实 capture + dlopen 假库） |
+| `pipeline_capture_lifecycle_test` | 保流期间无识别、取消会话、清旧应用缓存、健康流复用、死流恢复、幂等关闭 | 集成（真实 Pipeline/Capture + 外部边界替身） |
+| `pipewire_capture_lifecycle_test` | 保流/丢弃、新音频恢复、旧 RT callback 跨 epoch、空 buffer 后首帧、error 后 liveness 与资源回收 | 集成（真实 capture + dlopen 假库；PipeWire 可选编译） |
 
 ## 约定
 
@@ -40,7 +44,8 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 - 并发/线程用例必须有界：等待使用固定上限轮询，会话统一 `Cancel()` + `JoinWithTimeout`。
 - 修复缺陷时遵循 RED → GREEN：先在未修复代码上运行同一用例确认失败，再实施修复并确认通过。
 - 涉及「永久阻塞」类缺陷的用例显式设置 `ctest` `TIMEOUT`（`ws_frame_reassembly_test` 120s、`ws_send_budget_test` 90s）：回归时表现为超时失败，而不是挂住 CI。
-- UI 测试链接本次构建的 addon，以 Linux ELF 符号替换隔离 `Pipeline::Start` 和两个公开回调注册入口；不访问引擎私有状态，不启动录音/云端。每个用例使用构建目录下独立的 XDG 路径，不能读取真实用户配置。若改用 `-Bsymbolic` 等禁用符号替换的链接选项，需同步调整该测试边界。
+- UI 测试链接本次构建的 addon，以 Linux ELF 符号替换隔离 `Pipeline` 启动/暂停/停止/采集状态和两个公开回调注册入口；不访问引擎私有状态，不启动录音/云端。每个用例使用构建目录下独立的 XDG 路径，不能读取真实用户配置。若改用 `-Bsymbolic` 等禁用符号替换的链接选项，需同步调整该测试边界。
+- 假录音库仅在构建目录，不安装或覆盖系统库；capture 测试子进程用 LD_LIBRARY_PATH 在真实 dlopen 边界加载。Pipeline 测试仅替换 VAD 模型入口及 ASR 引擎，不替换 Pipeline 编排；测试不能改变用户默认输入或应用路由。
 - WS 回归共用 `tests/support/fake_ws_server.h`：停用可中止收发/accept，join 后回收 socket；投递后保留连接，避免 EOF 触发的重连让未处理消息假通过。异常响应必须先观察 `workerDone` 再清理，不能先 Cancel 掩盖错误；回调观察值由共享测试夹具持有，超时也不能留下悬空捕获。
 - `ws_invalid_response_*` / `ws_worker_*` 缺少运行期 WS 能力时返回 77，由 CTest 明确记录为跳过，不能据此宣称后端已通过协议验证。
 
@@ -49,6 +54,12 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 - 未修复时：公开 UI 销毁场景 SIGSEGV；两个非法字段场景均因 `Json::LogicError` SIGABRT。旧基线上的 8 个回调异常场景也均 SIGABRT。
 - 修复后：Release 全套 28/28 通过；独立 Debug + AddressSanitizer/UndefinedBehaviorSanitizer 构建全套 28/28 通过。初版遗漏豆包空确认帧的兼容性，新增用例先失败后修复。
 - UI 核心 5 个场景连续 10 轮通过；无真实账号、云端、录音或安装操作。这不等于真实云端兼容性/七发行版 WS 运行矩阵已经验证，见下方平台限制和 [后续任务](../06-development/tasks/asr-crash-follow-ups.md)。
+
+## 系统路由/保流验证记录（2026-10-12）
+
+- 旧猜源、200ms 失焦停流、未接投递门闸及旧 PipeWire 缓存分别由公开边界测试确认失败后修复。
+- Release 完整构建与 38 项 ctest 通过；10 项核心生命周期测试重复 20 轮通过，无 PipeWire 可选构建与相关测试通过。复核补充的其他 Voice Input 上下文误关和空 buffer 后首帧均先失败后修复。链接卫生仍满足无录音库直接符号/DT_NEEDED。
+- 真实双麦克风、桌面录音页移流与托盘关闭尚未验收；PulseAudio 同步 read/join 停止风险仍是独立后续任务。详见 [调研与限制](../06-development/research/issue-54-audio-source-routing.md)。
 
 ## 平台限制（已实测）
 

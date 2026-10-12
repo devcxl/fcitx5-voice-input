@@ -34,6 +34,7 @@ private:
     VolcengineAsrConfig volcengineConfig_;
     MistralAsrConfig mistralConfig_;
     TrackableObjectReference<InputContext> activeIc_; // 仅主线程访问
+    TrackableObjectReference<InputContext> captureOwnerIc_; // 失焦保留，隔离其他上下文的关闭事件
     atomic<uint64_t> activeGeneration_;   // 当前有效 generation
     atomic<uint64_t> sessionGeneration_;  // 当前 session generation（失活置 0）
     bool initialized_ = false;
@@ -48,6 +49,7 @@ private:
 - 输入框存活由 `watch()` 引用保证可检查；generation 只判断结果归属，不能代替生命周期检查。worker 仅排队值数据，主线程检查 generation 后才读取引用。
 - `deactivate()` 在主线程同步提交/清空原输入框的待提交文本并解除引用，避免延迟 UI 回调访问已销毁输入框或把文本提交给新输入框（[ADR-0002](../adr/ADR-0002-input-context-lifetime.md)）。
 - 失焦不再使用延迟定时停止：`DeactivateContext()` 按事件类型选择保流（`Pause`）或释放（`Stop`），详见 ARCHITECTURE 的「输入法激活与录音流生命周期」。
+- 保流期间只接受采集所属上下文的明确关闭事件，其他上下文即使从 Voice Input 切走也不关闭本流；输入法组变更/退出为全局释放。所属上下文销毁后，回到 Voice Input 重新取得归属；组变更或退出仍可释放。
 - `setConfig()` 保存到 `conf/voiceinput.conf`，热更新 pipeline。
 
 ## 2. 配置 (`src/addon/config/`)
@@ -143,6 +145,8 @@ public:
 - 不依赖 WirePlumber 的特定版本
 
 **取帧门闸（Pause 语义）：** `SetDeliveryEnabled(false)` 立刻封住取帧入口；已在阻塞中的读取完成后也不会入队，且以 epoch 校验拒绝跨越一次 pause/resume 的旧帧。这样失焦后不会再有新的应用帧进入 VAD/ASR。两个后端都遵循同一门闸。
+
+PipeWire 的生产者 epoch 在每个已完成回调出口发布（包括空 buffer）；取得的 buffer 先归还再发布。Drain 在屏障后有界清 ring 与组帧，避免旧回调补写或空回调导致恢复后首帧丢失。
 
 **选择策略：** Pipeline 中先尝试 PulseAudio，失败后 fallback 到 PipeWire 直连。
 

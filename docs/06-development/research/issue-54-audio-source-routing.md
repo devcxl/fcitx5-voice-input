@@ -105,10 +105,10 @@ Fcitx 5.1.22 `Instance::deactivateInputMethod()` 把原始 `FocusOut` 或 `Switc
 ## 已批准的实现设计
 
 - **路由**：PulseAudio 不指定设备；原生 PipeWire 继续 `PW_ID_ANY + AUTOCONNECT`，不加目标或禁止移动属性。保留现有身份及 Pulse→PipeWire 优先级。
-- **Engine**：失焦立即失效 generation/输入框引用并调用 `Pause()`；明确停用调用 `Stop()`。监听无焦点 switch 和 group change；上下文销毁暂停识别，避免后台继续上传。
+- **Engine**：失焦立即失效 generation/活动输入框引用并调用 `Pause()`，独立保留采集归属引用；只有所属上下文的明确停用调用 `Stop()`，避免其他 Voice Input 上下文误关。监听无焦点 switch 和全局 group change；上下文销毁暂停识别，回到 Voice Input 重新取得归属，组变更/退出仍可全局释放。
 - **Pipeline**：`running_` 只代表识别；采集由 `capture_` 单独拥有。`Start()` 复用健康流，恢复前清队列；死流安全清理后重新创建。`Pause()` 关闭帧投递、暂停结果、停止 VAD/dispatcher，再取消/回收会话、清缓冲；`Stop()` 另关闭采集；`Abort()` 永久关闭通知并完整清理。
 - **Capture**：保流时继续消费/丢弃采样。投递 epoch 与 mutex 防止暂停返回后再入队；epoch 而非布尔值防止一条 read 跨快速暂停/恢复泄漏旧帧。主线程不并发 free 或切换 queue 指针。
-- **PipeWire**：RT 回调不加 mutex、不做 VAD、不分配，只读 epoch、写 ring，并在写完后发布 producer epoch。Drain 观察新 epoch 的生产者屏障后才有界 drain/重置组帧，避免旧回调在清理后补写。
+- **PipeWire**：RT 回调不加 mutex、不做 VAD、不分配，只读 epoch、写 ring，每个已完成回调（含空 buffer）在归还所取 buffer 后发布 producer epoch。Drain 观察新 epoch 的生产者屏障后才有界 drain/重置组帧，避免旧回调在清理后补写或空回调导致恢复首帧丢失。
 - **VAD**：每轮启动重置 Silero 模型状态与 pre-roll。失焦已经失效 UI generation，不再等待 speaking 回调清理旧 UI。
 
 应用队列与跨切换在途帧被丢弃；PulseAudio 保流期间持续读取，不新增异步 flush，也不将服务端固有缓冲/远程延迟包装成采样级保证。切换或恢复瞬间可能丢弃过渡音频，不承诺无间断。
@@ -123,7 +123,7 @@ Fcitx 5.1.22 `Instance::deactivateInputMethod()` 把原始 `FocusOut` 或 `Switc
 
 测试覆盖目标：默认参数及身份、无子进程、失焦保流但无识别、跨 read 快速暂停恢复、应用缓存清理、死流恢复、显式/无焦点关闭、上下文销毁及迟到结果过滤。PipeWire 另覆盖旧 RT callback 跨 epoch 写入与 error 后释放。假库仅在构建目录，不接触用户音频服务或网络。
 
-本地验证：Release 完整构建、36 项 `ctest` 全通过；新增核心生命周期测试重复 20 轮通过；屏蔽 PipeWire pkg-config 的可选后端构建通过，相关 11 项测试通过（之后补充的死流关闭场景由最终测试覆盖）。`nm/readelf` 确认 addon 无直接 `pa_*`/`pw_*` 未定义符号或录音库 DT_NEEDED。PipeWire 假库不使用新版 `pw_buffer.time` 字段，以兼容 Debian 12 的旧 SDK。真实硬件/桌面未验证。
+本地验证：Release 完整构建、38 项 `ctest` 全通过；10 项核心生命周期测试重复 20 轮通过；屏蔽 PipeWire pkg-config 的可选后端构建通过，相关测试通过。独立复核补充的其他 Voice Input 上下文误关和四种空 buffer 后首帧均先失败后修复。`nm/readelf` 确认 addon 无直接 `pa_*`/`pw_*` 未定义符号或录音库 DT_NEEDED。PipeWire 假库不使用新版 `pw_buffer.time` 字段，以兼容 Debian 12 的旧 SDK。真实硬件/桌面未验证。
 
 本地复现命令：
 

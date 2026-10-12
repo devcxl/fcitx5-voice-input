@@ -21,6 +21,8 @@ PulseAudio 建流不指定 source（`dev=nullptr`），原生 PipeWire 保持无
 
 删除原 200ms 延迟停止路径，不保留双重生命周期。依据 Fcitx 5.1.22 原始事件区分 FocusOut 与 SwitchInputMethod，不能只看后置 Deactivated notification。
 
+采集归属引用独立于活动输入框引用，失焦后仍保留；只有所属上下文的明确关闭事件可释放，其他上下文从 Voice Input 切走也不能误关。输入法组变更/退出为全局释放；所属上下文销毁后回到 Voice Input 重新取得归属。PipeWire 所有已完成回调（含空 buffer）均发布 epoch，避免恢复后的首个有效帧被门闸清掉。
+
 Capture 的投递 epoch 与发布锁保证暂停返回后无新应用帧投递；epoch 防止跨完整暂停/恢复的 read 被误当新音频。PipeWire RT 回调仍不加锁；Drain 在生产者 epoch 屏障后有界清 ring/组帧缓冲。Pipeline 先停止 dispatcher 再移交会话所有权并取消，不与 FeedAudio/End 并发操作同一会话。
 
 ## 取舍、验证与回滚
