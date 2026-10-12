@@ -91,7 +91,7 @@ VoiceInputEngine::VoiceInputEngine(Instance* instance)
             // catches an explicit tray/remote switch after opening the mixer.
             // Other contexts' non-voice switches do not own this capture stream.
             if (switched.oldInputMethod() == "voiceinput" &&
-                (!activeIc_.get() || activeIc_.get() == switched.inputContext()) &&
+                captureOwnerIc_.get() == switched.inputContext() &&
                 instance_->inputMethod(switched.inputContext()) != "voiceinput") {
                 DeactivateContext(false);
             }
@@ -180,6 +180,7 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
     FCITX_UNUSED(event);
     InitializeIfNeeded();
     activeIc_ = event.inputContext()->watch();
+    captureOwnerIc_ = event.inputContext()->watch();
     pendingPreeditText_.clear();
     pendingPreeditUtteranceId_ = 0;
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
@@ -201,7 +202,7 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
 void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
                                   InputContextEvent& event) {
     FCITX_UNUSED(entry);
-    if (activeIc_.get() && activeIc_.get() != event.inputContext()) return;
+    if (captureOwnerIc_.get() != event.inputContext()) return;
     DeactivateContext(event.type() == EventType::InputContextFocusOut);
 }
 
@@ -219,6 +220,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
         pipeline_->Pause();
     } else {
         pipeline_->Stop();
+        captureOwnerIc_.unwatch();
     }
 }
 

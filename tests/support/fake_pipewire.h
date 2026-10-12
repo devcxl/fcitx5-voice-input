@@ -39,6 +39,9 @@ unsigned fakepw_dequeue_count(void);
 void fakepw_set_sample_value(float value);          // 每个 float 样本写入的值
 void fakepw_set_samples_per_buffer(unsigned count); // 每个 buffer 的样本数
 void fakepw_set_callback_interval_ms(unsigned ms);  // 连续 RT 回调间隔
+// 0=normal, 1=null dequeue, 2=no datas, 3=null chunk, 4=null data.
+void fakepw_set_empty_mode(unsigned mode);
+void fakepw_deliver_one_valid_buffer(void);
 
 // 有界 held-next-dequeue 屏障：武装后，下一次 dequeue 会阻塞（快照当时的样本值），
 // 直到 release 或 2s 超时。用于制造“已取 epoch 的旧 RT 回调跨快速 pause/resume”。

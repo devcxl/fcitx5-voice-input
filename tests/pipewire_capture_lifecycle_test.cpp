@@ -68,6 +68,8 @@ struct FakePw {
     decltype(&fakepw_release_held_dequeue) releaseHeldDequeue = nullptr;
     decltype(&fakepw_held_sample_value) heldSampleValue = nullptr;
     decltype(&fakepw_trigger_stream_error) triggerStreamError = nullptr;
+    decltype(&fakepw_set_empty_mode) setEmptyMode = nullptr;
+    decltype(&fakepw_deliver_one_valid_buffer) deliverOneValidBuffer = nullptr;
 };
 
 bool LoadFakePw(FakePw& fp) {
@@ -105,6 +107,8 @@ bool LoadFakePw(FakePw& fp) {
     LOAD(releaseHeldDequeue, "fakepw_release_held_dequeue");
     LOAD(heldSampleValue, "fakepw_held_sample_value");
     LOAD(triggerStreamError, "fakepw_trigger_stream_error");
+    LOAD(setEmptyMode, "fakepw_set_empty_mode");
+    LOAD(deliverOneValidBuffer, "fakepw_deliver_one_valid_buffer");
 #undef LOAD
     return true;
 }
@@ -261,10 +265,40 @@ int RunError(FakePw& fp) {
     return g_failures == 0 ? 0 : 1;
 }
 
+int RunEmptyBuffers(FakePw& fp) {
+    fp.reset();
+    ThreadSafeQueue<fcitx::AudioFrame> queue;
+    fcitx::PipeWireCapture capture;
+    capture.SetFrameQueue(&queue);
+    capture.SetDeliveryEnabled(false);
+    Check(capture.Start(), "Start with muted delivery");
+    for (unsigned mode = 1; mode <= 4; ++mode) {
+        capture.SetDeliveryEnabled(false);
+        queue.Clear();
+        fp.setEmptyMode(mode);
+        fp.setSampleValue(0.5f);
+        capture.SetDeliveryEnabled(true);
+        const auto before = fp.dequeue();
+        Check(WaitFor([&] { return fp.dequeue() >= before + 10; }, 2s),
+              "empty callbacks complete before fresh audio");
+        // One valid frame, then empty callbacks again: it must not be lost
+        // merely because the producer failed to acknowledge an empty callback.
+        fp.deliverOneValidBuffer();
+        fcitx::AudioFrame frame;
+        const bool delivered = PopFrame(queue, frame, 200ms);
+        Check(delivered, "first valid frame after empty callbacks is delivered (mode " +
+                             std::to_string(mode) + ")");
+        if (delivered) Check(frame.pcm[0] == Expected(0.5f), "fresh buffer content");
+    }
+    capture.Stop();
+    return g_failures ? 1 : 0;
+}
+
 int RunScenario(const std::string& scenario, FakePw& fp) {
     if (scenario == "lifecycle") return RunLifecycle(fp);
     if (scenario == "stale") return RunStale(fp);
     if (scenario == "error") return RunError(fp);
+    if (scenario == "empty") return RunEmptyBuffers(fp);
     std::cerr << "FAIL: unknown scenario '" << scenario << "'\n";
     return 2;
 }
@@ -295,7 +329,7 @@ int RunParent(const std::string& fakeLibDir) {
                           ? ""
                           : ":" + EnvOrEmpty("LD_LIBRARY_PATH"));
 
-    for (const char* scenario : {"lifecycle", "stale", "error"}) {
+    for (const char* scenario : {"lifecycle", "stale", "error", "empty"}) {
         const pid_t pid = fork();
         if (pid == 0) {
             setenv("LD_LIBRARY_PATH", childLd.c_str(), 1);

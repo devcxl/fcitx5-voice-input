@@ -68,6 +68,8 @@ private:
 
     // Main-thread only: generation checks do not keep an InputContext alive.
     TrackableObjectReference<InputContext> activeIc_;
+    // Survives FocusOut: only the context that opened capture may close it.
+    TrackableObjectReference<InputContext> captureOwnerIc_;
     std::atomic<uint64_t> activeGeneration_{0};
     std::atomic<uint64_t> sessionGeneration_{0};
     bool initialized_ = false;

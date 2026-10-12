@@ -30,7 +30,7 @@ private:
     static void OnProcess(void* userdata);
     static void OnStateChanged(void* userdata, pw_stream_state oldState,
                                pw_stream_state state, const char* error);
-    void OnProcessImpl();
+    void OnProcessImpl(uint64_t epoch);
     bool LoadLib();
     void UnloadLib();
     void Cleanup(bool stopLoop);

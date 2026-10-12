@@ -172,11 +172,19 @@ int main(int argc, char** argv) {
                     fcitx::InputMethodSwitchedReason::Enumerate, "voiceinput", context.get());
                 // Unfocused switches skip the engine callback in Fcitx core.
                 instance.postEvent(switched);
-            } else if (scenario == "focus-unrelated-switch") {
+            } else if (scenario == "focus-unrelated-switch" ||
+                       scenario == "focus-other-voice-switch" ||
+                       scenario == "focus-other-voice-deactivate") {
                 nextContext = std::make_unique<FixtureInputContext>(manager);
                 fcitx::InputContextSwitchInputMethodEvent switched(
-                    fcitx::InputMethodSwitchedReason::Enumerate, "keyboard-us", nextContext.get());
-                instance.postEvent(switched);
+                    fcitx::InputMethodSwitchedReason::Enumerate,
+                    scenario == "focus-unrelated-switch" ? "keyboard-us" : "voiceinput",
+                    nextContext.get());
+                if (scenario == "focus-other-voice-deactivate") {
+                    engine.deactivate(entry, switched);
+                } else {
+                    instance.postEvent(switched);
+                }
             }
             return false;
         });
@@ -210,8 +218,10 @@ int main(int argc, char** argv) {
         std::cerr << "FAIL: an unfocused input-method switch did not release capture\n";
         return 1;
     }
-    if (scenario == "focus-unrelated-switch" && (!boundary.capturing || boundary.stops != 0)) {
-        std::cerr << "FAIL: another context's non-voice switch closed the retained stream\n";
+    if ((scenario == "focus-unrelated-switch" || scenario == "focus-other-voice-switch" ||
+         scenario == "focus-other-voice-deactivate") &&
+        (!boundary.capturing || boundary.stops != 0)) {
+        std::cerr << "FAIL: another context's switch closed the retained stream\n";
         return 1;
     }
     if (scenario == "active-destroy" &&

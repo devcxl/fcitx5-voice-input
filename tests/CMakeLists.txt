@@ -221,7 +221,7 @@ target_link_libraries(engine_ui_lifecycle_test PRIVATE
     ${FCITX5_LIBRARIES}
 )
 add_dependencies(engine_ui_lifecycle_test voice-input-addon)
-foreach(scenario destroy live active-destroy reactivate pending-switch focus-out focus-resume focus-close focus-dead-close focus-unrelated-switch)
+foreach(scenario destroy live active-destroy reactivate pending-switch focus-out focus-resume focus-close focus-dead-close focus-unrelated-switch focus-other-voice-switch focus-other-voice-deactivate)
     foreach(directory config data cache)
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/${directory}/conf")
     endforeach()

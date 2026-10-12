@@ -38,6 +38,8 @@ struct State {
     unsigned loopStop = 0;
     unsigned loopDestroy = 0;
     unsigned dequeue = 0;
+    unsigned emptyMode = 0;
+    bool oneValidBuffer = false;
 
     float sampleValue = 0.0f;
     unsigned samplesPerBuffer = kDefaultSamplesPerBuffer;
@@ -220,6 +222,8 @@ struct pw_buffer* pw_stream_dequeue_buffer(struct pw_stream* stream) {
     std::unique_lock<std::mutex> lock(g.mutex);
     ++g.dequeue;
 
+    const auto emptyMode = g.oneValidBuffer ? 0 : g.emptyMode;
+    g.oneValidBuffer = false;
     float value = g.sampleValue;
     if (g.holdArmed) {
         // 阻塞点：快照“旧”样本值并等待释放（或 2s 超时），模拟一个已取 epoch、
@@ -236,6 +240,10 @@ struct pw_buffer* pw_stream_dequeue_buffer(struct pw_stream* stream) {
     lock.unlock();
 
     for (float& sample : s->samples) sample = value;
+    s->buffer.n_datas = emptyMode == 2 ? 0 : 1;
+    s->data.chunk = emptyMode == 3 ? nullptr : &s->chunk;
+    s->data.data = emptyMode == 4 ? nullptr : s->samples.data();
+    if (emptyMode == 1) return nullptr;
     return &s->pwbuf;
 }
 
@@ -349,6 +357,8 @@ void fakepw_reset(void) {
         g.loopStop = 0;
         g.loopDestroy = 0;
         g.dequeue = 0;
+        g.emptyMode = 0;
+        g.oneValidBuffer = false;
         g.sampleValue = 0.0f;
         g.samplesPerBuffer = kDefaultSamplesPerBuffer;
         g.callbackIntervalMs = kDefaultCallbackIntervalMs;
@@ -401,6 +411,14 @@ void fakepw_set_samples_per_buffer(unsigned count) {
 }
 void fakepw_set_callback_interval_ms(unsigned ms) {
     Read([&](State& g) { g.callbackIntervalMs = ms; });
+}
+
+void fakepw_set_empty_mode(unsigned mode) {
+    Read([&](State& g) { g.emptyMode = mode; });
+}
+
+void fakepw_deliver_one_valid_buffer(void) {
+    Read([](State& g) { g.oneValidBuffer = true; });
 }
 
 void fakepw_hold_next_dequeue(void) {

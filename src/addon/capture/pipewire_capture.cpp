@@ -256,7 +256,11 @@ void PipeWireCapture::Cleanup(bool stopLoop) {
 
 void PipeWireCapture::OnProcess(void* userdata) {
     auto* self = static_cast<PipeWireCapture*>(userdata);
-    self->OnProcessImpl();
+    const auto epoch = self->DeliveryEpoch();
+    self->OnProcessImpl(epoch);
+    // Acknowledge all completed callbacks, including empty/no-buffer returns.
+    // Every dequeued buffer has been queued before this publication.
+    self->producerEpoch_.store(epoch, std::memory_order_release);
 }
 
 void PipeWireCapture::OnStateChanged(void* userdata, pw_stream_state oldState,
@@ -272,8 +276,7 @@ void PipeWireCapture::OnStateChanged(void* userdata, pw_stream_state oldState,
                  << (error ? " error=" : "") << (error ? error : "");
 }
 
-void PipeWireCapture::OnProcessImpl() {
-    const auto epoch = DeliveryEpoch();
+void PipeWireCapture::OnProcessImpl(uint64_t epoch) {
     pw_buffer* buf = pw_.pw_stream_dequeue_buffer(stream_);
     if (!buf) {
         return;
@@ -281,7 +284,6 @@ void PipeWireCapture::OnProcessImpl() {
 
     if (!DeliveryEnabled(epoch)) {
         pw_.pw_stream_queue_buffer(stream_, buf);
-        producerEpoch_.store(epoch, std::memory_order_release);
         return;
     }
 
@@ -311,7 +313,6 @@ void PipeWireCapture::OnProcessImpl() {
                                 });
 
     pw_.pw_stream_queue_buffer(stream_, buf);
-    producerEpoch_.store(epoch, std::memory_order_release);
 }
 
 void PipeWireCapture::PushSamples(const float* pcm, size_t frames) {
