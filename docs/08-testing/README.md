@@ -59,7 +59,8 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 
 - 旧猜源、200ms 失焦停流、未接投递门闸及旧 PipeWire 缓存分别由公开边界测试确认失败后修复。
 - Release 完整构建与 38 项 ctest 通过；10 项核心生命周期测试重复 20 轮通过，无 PipeWire 可选构建与相关测试通过。复核补充的其他 Voice Input 上下文误关和空 buffer 后首帧均先失败后修复。链接卫生仍满足无录音库直接符号/DT_NEEDED。
-- 真实双麦克风、桌面录音页移流与托盘关闭尚未验收；PulseAudio 同步 read/join 停止风险仍是独立后续任务。详见 [调研与限制](../06-development/research/issue-54-audio-source-routing.md)。
+- 用户于 2026-10-13 在自己的 XFCE 电脑上确认双麦克风正常、可通过音频管理器切换设备，接受该环境下的基本可用性。此为用户实测反馈，不是代理硬件测试；音频服务、实际采集后端和设备型号未提供，不推定 PulseAudio 与原生 PipeWire 均已覆盖。
+- 其他桌面、未确认的采集后端，以及失焦无上传/回焦无旧音频/托盘关闭的逐项现场结果仍未验证。PulseAudio 同步 read/join 停止风险仍是独立后续任务。详见 [调研与限制](../06-development/research/issue-54-audio-source-routing.md)。
 
 ## 平台限制（已实测）
 

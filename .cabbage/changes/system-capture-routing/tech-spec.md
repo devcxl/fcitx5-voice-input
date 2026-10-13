@@ -28,7 +28,7 @@ change_type: bugfix
 
 # Rollout
 
-代码/测试与文档分开提交，分支 PR #55 验证 CI；不合并主分支、不安装。设备移动及真实桌面验收尚未完成。详见 [ADR](../../../docs/03-architecture/adr/ADR-0004-system-managed-capture-routing.md)。
+代码/测试与文档分开提交，分支 PR #55 验证 CI；不合并主分支、不安装。2026-10-13 用户确认 XFCE 双麦与音频管理器切换通过，其他桌面/未确认后端及完整生命周期现场验收仍待补充。详见 [ADR](../../../docs/03-architecture/adr/ADR-0004-system-managed-capture-routing.md)。
 
 # Rollback
 

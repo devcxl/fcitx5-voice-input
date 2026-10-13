@@ -1,6 +1,6 @@
 # ADR-0004：系统管理录音设备，失焦保流但暂停识别
 
-> 状态：已接受；日期：2026-10-12；关联：[Issue #54](https://github.com/devcxl/fcitx5-voice-input/issues/54)。用户已批准，真实桌面/双麦验收仍需完成。
+> 状态：已接受；日期：2026-10-12；关联：[Issue #54](https://github.com/devcxl/fcitx5-voice-input/issues/54)。2026-10-13 用户确认 XFCE 双麦与音频管理器切换通过；其他桌面及未确认的采集后端仍待验证。
 
 ## 背景与决策
 

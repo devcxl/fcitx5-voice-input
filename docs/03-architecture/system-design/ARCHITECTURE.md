@@ -171,7 +171,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 - **原输入框销毁（`InputContextDestroyed`，`PreInputMethod`）**：清空待提交文本并 `DeactivateContext(true)` 保流。
 - 析构时 `Abort()`（`Stop()`）释放；不再有 200ms 延迟停止定时器。
 
-> **契约与风险**：录音流由音频服务管理，插件不枚举/筛选设备、不保存设备 ID；PulseAudio `dev=nullptr`、原生 PipeWire 无显式 target，尊重系统默认或该应用的设备偏好（见 [ADR-0004](../adr/ADR-0004-system-managed-capture-routing.md)）。`Pause()` 禁止新的应用帧进入识别链路，并在停止 VAD/dispatcher 后取消当前会话；但已上传到服务端的 ASR/LLM 请求无法撤回。已删除的 200ms 延迟也从未是可靠的隐私上界；PulseAudio 阻塞停止的既有缺陷仍由 issue #14 / PR #17 跟踪，热切换的真实体验也尚未完成硬件与桌面验收。
+> **契约与风险**：录音流由音频服务管理，插件不枚举/筛选设备、不保存设备 ID；PulseAudio `dev=nullptr`、原生 PipeWire 无显式 target，尊重系统默认或该应用的设备偏好（见 [ADR-0004](../adr/ADR-0004-system-managed-capture-routing.md)）。`Pause()` 禁止新的应用帧进入识别链路，并在停止 VAD/dispatcher 后取消当前会话；但已上传到服务端的 ASR/LLM 请求无法撤回。已删除的 200ms 延迟也从未是可靠的隐私上界；PulseAudio 阻塞停止的既有缺陷仍由 issue #14 / PR #17 跟踪。2026-10-13 用户确认 XFCE 双麦与音频管理器切换通过，其他桌面/未确认的采集后端及完整生命周期现场验收仍待补充。
 
 ### 结果过滤机制
 
