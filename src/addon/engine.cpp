@@ -72,9 +72,39 @@ VoiceInputEngine::VoiceInputEngine(Instance* instance)
     fcitx::registerDomain(FCITX_GETTEXT_DOMAIN, VOICE_INPUT_LOCALE_DIR);
     eventDispatcher_.attach(&instance_->eventLoop());
     reloadConfig();
+    // Core calls deactivate with the original FocusOut/SwitchInputMethod event
+    // (fcitx5 5.1.22 instance.cpp), not its later notification event.
+    eventWatchers_.push_back(instance_->watchEvent(
+        EventType::InputContextDestroyed, EventWatcherPhase::PreInputMethod,
+        [this](Event& event) {
+            auto& contextEvent = static_cast<InputContextEvent&>(event);
+            if (activeIc_.get() == contextEvent.inputContext()) {
+                pendingPreeditText_.clear();
+                DeactivateContext(true);
+            }
+        }));
+    eventWatchers_.push_back(instance_->watchEvent(
+        EventType::InputContextSwitchInputMethod, EventWatcherPhase::PostInputMethod,
+        [this](Event& event) {
+            auto& switched = static_cast<InputContextSwitchInputMethodEvent&>(event);
+            // Core skips engine callbacks for unfocused contexts. This also
+            // catches an explicit tray/remote switch after opening the mixer.
+            // Other contexts' non-voice switches do not own this capture stream.
+            if (switched.oldInputMethod() == "voiceinput" &&
+                captureOwnerIc_.get() == switched.inputContext() &&
+                instance_->inputMethod(switched.inputContext()) != "voiceinput") {
+                DeactivateContext(false);
+            }
+        }));
+    eventWatchers_.push_back(instance_->watchEvent(
+        EventType::InputMethodGroupAboutToChange, EventWatcherPhase::PostInputMethod,
+        [this](Event&) {
+            if (initialized_) DeactivateContext(false);
+        }));
 }
 
 VoiceInputEngine::~VoiceInputEngine() {
+    eventWatchers_.clear();
     pipeline_->Abort();
     eventDispatcher_.detach();
 }
@@ -150,10 +180,10 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
     FCITX_UNUSED(event);
     InitializeIfNeeded();
     activeIc_ = event.inputContext()->watch();
+    captureOwnerIc_ = event.inputContext()->watch();
     pendingPreeditText_.clear();
     pendingPreeditUtteranceId_ = 0;
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
-    pendingStopGeneration_ = generation;
     sessionGeneration_.store(generation);
 
     pipeline_->SetGeneration(generation);
@@ -166,38 +196,32 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
                  << " ic=" << (activeIc_.get() != nullptr);
 
     statusText_.clear();
-    SetStatus(_("语音输入就绪"));
+    SetStatus(pipeline_->IsRunning() ? _("语音输入就绪") : _("语音识别失败"));
 }
 
 void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
                                   InputContextEvent& event) {
     FCITX_UNUSED(entry);
-    FCITX_UNUSED(event);
-    uint64_t generation = activeGeneration_.fetch_add(1) + 1;
-    pendingStopGeneration_ = generation;
+    if (captureOwnerIc_.get() != event.inputContext()) return;
+    DeactivateContext(event.type() == EventType::InputContextFocusOut);
+}
 
-    FCITX_INFO() << "[voice-input] Deactivate: gen=" << generation;
+void VoiceInputEngine::DeactivateContext(bool keepCapture) {
+    uint64_t generation = activeGeneration_.fetch_add(1) + 1;
+    sessionGeneration_.store(0);
+
+    FCITX_INFO() << "[voice-input] Deactivate: gen=" << generation
+                 << " keepCapture=" << keepCapture;
 
     ClearUI();
     activeIc_.unwatch();
 
-    delayedStopEvent_ = instance_->eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC,
-        now(CLOCK_MONOTONIC) + 200000,
-        0,
-        [this, generation](EventSourceTime*, uint64_t) {
-            if (pendingStopGeneration_ != generation) {
-                FCITX_INFO() << "[voice-input] DelayedStop: cancelled gen="
-                             << generation;
-                return true;
-            }
-            FCITX_INFO() << "[voice-input] DelayedStop: executing gen="
-                         << generation;
-            sessionGeneration_.store(0);
-            pipeline_->Stop();
-            return true;
-        });
-    delayedStopEvent_->setOneShot();
+    if (keepCapture) {
+        pipeline_->Pause();
+    } else {
+        pipeline_->Stop();
+        captureOwnerIc_.unwatch();
+    }
 }
 
 std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {

@@ -30,11 +30,12 @@ private:
     static void OnProcess(void* userdata);
     static void OnStateChanged(void* userdata, pw_stream_state oldState,
                                pw_stream_state state, const char* error);
-    void OnProcessImpl();
+    void OnProcessImpl(uint64_t epoch);
     bool LoadLib();
     void UnloadLib();
     void Cleanup(bool stopLoop);
     void DrainLoop();
+    size_t DiscardPendingSamples();
     void PushSamples(const float* pcm, size_t frames);
 
     // 运行期 dlopen + dlsym 函数指针表。所有 pw_* 调用经由此表间接调用，
@@ -82,6 +83,9 @@ private:
     std::unique_ptr<std::thread> drainThread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> drainRunning_{false};
+    // Published only after the RT callback finishes its ring writes. The drain
+    // thread must observe the new epoch before discarding a previous epoch.
+    std::atomic<uint64_t> producerEpoch_{0};
     std::atomic<uint64_t> ringBufferDroppedSamples_{0};
     std::atomic<uint64_t> drainDiscardedSamples_{0};
 

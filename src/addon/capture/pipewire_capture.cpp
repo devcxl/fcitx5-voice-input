@@ -104,6 +104,7 @@ bool PipeWireCapture::Start() {
     if (!LoadLib()) return false;
 
     frameAssembler_.Reset();
+    producerEpoch_ = 0;
     ringBufferDroppedSamples_ = 0;
     drainDiscardedSamples_ = 0;
 
@@ -184,7 +185,9 @@ bool PipeWireCapture::Start() {
         return false;
     }
 
+    running_ = true;
     if (pw_.pw_thread_loop_start(loop_) < 0) {
+        running_ = false;
         FCITX_ERROR() << "[voice-input:pw] Failed to start pw_thread_loop";
         Cleanup(false);
         UnloadLib();
@@ -195,13 +198,13 @@ bool PipeWireCapture::Start() {
     drainRunning_ = true;
     drainThread_ = std::make_unique<std::thread>(&PipeWireCapture::DrainLoop, this);
 
-    running_ = true;
     FCITX_INFO() << "[voice-input:pw] Capture started (with drain thread)";
-    return true;
+    return running_.load();
 }
 
 void PipeWireCapture::Stop() {
-    if (!running_) return;
+    if (!loop_ && !drainThread_) return;
+    running_ = false;
 
     // 先停止 PipeWire 回调，再关闭 drain，避免 drain 已退出后继续写入 ring buffer。
     if (loop_) {
@@ -214,15 +217,7 @@ void PipeWireCapture::Stop() {
         drainThread_.reset();
     }
 
-    size_t discarded = frameAssembler_.PendingSamples();
-    float discardBuffer[kWindowSize];
-    while (true) {
-        const size_t read = ringBuffer_->Read(discardBuffer, kWindowSize);
-        if (read == 0) break;
-        discarded += read;
-    }
-    frameAssembler_.Reset();
-    drainDiscardedSamples_.fetch_add(discarded, std::memory_order_relaxed);
+    drainDiscardedSamples_.fetch_add(DiscardPendingSamples(), std::memory_order_relaxed);
 
     const auto ringDropped = ringBufferDroppedSamples_.exchange(0);
     const auto drainDiscarded = drainDiscardedSamples_.exchange(0);
@@ -261,21 +256,34 @@ void PipeWireCapture::Cleanup(bool stopLoop) {
 
 void PipeWireCapture::OnProcess(void* userdata) {
     auto* self = static_cast<PipeWireCapture*>(userdata);
-    self->OnProcessImpl();
+    const auto epoch = self->DeliveryEpoch();
+    self->OnProcessImpl(epoch);
+    // Acknowledge all completed callbacks, including empty/no-buffer returns.
+    // Every dequeued buffer has been queued before this publication.
+    self->producerEpoch_.store(epoch, std::memory_order_release);
 }
 
 void PipeWireCapture::OnStateChanged(void* userdata, pw_stream_state oldState,
                                      pw_stream_state state, const char* error) {
     auto* self = static_cast<PipeWireCapture*>(userdata);
+    if (state == PW_STREAM_STATE_ERROR ||
+        (state == PW_STREAM_STATE_UNCONNECTED && oldState != PW_STREAM_STATE_UNCONNECTED)) {
+        self->running_ = false;
+    }
     FCITX_DEBUG() << "[voice-input:pw] Stream state: "
                  << self->pw_.pw_stream_state_as_string(oldState) << " -> "
                  << self->pw_.pw_stream_state_as_string(state)
                  << (error ? " error=" : "") << (error ? error : "");
 }
 
-void PipeWireCapture::OnProcessImpl() {
+void PipeWireCapture::OnProcessImpl(uint64_t epoch) {
     pw_buffer* buf = pw_.pw_stream_dequeue_buffer(stream_);
     if (!buf) {
+        return;
+    }
+
+    if (!DeliveryEnabled(epoch)) {
+        pw_.pw_stream_queue_buffer(stream_, buf);
         return;
     }
 
@@ -317,11 +325,43 @@ void PipeWireCapture::PushSamples(const float* pcm, size_t frames) {
     }
 }
 
+size_t PipeWireCapture::DiscardPendingSamples() {
+    size_t discarded = frameAssembler_.PendingSamples();
+    frameAssembler_.Reset();
+    // Snapshot the size: a running producer must not make cleanup unbounded.
+    size_t remaining = ringBuffer_->Size();
+    float buffer[kWindowSize];
+    while (remaining > 0) {
+        const auto read = ringBuffer_->Read(buffer, std::min<size_t>(remaining, kWindowSize));
+        if (read == 0) break;
+        discarded += read;
+        remaining -= read;
+    }
+    return discarded;
+}
+
 void PipeWireCapture::DrainLoop() {
     constexpr size_t kDrainChunk = 512;
     float floatBuf[kDrainChunk];
+    uint64_t consumedEpoch = 0;
 
     while (drainRunning_) {
+        const auto epoch = DeliveryEpoch();
+        if (epoch != consumedEpoch) {
+            // A previous RT callback may still be writing. Wait for its
+            // successor before the bounded drain, otherwise old audio could
+            // arrive after cleanup and escape into the resumed generation.
+            if (producerEpoch_.load(std::memory_order_acquire) != epoch) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            DiscardPendingSamples();
+            consumedEpoch = epoch;
+        }
+        if (!DeliveryEnabled(epoch)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
         size_t read = ringBuffer_->Read(floatBuf, kDrainChunk);
         if (read == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -329,9 +369,7 @@ void PipeWireCapture::DrainLoop() {
         }
 
         frameAssembler_.Append(floatBuf, read,
-            [this](const std::array<float, kWindowSize>& samples) {
-                if (!frameQueue_) return;
-
+            [this, epoch](const std::array<float, kWindowSize>& samples) {
                 AudioFrame frame;
                 frame.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                          std::chrono::steady_clock::now().time_since_epoch())
@@ -343,7 +381,7 @@ void PipeWireCapture::DrainLoop() {
                     frame.pcm[i] = static_cast<int16_t>(s * kFloatToInt16);
                 }
 
-                frameQueue_->Push(frame);
+                DeliverFrame(std::move(frame), epoch);
             });
     }
 

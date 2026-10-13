@@ -115,7 +115,14 @@ void Pipeline::Start() {
         return;
     }
 
-    if (!StartCapture()) return;
+    // A retained stream may have died while the input context was unfocused.
+    if (capture_ && !capture_->IsRunning()) {
+        capture_->Stop();
+        capture_.reset();
+    }
+    if (!capture_ && !StartCapture()) return;
+    frameQueue_.Clear();
+    speechEventQueue_.Clear();
 
     results_->Start(utteranceCounter_.load() + 1, generation_.load());
 
@@ -123,28 +130,27 @@ void Pipeline::Start() {
     if (!vadWorker_->IsRunning()) {
         // VAD 初始化失败（如模型缺失）：回滚 capture，避免无消费者推帧
         FCITX_ERROR() << "[voice-input] VAD failed to start, aborting";
-        results_->Pause(utteranceCounter_.load() + 1);
-        capture_->Stop();
-        capture_.reset();
+        Stop();
         return;
     }
 
     running_ = true;
     asrThread_ = std::make_unique<std::thread>(&Pipeline::AsrDispatcherLoop, this);
+    capture_->SetDeliveryEnabled(true);
 
     FCITX_INFO() << "[voice-input] Pipeline started";
 }
 
-void Pipeline::Stop() {
-    if (!running_) return;
+bool Pipeline::IsCapturing() const {
+    return capture_ && capture_->IsRunning();
+}
 
-    running_ = false;
+void Pipeline::Pause() {
+    // Close the frame gate first. An in-flight read cannot enqueue after this
+    // returns, even across a rapid pause/resume (capture delivery epoch).
+    if (capture_) capture_->SetDeliveryEnabled(false);
+    const bool wasRunning = running_.exchange(false);
     results_->Pause(utteranceCounter_.load() + 1);
-
-    if (capture_) {
-        capture_->Stop();
-    }
-
     vadWorker_->Stop();
 
     if (asrThread_ && asrThread_->joinable()) {
@@ -152,7 +158,8 @@ void Pipeline::Stop() {
         asrThread_.reset();
     }
 
-    // Cancel active session and let reaper clean up in background
+    // Dispatcher ownership ends at join. Do not race FeedAudio/End with the
+    // control thread's cancellation or pending audio cleanup.
     if (activeSession_) {
         activeSession_->Cancel();
         reaper_->Add(std::move(activeSession_));
@@ -169,60 +176,30 @@ void Pipeline::Stop() {
         engine->CancelAllSessions();
     }
 
-    if (capture_) {
-        capture_.reset();
-    }
-
-    // Drain remaining audio queues（避免下次 Start 消费残留帧产生幽灵转写）
-    AudioFrame f;
-    while (frameQueue_.TryPop(f)) {}
-    SpeechEvent se;
-    while (speechEventQueue_.TryPop(se)) {}
-    FCITX_INFO() << "[voice-input] Pipeline stopped";
+    pendingAsrAudio_.clear();
+    frameQueue_.Clear();
+    speechEventQueue_.Clear();
+    if (wasRunning) FCITX_INFO() << "[voice-input] Recognition paused; capture retained";
 }
 
-void Pipeline::Abort() {
-    running_ = false;
-    results_->Close(utteranceCounter_.load() + 1);
-
+void Pipeline::Stop() {
+    Pause();
     if (capture_) {
         capture_->Stop();
         capture_.reset();
     }
+}
 
-    vadWorker_->Stop();
-
-    if (asrThread_ && asrThread_->joinable()) {
-        asrThread_->join();
-        asrThread_.reset();
-    }
-
-    if (activeSession_) {
-        activeSession_->Cancel();
-        reaper_->Add(std::move(activeSession_));
-        activeSessionId_ = 0;
-    }
-
-    std::shared_ptr<AsrEngine> engine;
-    {
-        std::lock_guard<std::mutex> lock(engineMutex_);
-        engine = asrEngine_;
-    }
-    if (engine) {
-        engine->CancelAllSessions();
-    }
-
-    // Clear queues
-    AudioFrame f;
-    while (frameQueue_.TryPop(f)) {}
-    SpeechEvent se;
-    while (speechEventQueue_.TryPop(se)) {}
+void Pipeline::Abort() {
+    results_->Close(utteranceCounter_.load() + 1);
+    Stop();
 }
 
 bool Pipeline::StartCapture() {
 #ifdef HAVE_PULSEAUDIO
     capture_ = std::make_unique<PulseAudioCapture>();
     capture_->SetFrameQueue(&frameQueue_);
+    capture_->SetDeliveryEnabled(false);
 
     if (capture_->Start()) {
         FCITX_INFO() << "[voice-input] Capture: " << capture_->Name();
@@ -236,6 +213,7 @@ bool Pipeline::StartCapture() {
 #ifdef HAVE_PIPEWIRE
     capture_ = std::make_unique<PipeWireCapture>();
     capture_->SetFrameQueue(&frameQueue_);
+    capture_->SetDeliveryEnabled(false);
 
     if (capture_->Start()) {
         FCITX_INFO() << "[voice-input] Capture: " << capture_->Name();
@@ -269,10 +247,12 @@ void Pipeline::AsrDispatcherLoop() {
             continue;
         }
 
+        if (!running_) break;
         switch (ev.type) {
         case SpeechEventType::Begin: {
             // 持锁到 session 映射建立与 worker 启动完成，避免热更新丢失终态。
             std::unique_lock<std::mutex> engineLock(engineMutex_);
+            if (!running_) break;
             std::shared_ptr<AsrEngine> engine = asrEngine_;
             if (!engine) break;
             // Cancel current session if still active

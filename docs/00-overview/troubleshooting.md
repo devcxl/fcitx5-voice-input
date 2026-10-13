@@ -41,8 +41,14 @@
    # 或检查 pulseaudio 状态
    systemctl --user status pulseaudio
    ```
-3. **检查音频设备选择**：
-   插件启动时会自动遍历并优先选择前缀为 `alsa_input.*` 的真实麦克风硬件设备，自动忽略 Monitor 监听源与回声消除虚拟源。若使用了特殊虚拟麦克风，请在 `pavucontrol` 中将其设为默认输入设备（Default Source）。
+3. **检查录音设备路由**：
+   插件不再枚举、筛选或指定录音设备，路由由系统音频服务与音频管理器负责。先确认系统默认输入是未静音、电平有反应的设备；若默认正确仍无声，需排查是否为本应用保存了历史设备偏好，或 Fcitx 启动环境设置了 `PULSE_SOURCE` / `client.conf` 源覆盖。可查看插件当前使用的流：
+   ```bash
+   pactl info
+   pactl get-default-source
+   pactl list source-outputs   # 在录音页/这里找到本插件对应的 index
+   ```
+   在 `pavucontrol` 的「录音（Recording）」页可把 `fcitx5-voice-input` / `voice input` 这条流移动到目标源。插件不会自动修改你的默认源，也不会跳过任何设备。
 4. **调节 VAD 检测灵敏度**：
    若麦克风拾音音量偏小，VAD 可能未能达到触发阈值。在 `fcitx5-configtool` 中将 `VADThreshold` 从默认的 `20` 调小至 `10` 进行测试。
 
@@ -96,7 +102,26 @@ fcitx5 -d --verbose default=5 2>&1 | grep -i voiceinput
 ```
 
 在终端输出中可以直观观察到以下阶段的运行日志：
-- 音频设备枚举与初始化（`Capture backend opened`）
-- VAD 语音开始 (`Speech onset detected`) 与结束分段
+- 录音后端与音频服务路由（`Capture: pulseaudio` / `pipewire`，`Capture started ... routing managed by the audio service`）；插件不枚举、不打印具体设备名，实际来源请在音频管理器中查看
+- VAD 语音开始（`Speech onset`）与结束分段
 - ASR 请求发送与 HTTP / WebSocket 返回状态
 - 火山引擎请求的 `X-Tt-Logid`（可用于向火山引擎客服提交排查工单）
+
+---
+
+## 5. 关闭录音流与隐私
+
+### 插件何时释放麦克风？
+
+- **失焦（切到其他窗口）**：暂停识别并丢弃采样，但**保留**录音流，以便快速切回时无缝继续。
+- **切换到其他输入法、更改输入法组、退出或重启 Fcitx5**：释放录音流。
+
+若要立刻确保插件不再录音，最简单的做法是切换到其他输入法（例如用 `Ctrl + Space` 切回原本的中文/英文输入法），或直接退出 Fcitx5。
+
+### 虚拟设备与 Monitor 隐私
+
+由于设备由系统默认或本应用的偏好决定：
+
+- 若默认输入是回放 **Monitor** 源，插件可能录到系统正在播放的声音并送往 ASR。请在 `pavucontrol` 中确认默认输入不是 Monitor。
+- 正常的虚拟降噪 / 回声消除源不会再被插件按名称排除，可按需选为默认或应用偏好。
+- 插件不会自动试录其他设备，也不会把 PCM 或转写内容写入日志（日志只记录长度）。

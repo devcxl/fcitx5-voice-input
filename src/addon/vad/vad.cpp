@@ -80,6 +80,7 @@ void VADWorker::Start() {
         return;
     }
 
+    silero_->Reset();
     ResetSession();
     running_ = true;
     thread_ = std::make_unique<std::thread>(&VADWorker::WorkerLoop, this);

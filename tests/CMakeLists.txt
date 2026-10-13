@@ -221,7 +221,7 @@ target_link_libraries(engine_ui_lifecycle_test PRIVATE
     ${FCITX5_LIBRARIES}
 )
 add_dependencies(engine_ui_lifecycle_test voice-input-addon)
-foreach(scenario destroy live active-destroy reactivate pending-switch)
+foreach(scenario destroy live active-destroy reactivate pending-switch focus-out focus-resume focus-close focus-dead-close focus-unrelated-switch focus-other-voice-switch focus-other-voice-deactivate)
     foreach(directory config data cache)
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ui-${scenario}/${directory}/conf")
     endforeach()
@@ -299,3 +299,79 @@ foreach(backend realtime volcengine)
         )
     endforeach()
 endforeach()
+
+# ── PulseAudio 录音源路由回归（issue #54）────────────────────────────
+# 真实 capture 编入测试目标（在真实 dlopen 边界运行 Start/Stop），不链接
+# libpulse-simple——dlopen 由 capture 自身完成，测试可执行文件不感知假库。
+# 假库与假 pactl 只写入构建目录；测试子进程经 LD_LIBRARY_PATH / PATH 加载，
+# 绝不安装或覆盖系统库，也不接触真实音频服务/设备/网络。
+if(PULSE_FOUND)
+add_library(fake_pulse SHARED
+    support/fake_pulse.cpp
+)
+set_target_properties(fake_pulse PROPERTIES
+    PREFIX "lib"
+    OUTPUT_NAME "pulse-simple"
+    SUFFIX ".so.0"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fake-pulse"
+)
+target_include_directories(fake_pulse PRIVATE
+    ${PULSE_INCLUDE_DIRS}
+)
+
+set(FAKE_PACTL_DIR "${CMAKE_CURRENT_BINARY_DIR}/fake-pactl")
+file(MAKE_DIRECTORY "${FAKE_PACTL_DIR}")
+# 输出 issue #54 的两条源（内置排前、USB 在后），并记录被调用。
+# 修复后不应再有 pactl 子进程，标记文件不会出现。
+file(WRITE "${FAKE_PACTL_DIR}/pactl" "#!/bin/sh
+[ -n \"\$PULSE_FAKE_PACTL_MARKER\" ] || exit 3
+printf 'called\\n' >> \"\$PULSE_FAKE_PACTL_MARKER\"
+printf '42\\talsa_input.pci-0000_00_1f.3.analog-stereo\\tmodule-alsa-card.c\\ts16le 2ch 48000Hz\\tRUNNING\\n'
+printf '43\\talsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback\\tmodule-alsa-card.c\\ts16le 1ch 48000Hz\\tRUNNING\\n'
+")
+file(CHMOD "${FAKE_PACTL_DIR}/pactl" PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE
+)
+
+add_executable(pulse_capture_routing_test
+    pulse_capture_routing_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/capture/pulse_audio_capture.cpp
+)
+target_include_directories(pulse_capture_routing_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${PULSE_INCLUDE_DIRS}
+)
+target_link_libraries(pulse_capture_routing_test PRIVATE
+    ${FCITX5_LIBRARIES}
+    ${CMAKE_DL_LIBS}
+)
+add_dependencies(pulse_capture_routing_test fake_pulse)
+
+add_test(NAME pulse_capture_routing_test
+    COMMAND pulse_capture_routing_test
+        "${CMAKE_CURRENT_BINARY_DIR}/fake-pulse"
+        "${FAKE_PACTL_DIR}")
+set_tests_properties(pulse_capture_routing_test PROPERTIES TIMEOUT 30)
+
+add_executable(pipeline_capture_lifecycle_test pipeline_capture_lifecycle_test.cpp)
+target_include_directories(pipeline_capture_lifecycle_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+    ${PULSE_INCLUDE_DIRS}
+)
+# As in the engine lifecycle fixture, substitute the external model boundary
+# while executing the real addon. The fake audio library is test-only.
+target_link_libraries(pipeline_capture_lifecycle_test PRIVATE
+    "-Wl,$<TARGET_FILE:voice-input-addon>"
+    ${FCITX5_LIBRARIES}
+    fake_pulse
+)
+add_dependencies(pipeline_capture_lifecycle_test voice-input-addon)
+add_test(NAME pipeline_capture_lifecycle_test COMMAND pipeline_capture_lifecycle_test)
+set_tests_properties(pipeline_capture_lifecycle_test PROPERTIES TIMEOUT 10)
+endif()
+
+include(pipewire_capture_tests.cmake)
