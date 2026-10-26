@@ -32,7 +32,7 @@ flowchart LR
 
 根据您的 Linux 发行版选择最便捷的安装方式：
 
-- **Arch Linux (AUR)**：
+- **[Arch Linux (AUR)](https://aur.archlinux.org/packages/fcitx5-voice-input)**：
   ```bash
   yay -S fcitx5-voice-input
   ```

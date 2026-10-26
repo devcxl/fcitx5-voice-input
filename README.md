@@ -39,7 +39,9 @@
 
 ### 1. Installation
 
-#### AUR (Arch Linux)
+#### [AUR (Arch Linux)](https://aur.archlinux.org/packages/fcitx5-voice-input)
+
+Maintained externally in the AUR:
 
 ```bash
 yay -S fcitx5-voice-input

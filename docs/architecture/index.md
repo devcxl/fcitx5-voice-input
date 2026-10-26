@@ -277,10 +277,10 @@ build/
 
 ### 打包
 
-- **Arch Linux**: `aur/PKGBUILD`（依赖 fcitx5 / pipewire / jsoncpp / curl / onnxruntime-cpu / zlib）
+- **Arch Linux**: [AUR 包](https://aur.archlinux.org/packages/fcitx5-voice-input)在仓库外部单独维护，不在 CI/Release 中构建
 - **DEB**: CPack 自动生成（dpkg-shlibdeps 自动依赖）
 - **RPM**: CPack / rpmbuild 自动依赖
-- **CI**: 7 发行版容器矩阵（ubuntu-24.04 / ubuntu-26.04 / debian-12 / debian-13 / fedora-44 / opensuse-tumbleweed / archlinux），各发行版原生容器内构建原生包 + 链接校验（nm/readelf/dlopen smoke）
+- **CI**: 6 发行版容器矩阵（ubuntu-24.04 / ubuntu-26.04 / debian-12 / debian-13 / fedora-44 / opensuse-tumbleweed），各发行版原生容器内构建原生包 + 链接校验（nm/readelf/dlopen smoke）
 
 ---
 
@@ -340,15 +340,12 @@ fcitx5-voice-input/
 ├── po/
 │   └── zh_CN.po                 # 中文翻译
 │
-├── aur/
-│   └── PKGBUILD                 # Arch Linux 打包脚本
-│
 ├── cmake/                       # 自定义 FindXXX.cmake
 ├── data/                        # 图标 + 输入法注册文件
 ├── scripts/                     # 辅助脚本
 ├── .github/workflows/
-│   ├── ci.yml                   # PR/push：7 发行版矩阵 + 链接校验 + build-no-pipewire
-│   ├── release.yml              # tag v*：draft release（含 AUR 源码包）
+│   ├── ci.yml                   # PR/push：6 发行版矩阵 + 链接校验 + build-no-pipewire
+│   ├── release.yml              # tag v*：draft release（DEB/RPM 产物）
 │   └── docs-deploy.yml          # GitHub Pages 文档站部署
 ```
 

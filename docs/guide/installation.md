@@ -1,12 +1,12 @@
 # 快速安装指南
 
-fcitx5-voice-input 支持主流 Linux 发行版，提供 AUR 源码包、官方 GitHub Release 预编译包以及从源码手动编译安装等多种方式。
+fcitx5-voice-input 支持主流 Linux 发行版，提供 AUR 包（外部维护）、官方 GitHub Release 预编译包以及从源码手动编译安装等多种方式。
 
 ---
 
 ## 方式一：Arch Linux (AUR)
 
-如果您使用的是 Arch Linux 或其衍生发行版（如 Manjaro、EndeavourOS），可以通过 AUR 助手一键安装：
+Arch Linux 及其衍生发行版（如 Manjaro、EndeavourOS）请使用 [AUR 包](https://aur.archlinux.org/packages/fcitx5-voice-input)（在 AUR 单独维护，不随本仓库发布）：
 
 ```bash
 # 使用 yay 安装
