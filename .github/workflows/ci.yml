@@ -6,19 +6,15 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**.md'
-      - '.cabbage/**'
       - 'LICENSE'
       - '.gitignore'
-      - 'skills-lock.json'
   pull_request:
     branches: [main]
     paths-ignore:
       - 'docs/**'
       - '**.md'
-      - '.cabbage/**'
       - 'LICENSE'
       - '.gitignore'
-      - 'skills-lock.json'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -85,11 +85,11 @@ po/
 
 ## 与 ARCHITECTURE.md 的关系
 
-项目文档位于 Cabbage 标准树：`docs/03-architecture/system-design/ARCHITECTURE.md`（当前实现，与代码同步）。
-`docs/03-architecture/system-design/v4-asr-session-model.md`（AsrSession 详细设计，已实现）、
-`docs/03-architecture/adr/`（ADR 历史决策）与 `docs/03-architecture/reviews/`（评审记录）。
+项目文档位于 `docs/` 文档站（VitePress）：`docs/architecture/index.md`（ARCHITECTURE，当前实现，与代码同步）。
+`docs/architecture/v4-asr-session-model.md`（AsrSession 详细设计，已实现）、
+`docs/architecture/adr/`（ADR 历史决策）与 `docs/architecture/reviews/`（评审记录）。
 
-ARCHITECTURE.md 已同步至 v4 会话模型。Route Map 中标记为待实现的超前功能（本地 ASR、Command 引擎、场景系统、热词优化）仍是代码与文档的一致状态；LLM 后处理、多发行版打包与单元测试（`tests/` + CI verify job 的 `ctest`）已实现。
+ARCHITECTURE.md 已同步至 v4 会话模型。[路线图](docs/roadmap.md)中标记为待实现的超前功能（本地 ASR、Command 引擎、场景系统、热词优化）仍是代码与文档的一致状态；LLM 后处理、多发行版打包与单元测试（`tests/` + CI verify job 的 `ctest`）已实现。
 
 ## CI
 
