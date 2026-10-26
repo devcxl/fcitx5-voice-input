@@ -160,4 +160,4 @@ sudo cmake --install build --prefix /usr
 fcitx5 -r -d
 ```
 
-接下来可参考 [入门指南](/00-overview/getting-started) 在 `fcitx5-configtool` 中启用并配置 **Voice Input** 输入法。
+接下来可参考 [入门指南](/guide/getting-started) 在 `fcitx5-configtool` 中启用并配置 **Voice Input** 输入法。

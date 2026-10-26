@@ -3,7 +3,7 @@
 > 状态：已接受
 > 日期：2026-08-07
 > 决策方：@architect
-> 关联：Issue #10；技术方案 `docs/06-development/specs/gpt-realtime-asr.md`
+> 关联：Issue #10；技术方案 `docs/development/specs/gpt-realtime-asr.md`
 
 ## 背景
 

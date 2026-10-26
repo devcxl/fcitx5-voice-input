@@ -6,10 +6,10 @@
 
 ## 快速导航
 
-- [入门指南](/00-overview/getting-started)：5 分钟快速上手语音输入与日常操作流程。
-- [快速安装指南](/00-overview/installation)：AUR、各发行版预编译包（DEB / RPM）与源码编译安装详解。
-- [配置指南](/00-overview/configuration)：详细参数说明、各 ASR 后端配置示例与 LLM 后处理调优。
-- [常见问题与排查 (FAQ)](/00-overview/troubleshooting)：麦克风故障、API 报错与调试日志获取方法。
+- [入门指南](/guide/getting-started)：5 分钟快速上手语音输入与日常操作流程。
+- [快速安装指南](/guide/installation)：AUR、各发行版预编译包（DEB / RPM）与源码编译安装详解。
+- [配置指南](/guide/configuration)：详细参数说明、各 ASR 后端配置示例与 LLM 后处理调优。
+- [常见问题与排查 (FAQ)](/guide/troubleshooting)：麦克风故障、API 报错与调试日志获取方法。
 
 ---
 
@@ -43,6 +43,6 @@
 
 ## 进阶文档
 
-- [系统架构设计](/03-architecture/system-design/ARCHITECTURE)：详细设计、会话模型与 ADR 决策记录。
-- [产品需求与规范](/01-product/prd/product-prd-v1)：产品功能定义与排除范围。
-- [CI/CD 多发行版构建](/11-ci-cd/multi-distro-build-analysis)：多发行版容器化构建矩阵分析。
+- [系统架构设计](/architecture/)：详细设计、会话模型与 ADR 决策记录。
+- [产品需求与规范](/product/prd)：产品功能定义与排除范围。
+- [CI/CD 多发行版构建](/ci/multi-distro-build-analysis)：多发行版容器化构建矩阵分析。

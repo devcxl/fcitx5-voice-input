@@ -1,6 +1,6 @@
 # 开发指南
 
-本指南面向希望参与 fcitx5-voice-input 开发的贡献者，覆盖环境准备、构建、测试与代码结构导航。架构细节见 [ARCHITECTURE](/03-architecture/system-design/ARCHITECTURE)，用户侧安装配置见 [快速入门](/00-overview/getting-started)。
+本指南面向希望参与 fcitx5-voice-input 开发的贡献者，覆盖环境准备、构建、测试与代码结构导航。架构细节见 [ARCHITECTURE](/architecture/)，用户侧安装配置见 [快速入门](/guide/getting-started)。
 
 ## 项目本质
 
@@ -62,7 +62,7 @@ cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
 
-测试覆盖 WS 帧重组、结果保序、Realtime 终态判定、会话生命周期等关键路径，完整清单见[测试概览](/08-testing/)。CI 中 `ci.yml` 的 tests job 在 Ubuntu 26.04 上开启 `BUILD_TESTS` 并执行 `ctest`。
+测试覆盖 WS 帧重组、结果保序、Realtime 终态判定、会话生命周期等关键路径，完整清单见[测试概览](/testing/)。CI 中 `ci.yml` 的 tests job 在 Ubuntu 26.04 上开启 `BUILD_TESTS` 并执行 `ctest`。
 
 ## 代码结构导航
 
@@ -83,10 +83,10 @@ src/addon/
 数据流：`FrameQueue → VADWorker → SpeechEventQueue → AsrSession worker → ResultCoordinator → eventDispatcher → 主线程上屏`。
 
 深入阅读：
-- 系统组成与线程模型 → [ARCHITECTURE](/03-architecture/system-design/ARCHITECTURE)
-- AsrSession 生命周期设计 → [v4 会话模型](/03-architecture/system-design/v4-asr-session-model)
-- 各模块实现细节 → [组件细节](/03-architecture/system-design/component-details)
-- 历史设计决策 → [ADR 目录](/03-architecture/adr/ADR-0001-gpt-realtime-asr)
+- 系统组成与线程模型 → [ARCHITECTURE](/architecture/)
+- AsrSession 生命周期设计 → [v4 会话模型](/architecture/v4-asr-session-model)
+- 各模块实现细节 → [组件细节](/architecture/component-details)
+- 历史设计决策 → [ADR 目录](/architecture/adr/ADR-0001-gpt-realtime-asr)
 
 ## 关键约定（改代码前必读）
 
@@ -109,5 +109,5 @@ src/addon/
 1. 从最新的 `main` 切出分支。
 2. 改动保持手术式：每行 diff 能追溯到要解决的问题；不顺手重构无关代码。
 3. 行为修复先补能复现失败的测试，再修复使其通过。
-4. 若改动涉及架构（新增线程、修改管道阶段、更换协议），同步更新 `docs/03-architecture/system-design/ARCHITECTURE.md`，必要时新增 ADR。
+4. 若改动涉及架构（新增线程、修改管道阶段、更换协议），同步更新 `docs/architecture/.md`，必要时新增 ADR。
 5. 提交 PR 后 CI 会跑全发行版矩阵与测试，全绿后等待评审。

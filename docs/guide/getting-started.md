@@ -39,7 +39,7 @@ flowchart LR
 - **Ubuntu / Debian / Fedora / openSUSE**：
   前往 [GitHub Releases](https://github.com/devcxl/fcitx5-voice-input/releases) 下载对应发行版的 `.deb` 或 `.rpm` 安装包直接安装。
 
-> 详见 [快速安装指南](/00-overview/installation)。
+> 详见 [快速安装指南](/guide/installation)。
 
 ---
 
@@ -67,7 +67,7 @@ flowchart LR
    - **火山引擎后端**：填入 API Key（或 AppKey + AccessKey）以及购买的资源 ID。
 4. 点击“应用”保存设置。
 
-> 各后端的详细配置参数与示例请参考 [配置指南](/00-overview/configuration)。
+> 各后端的详细配置参数与示例请参考 [配置指南](/guide/configuration)。
 
 ---
 
@@ -91,7 +91,7 @@ flowchart LR
 - **持续麦克风提示**：失焦（切到其他窗口）时插件只**暂停识别**并丢弃采样，不再把新音频送入 VAD/ASR，但录音流可能仍在系统中可见；切换到其他输入法、更改输入法组或退出 Fcitx5 时才会释放录音流。
 - **隐私提示**：设备由系统默认或应用偏好决定，如果默认输入恰好是某个回放的 **Monitor**（监听）源，插件可能把系统播放的声音当作语音上传。开始前请确认输入源与电平，避免误录敏感内容。
 
-> 各设备选项与移动操作随桌面环境和音频服务版本略有差异，详见 [常见问题与排查](/00-overview/troubleshooting)。
+> 各设备选项与移动操作随桌面环境和音频服务版本略有差异，详见 [常见问题与排查](/guide/troubleshooting)。
 
 ### 2. 流式实时增量上屏
 如果您希望在说话的同时实时在候选栏看到字词逐个蹦出，推荐使用以下流式模式：
@@ -106,6 +106,6 @@ flowchart LR
 
 ## 下一步
 
-- 查阅完整安装方法：[安装指南](/00-overview/installation)
-- 调优 VAD 灵敏度与 ASR 参数：[配置指南](/00-overview/configuration)
-- 遇到问题进行排查：[常见问题与排查](/00-overview/troubleshooting)
+- 查阅完整安装方法：[安装指南](/guide/installation)
+- 调优 VAD 灵敏度与 ASR 参数：[配置指南](/guide/configuration)
+- 遇到问题进行排查：[常见问题与排查](/guide/troubleshooting)

@@ -117,7 +117,7 @@ change_type: feature
 - [x] XFCE 双麦克风与音频管理器设备切换：2026-10-13 用户在自己的电脑上确认通过
 - [ ] 其他桌面/未确认的采集后端及失焦、恢复、关闭的逐项现场验收（自动化假库回归不能替代现场验收）
 
-> R-19/R-25 于 2026-10-12 按用户确认的 #54 方案更新，取代原 200ms 停止契约；保流非独占硬件，已经上传的请求无法撤回，异常 PulseAudio 停止上界仍待独立修复。见 [ADR-0004](../../03-architecture/adr/ADR-0004-system-managed-capture-routing.md)。
+> R-19/R-25 于 2026-10-12 按用户确认的 #54 方案更新，取代原 200ms 停止契约；保流非独占硬件，已经上传的请求无法撤回，异常 PulseAudio 停止上界仍待独立修复。见 [ADR-0004](../architecture/adr/ADR-0004-system-managed-capture-routing.md)。
 
 ### Scenario 6: ASR 后端热切换
 - **GIVEN**: 当前使用 openai 后端，已正确配置 volcengine 后端凭据

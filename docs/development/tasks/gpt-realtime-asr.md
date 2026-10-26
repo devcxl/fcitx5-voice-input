@@ -1,6 +1,6 @@
 # DAG 任务拆解：OpenAI GPT-Realtime 流式实时转录
 
-> 依据技术方案 `docs/06-development/specs/gpt-realtime-asr.md` 与 ADR `docs/03-architecture/adr/ADR-0001-gpt-realtime-asr.md`。
+> 依据技术方案 `docs/development/specs/gpt-realtime-asr.md` 与 ADR `docs/architecture/adr/ADR-0001-gpt-realtime-asr.md`。
 > 每个任务为垂直切片、单人 2-4 小时可完成；标注依赖关系。
 
 ## 依赖图总览

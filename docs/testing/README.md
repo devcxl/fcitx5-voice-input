@@ -53,14 +53,14 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 
 - 未修复时：公开 UI 销毁场景 SIGSEGV；两个非法字段场景均因 `Json::LogicError` SIGABRT。旧基线上的 8 个回调异常场景也均 SIGABRT。
 - 修复后：Release 全套 28/28 通过；独立 Debug + AddressSanitizer/UndefinedBehaviorSanitizer 构建全套 28/28 通过。初版遗漏豆包空确认帧的兼容性，新增用例先失败后修复。
-- UI 核心 5 个场景连续 10 轮通过；无真实账号、云端、录音或安装操作。这不等于真实云端兼容性/七发行版 WS 运行矩阵已经验证，见下方平台限制和 [后续任务](../06-development/tasks/asr-crash-follow-ups.md)。
+- UI 核心 5 个场景连续 10 轮通过；无真实账号、云端、录音或安装操作。这不等于真实云端兼容性/七发行版 WS 运行矩阵已经验证，见下方平台限制和 [后续任务](../development/tasks/asr-crash-follow-ups.md)。
 
 ## 系统路由/保流验证记录（2026-10-12）
 
 - 旧猜源、200ms 失焦停流、未接投递门闸及旧 PipeWire 缓存分别由公开边界测试确认失败后修复。
 - Release 完整构建与 38 项 ctest 通过；10 项核心生命周期测试重复 20 轮通过，无 PipeWire 可选构建与相关测试通过。复核补充的其他 Voice Input 上下文误关和空 buffer 后首帧均先失败后修复。链接卫生仍满足无录音库直接符号/DT_NEEDED。
 - 用户于 2026-10-13 在自己的 XFCE 电脑上确认双麦克风正常、可通过音频管理器切换设备，接受该环境下的基本可用性。此为用户实测反馈，不是代理硬件测试；音频服务、实际采集后端和设备型号未提供，不推定 PulseAudio 与原生 PipeWire 均已覆盖。
-- 其他桌面、未确认的采集后端，以及失焦无上传/回焦无旧音频/托盘关闭的逐项现场结果仍未验证。PulseAudio 同步 read/join 停止风险仍是独立后续任务。详见 [调研与限制](../06-development/research/issue-54-audio-source-routing.md)。
+- 其他桌面、未确认的采集后端，以及失焦无上传/回焦无旧音频/托盘关闭的逐项现场结果仍未验证。PulseAudio 同步 read/join 停止风险仍是独立后续任务。详见 [调研与限制](../development/research/issue-54-audio-source-routing.md)。
 
 ## 平台限制（已实测）
 

@@ -1,6 +1,6 @@
 # 组件详述
 
-> **状态:** 当前实现文档（与代码同步）。本文是 [ARCHITECTURE.md](ARCHITECTURE.md) 的组件级细节，涵盖 engine / config / capture / VAD / pipeline / ASR / 队列。
+> **状态:** 当前实现文档（与代码同步）。本文是 [ARCHITECTURE.md](index.md) 的组件级细节，涵盖 engine / config / capture / VAD / pipeline / ASR / 队列。
 
 ## 1. 输入法引擎 (`src/addon/engine.cpp/.h`)
 
@@ -47,7 +47,7 @@ private:
 **关键设计：**
 - `activeGeneration_` 随每次 activate/deactivate 递增，用于过滤过期结果；`sessionGeneration_` 在失活时置 0，使在途回调与状态更新一并作废。
 - 输入框存活由 `watch()` 引用保证可检查；generation 只判断结果归属，不能代替生命周期检查。worker 仅排队值数据，主线程检查 generation 后才读取引用。
-- `deactivate()` 在主线程同步提交/清空原输入框的待提交文本并解除引用，避免延迟 UI 回调访问已销毁输入框或把文本提交给新输入框（[ADR-0002](../adr/ADR-0002-input-context-lifetime.md)）。
+- `deactivate()` 在主线程同步提交/清空原输入框的待提交文本并解除引用，避免延迟 UI 回调访问已销毁输入框或把文本提交给新输入框（[ADR-0002](adr/ADR-0002-input-context-lifetime.md)）。
 - 失焦不再使用延迟定时停止：`DeactivateContext()` 按事件类型选择保流（`Pause`）或释放（`Stop`），详见 ARCHITECTURE 的「输入法激活与录音流生命周期」。
 - 保流期间只接受采集所属上下文的明确关闭事件，其他上下文即使从 Voice Input 切走也不关闭本流；输入法组变更/退出为全局释放。所属上下文销毁后，回到 Voice Input 重新取得归属；组变更或退出仍可释放。
 - `setConfig()` 保存到 `conf/voiceinput.conf`，热更新 pipeline。
@@ -279,7 +279,7 @@ class AsrEngine {
 - OpenAI `realtime` 与 Mistral 的流式会话在 `StartWorker()` 即建立持久 WS 连接，断线自动重连并保持 sessionId
 - Realtime 的终态判定按服务端确认的 `item_id` 追踪在途 item（`utils/realtime_commit_tracker.h`）：`error` 事件不再造成计数漂移，最终 `completed` 到达即上屏；`error` 事件的内容（message/code）进入日志与错误回调；End 等待以「距最后服务端事件 5s」的空闲超时为上界（见错误处理策略表）
 - 三个流式 WS 后端共用 `src/addon/asr/utils/ws_frame_receiver.h` 的 `WsFrameReceiver` + `ReceiveWsMessage()` 收包：跨 TCP 分片（含 WS `CURLWS_CONT`）的事件消息跨调用保留已收前缀，单条累计超过 16MB 时整条丢弃且在消息边界恢复解析（`Skipped` 不触发重连）
-- Realtime/豆包的 `asr/protocol/` 模块先校验已知事件再转换为会话事件，不把 JsonCpp 对象传入编排层；错误类型、非法 gzip 或过深结果立即失败并发布一次空 final，不重连。两者共用 worker 异常边界与 curl 资源所有权，异常路径也设置 `finished/workerDone`；final callback 抛异常不重试（[ADR-0003](../adr/ADR-0003-ws-session-failure-boundary.md)）。Mistral 的同类防护仍是独立后续任务。
+- Realtime/豆包的 `asr/protocol/` 模块先校验已知事件再转换为会话事件，不把 JsonCpp 对象传入编排层；错误类型、非法 gzip 或过深结果立即失败并发布一次空 final，不重连。两者共用 worker 异常边界与 curl 资源所有权，异常路径也设置 `finished/workerDone`；final callback 抛异常不重试（[ADR-0003](adr/ADR-0003-ws-session-failure-boundary.md)）。Mistral 的同类防护仍是独立后续任务。
 - 发送与建连同样有界：`src/addon/asr/utils/ws_deadline.h` 的 `WsDeadline`（单次发送预算，默认 10s）、`WsEndBudget`（End 路径总预算，默认 8s）与 `WsAbort`（`cancelled` 始终生效，`finished` 用于非 End 路径的推流与建连）；`ws_frame_sender.h` 的 `SendWsMessage()` 在 `CURLE_AGAIN`/零进展时按预算失败。上游不读 socket 时 `End()` 在 End 预算内收敛并交出兜底终态，`SessionReaper::JoinWithTimeout(15s)` 不再超时，且 `End()` 后不再重连
 - Volcengine 每个语音段建立独立 WebSocket 连接，使用完毕后关闭
 - `SessionReaper`（独立回收线程）对完成/取消的会话做超时 join，防止僵尸线程（详见 [v4-asr-session-model.md](v4-asr-session-model.md)）

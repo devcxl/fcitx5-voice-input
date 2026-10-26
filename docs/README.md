@@ -8,16 +8,16 @@ hero:
   actions:
     - theme: brand
       text: 快速上手
-      link: /00-overview/getting-started
+      link: /guide/getting-started
     - theme: alt
       text: 安装指南
-      link: /00-overview/installation
+      link: /guide/installation
     - theme: alt
       text: 配置指南
-      link: /00-overview/configuration
+      link: /guide/configuration
     - theme: alt
       text: 系统架构
-      link: /03-architecture/system-design/ARCHITECTURE
+      link: /architecture/
 
 features:
   - title: 自动分段与无感录音
@@ -36,16 +36,17 @@ features:
 
 | 分区 | 内容 |
 |------|------|
-| [00-overview 入门与概览](/00-overview/) | [快速入门](/00-overview/getting-started) · [安装指南](/00-overview/installation) · [详细配置](/00-overview/configuration) · [问题排查](/00-overview/troubleshooting) |
-| [01-product 产品需求](/01-product/prd/product-prd-v1) | [产品级 PRD（现状基线）](/01-product/prd/product-prd-v1) · [PRD：输入法图标](/01-product/prd/add-input-method-icon) · [Out of Scope](/01-product/out-of-scope) |
-| [03-architecture 系统架构](/03-architecture/system-design/ARCHITECTURE) | 系统架构、v4 会话模型设计、ADR 决策与架构评审 |
-| [06-development 开发](/06-development/guide) | [开发指南](/06-development/guide) · 技术方案、任务分解与调研记录 |
-| [08-testing 测试](/08-testing/) | 测试运行方式与测试清单 |
-| [11-ci-cd CI/CD 体系](/11-ci-cd/multi-distro-build-analysis) | 7 发行版容器矩阵与构建分析 |
-| [13-operations 运维](/13-operations/troubleshooting) | 运行期问题排查 |
+| [用户指南](/guide/) | [快速开始](/guide/getting-started) · [安装指南](/guide/installation) · [配置总览](/guide/configuration) · [常见问题](/guide/troubleshooting) |
+| [ASR 后端配置](/guide/providers/openai) | [OpenAI 兼容](/guide/providers/openai)（DashScope / MiMo / Groq / 硅基流动）· [火山引擎豆包](/guide/providers/volcengine) · [Mistral Realtime](/guide/providers/mistral) |
+| [路线图](/roadmap) | 已交付能力与待实现规划 |
+| [产品](/product/prd) | [产品级 PRD（现状基线）](/product/prd) · [PRD：输入法图标](/product/prd-input-method-icon) · [Out of Scope](/product/out-of-scope) |
+| [系统架构](/architecture/) | 系统架构、v4 会话模型设计、ADR 决策与架构评审 |
+| [开发](/development/guide) | [开发指南](/development/guide) · 技术方案、任务分解与调研记录 |
+| [测试](/testing/) | 测试运行方式与测试清单 |
+| [CI/CD](/ci/multi-distro-build-analysis) | 7 发行版容器矩阵与构建分析 |
 
 ## 文档维护
 
-- `ARCHITECTURE.md` 与代码同步更新，Route Map 中未实现的功能保持「待实现」标记。
+- `ARCHITECTURE.md` 与代码同步更新；[路线图](/roadmap)记录交付进展与待实现规划。
 - ADR 记录不可改写的历史决策，被新决策显式取代时在新 ADR 中注明。
 - 文档站由 VitePress 构建，源码在 `docs/`，推送至主分支后由 `docs-deploy.yml` 自动部署到 GitHub Pages。

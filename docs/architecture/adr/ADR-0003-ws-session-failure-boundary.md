@@ -12,4 +12,4 @@
 
 空的未压缩豆包确认帧保留原有忽略行为，不当作非法 JSON；它后面的正常转写仍须交付。`ws_worker_volcengine_empty-ack` 曾在初版修复上失败，恢复该契约后通过。OpenAI 可空字段依据官方生成类型 [openai-python@8e1fd258](https://github.com/openai/openai-python/tree/8e1fd2587deae364367e791385997ab45aa2a520/src/openai/types/realtime) 核实。
 
-本项不为任意 native 内存故障提供进程隔离，也不声称旧发行版 curl 获得了 WS 能力；库迁移与其他后端的协议审查仍是单独范围。错误 callback 的防逃逸保证限于 worker，构造阶段的旧错误通知不在本轮修改范围内。Mistral 和构造/启动路径分别由 [CRASH-ASR-001/002](../../06-development/tasks/asr-crash-follow-ups.md) 追踪。
+本项不为任意 native 内存故障提供进程隔离，也不声称旧发行版 curl 获得了 WS 能力；库迁移与其他后端的协议审查仍是单独范围。错误 callback 的防逃逸保证限于 worker，构造阶段的旧错误通知不在本轮修改范围内。Mistral 和构造/启动路径分别由 [CRASH-ASR-001/002](../../development/tasks/asr-crash-follow-ups.md) 追踪。

@@ -2,7 +2,7 @@
 
 > 面向 fcitx5-voice-input（C++ Fcitx5 语音输入插件）。为 OpenAI 后端增加 GPT-Realtime 流式实时转录（边说边出增量 preedit），作为现有 whisper-1 HTTP 一次性转录之外的实时方案。
 > 日期：2026-08-07。作者：@architect。
-> 前置调研：`docs/06-development/research/gpt-realtime-whisper.md`。
+> 前置调研：`docs/development/research/gpt-realtime-whisper.md`。
 
 ---
 
@@ -211,7 +211,7 @@ private:
 
 ## 6. DAG 任务拆解
 
-见 `docs/06-development/tasks/gpt-realtime-asr.md`。
+见 `docs/development/tasks/gpt-realtime-asr.md`。
 
 ---
 
@@ -228,5 +228,5 @@ private:
 ---
 
 ## 8. 参考
-- 调研文档：`docs/06-development/research/gpt-realtime-whisper.md`（端点、协议、模型、计费一手来源）。
+- 调研文档：`docs/development/research/gpt-realtime-whisper.md`（端点、协议、模型、计费一手来源）。
 - 既有实现参考：`src/addon/asr/volcengine_asr.cpp`（WS worker 线程模型）、`src/addon/asr/openai_asr.cpp`（Base64Encode）。

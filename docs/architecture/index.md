@@ -171,7 +171,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 - **原输入框销毁（`InputContextDestroyed`，`PreInputMethod`）**：清空待提交文本并 `DeactivateContext(true)` 保流。
 - 析构时 `Abort()`（`Stop()`）释放；不再有 200ms 延迟停止定时器。
 
-> **契约与风险**：录音流由音频服务管理，插件不枚举/筛选设备、不保存设备 ID；PulseAudio `dev=nullptr`、原生 PipeWire 无显式 target，尊重系统默认或该应用的设备偏好（见 [ADR-0004](../adr/ADR-0004-system-managed-capture-routing.md)）。`Pause()` 禁止新的应用帧进入识别链路，并在停止 VAD/dispatcher 后取消当前会话；但已上传到服务端的 ASR/LLM 请求无法撤回。已删除的 200ms 延迟也从未是可靠的隐私上界；PulseAudio 阻塞停止的既有缺陷仍由 issue #14 / PR #17 跟踪。2026-10-13 用户确认 XFCE 双麦与音频管理器切换通过，其他桌面/未确认的采集后端及完整生命周期现场验收仍待补充。
+> **契约与风险**：录音流由音频服务管理，插件不枚举/筛选设备、不保存设备 ID；PulseAudio `dev=nullptr`、原生 PipeWire 无显式 target，尊重系统默认或该应用的设备偏好（见 [ADR-0004](adr/ADR-0004-system-managed-capture-routing.md)）。`Pause()` 禁止新的应用帧进入识别链路，并在停止 VAD/dispatcher 后取消当前会话；但已上传到服务端的 ASR/LLM 请求无法撤回。已删除的 200ms 延迟也从未是可靠的隐私上界；PulseAudio 阻塞停止的既有缺陷仍由 issue #14 / PR #17 跟踪。2026-10-13 用户确认 XFCE 双麦与音频管理器切换通过，其他桌面/未确认的采集后端及完整生命周期现场验收仍待补充。
 
 ### 结果过滤机制
 
@@ -352,29 +352,13 @@ fcitx5-voice-input/
 │   └── docs-deploy.yml          # GitHub Pages 文档站部署
 ```
 
-> 本文档位于 `docs/03-architecture/system-design/ARCHITECTURE.md`。
+> 本文档位于 `docs/architecture/.md`。
 
 ---
 
 ## Route Map
 
-### 已交付 ✅
-- [x] CMake 构建框架 + Fcitx5 Addon 骨架
-- [x] PulseAudio + PipeWire 音频捕获（dlopen 延迟加载）
-- [x] Silero ONNX VAD 分段
-- [x] OpenAI 兼容 API ASR 引擎（whisper / chat / realtime）
-- [x] Volcengine Doubao 流式 ASR 引擎
-- [x] Mistral Realtime 流式 ASR 引擎（v0.5.0）
-- [x] v4 会话模型：AsrSession / SessionReaper / ResultCoordinator 保序交付
-- [x] LLM 后处理（流式/非流式，generation 取消）
-- [x] fcitx5-configtool 配置界面（多后端子配置）
-- [x] 多发行版打包（7 发行版 CI 矩阵：DEB / RPM / pkg.tar.zst）
-
-### 待实现 ⏳
-- [ ] 本地 ASR 引擎（sherpa-onnx 子模块已预留，未接入构建）
-- [ ] Command 引擎（外部命令云 ASR）
-- [ ] 场景系统
-- [ ] 热词优化
+交付进展与规划方向已独立成页：**[路线图](/roadmap)**。
 
 ---
 
@@ -403,5 +387,5 @@ A: 不会。v4 的 `ResultCoordinator + OrderedResultBuffer` 以 utteranceId 为
 
 - [组件详述](component-details.md)（engine / config / capture / VAD / pipeline / ASR / 队列的接口与实现细节）
 - [v4 会话模型设计](v4-asr-session-model.md)（AsrSession 抽象与线程模型的详细设计）
-- [ADR-0001：GPT-Realtime 流式实时转录](../adr/ADR-0001-gpt-realtime-asr.md)
-- [架构评审（2026-07-05）](../reviews/2026-07-05-architecture-review.md)
+- [ADR-0001：GPT-Realtime 流式实时转录](adr/ADR-0001-gpt-realtime-asr.md)
+- [架构评审（2026-07-05）](reviews/2026-07-05-architecture-review.md)

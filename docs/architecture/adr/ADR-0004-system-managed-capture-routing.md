@@ -33,4 +33,4 @@ simple API 允许管理器移流，异步迁移不是本项前提。已有 Pulse
 
 以真实 Engine/Capture/Pipeline 公开边界测试，外部音频库及模型/识别边界使用测试替身；假库只在构建目录。验证失焦保流无识别、快速暂停/恢复、旧帧丢弃、死流恢复、无焦点关闭与迟到结果。发布另需真实双麦/桌面验证。
 
-无配置或数据库迁移，本次生命周期/路由交付可整体回滚。完整证据、反方及后续任务见 [调研报告](../../06-development/research/issue-54-audio-source-routing.md)。
+无配置或数据库迁移，本次生命周期/路由交付可整体回滚。完整证据、反方及后续任务见 [调研报告](../../development/research/issue-54-audio-source-routing.md)。

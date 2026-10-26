@@ -91,6 +91,6 @@ Realtime 后端此前在 End 后固定等待 30s 才收尾（即使服务端早�
 
 ## 相关文档
 
-- `docs/03-architecture/system-design/ARCHITECTURE.md` — 当前实现（线程模型、错误处理策略、构建选项）
-- `docs/00-overview/troubleshooting.md` — 面向安装与配置的常见问题
-- `docs/08-testing/README.md` — 测试清单与运行方式
+- `docs/architecture/.md` — 当前实现（线程模型、错误处理策略、构建选项）
+- `docs/guide/troubleshooting.md` — 面向安装与配置的常见问题
+- `docs/testing/README.md` — 测试清单与运行方式

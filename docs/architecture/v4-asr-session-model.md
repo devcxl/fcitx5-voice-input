@@ -1,9 +1,9 @@
 # fcitx5-voice-input 架构设计 v4.1
 
 > **状态:** 已实现（v0.4+ 代码基线，AsrSession/SessionReaper/ResultCoordinator 均已落地）。
-> 本文是 v4 会话模型的详细设计文档；当前实现的权威描述以 [ARCHITECTURE.md](ARCHITECTURE.md) 为准。
-> **审查:** [docs/03-architecture/reviews/2026-07-05-architecture-review.md](../reviews/2026-07-05-architecture-review.md)
-> **上一版:** [ARCHITECTURE.md](ARCHITECTURE.md) (v3)
+> 本文是 v4 会话模型的详细设计文档；当前实现的权威描述以 [ARCHITECTURE.md](index.md) 为准。
+> **审查:** [docs/architecture/reviews/2026-07-05-architecture-review.md](reviews/2026-07-05-architecture-review.md)
+> **上一版:** [ARCHITECTURE.md](index.md) (v3)
 
 ---
 
