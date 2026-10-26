@@ -99,8 +99,9 @@ src/addon/
 
 ## CI 与发布
 
-- **`ci.yml`**：PR/push 触发，7 发行版容器矩阵（ubuntu 24.04/26.04、debian 12/13、fedora、opensuse、archlinux）构建原生包（DEB/RPM/pkg.tar.zst），另含链接校验与 build-no-pipewire 回归防护。
-- **`release.yml`**：打 `v*` tag 触发，生成 draft release（全部发行版产物 + AUR 源码包）。
+- **`ci.yml`**：PR/push 触发，6 发行版容器矩阵（ubuntu 24.04/26.04、debian 12/13、fedora、opensuse）构建原生包（DEB/RPM），另含链接校验与 build-no-pipewire 回归防护。
+- **`release.yml`**：打 `v*` tag 触发，生成 draft release（全部发行版 DEB/RPM 产物）。
+- **AUR 包**：[aur.archlinux.org/packages/fcitx5-voice-input](https://aur.archlinux.org/packages/fcitx5-voice-input)，在仓库外部单独维护，不随 CI/Release 构建。
 - **`docs-deploy.yml`**：`docs/` 变更推送主分支后自动构建并部署 GitHub Pages 文档站。
 - onnxruntime 双策略：`system`（发行版系统包）或 `download`（upstream 1.28.0，带缓存）。
 

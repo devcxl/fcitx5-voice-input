@@ -13,7 +13,7 @@ change_type: feature
 - **免按即说语音输入**：切换输入法即启动；说话自动分段，静音自动提交，无需 Push-to-Talk。
 - **多后端 ASR 可插拔**：默认 OpenAI 兼容 API（whisper-1），另支持火山引擎豆包、Mistral Realtime、OpenAI Realtime 三种 WebSocket 流式后端。
 - **LLM 智能后处理**：可将转写文本送入大语言模型做同音错字修正、排版与标点润色。
-- **发行版全量打包**：Arch（AUR/PKGBUILD）、DEB/RPM/pkg.tar.zst 覆盖主流桌面发行版。
+- **发行版全量打包**：DEB/RPM 由 CI 构建，Arch 经 [AUR 包](https://aur.archlinux.org/packages/fcitx5-voice-input)（外部维护）覆盖主流桌面发行版。
 
 # Users and Use Cases
 
@@ -41,7 +41,7 @@ change_type: feature
 6. **结果汇聚与保序**：多会话并发结果按 utteranceId 保序汇聚，过滤过期 generation。
 7. **Fcitx5 集成 UI**：输入法切换激活/停用、候选栏 preedit 增量预览、状态栏提示（就绪/录音中/修正中/失败）、失焦保流但暂停识别、配置热更新。
 8. **安全与隐私**：配置文件 0600 权限、非 TLS 端点明文凭据告警、日志仅记录长度不记录文本内容。
-9. **打包分发**：CMake/CPack 生成 DEB/RPM，AUR PKGBUILD，7 发行版 CI 矩阵；依赖运行期 dlopen 降低升级耦合。
+9. **打包分发**：CMake/CPack 生成 DEB/RPM，6 发行版 CI 矩阵；Arch 由外部维护的 [AUR 包](https://aur.archlinux.org/packages/fcitx5-voice-input)分发；依赖运行期 dlopen 降低升级耦合。
 
 ## Out of Scope
 

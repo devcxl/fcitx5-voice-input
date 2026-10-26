@@ -95,19 +95,18 @@ ARCHITECTURE.md 已同步至 v4 会话模型。[路线图](docs/roadmap.md)中�
 
 GitHub Actions（详见 `.github/workflows/` 与 `.github/actions/build/distro/*.sh`）：
 
-- `ci.yml`：PR/push 触发。**7 发行版容器矩阵**（ubuntu-24.04 / ubuntu-26.04 /
-debian-12 / debian-13 / fedora-44 / opensuse-tumbleweed / archlinux），每发行版在
-原生容器内构建原生包（DEB/RPM/pkg.tar.zst）；另含链接校验（nm/readelf/dlopen
+- `ci.yml`：PR/push 触发。**6 发行版容器矩阵**（ubuntu-24.04 / ubuntu-26.04 /
+debian-12 / debian-13 / fedora-44 / opensuse-tumbleweed），每发行版在
+原生容器内构建原生包（DEB/RPM）；另含链接校验（nm/readelf/dlopen
 smoke，仅 verify job 跑一次）与 build-no-pipewire 回归防护 job。
 - `release.yml`：tag `v*` 触发。复用同一构建矩阵，`softprops/action-gh-release`
-  v3 生成 draft release（含全部发行版产物 + AUR 源码包）。
+  v3 生成 draft release（含全部发行版 DEB/RPM 产物）。
 - onnxruntime 双策略：`system`（发行版系统包，DEB 开 dpkg-shlibdeps 自动依赖，
   RPM 由 rpmbuild 自动依赖）或 `download`（upstream release 1.28.0，缓存加速）。
-- Arch 包：archlinux 容器内直跑 makepkg（无 Docker daemon）。
 
 无测试步骤。
 
 ## 打包
 
-- Arch: `aur/PKGBUILD`（依赖 fcitx5/pipewire/jsoncpp/curl/onnxruntime-cpu）
+- Arch: AUR 包在仓库外部单独维护（https://aur.archlinux.org/packages/fcitx5-voice-input），不在 CI/Release 中构建
 - DEB: CPack 自动生成

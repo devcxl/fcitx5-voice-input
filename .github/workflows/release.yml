@@ -99,45 +99,9 @@ jobs:
           onnx_strategy: download
           run_verify: "true"
 
-  arch:
-    name: build (archlinux)
-    runs-on: ubuntu-latest
-    container: archlinux
-    steps:
-      - name: Install git (container bootstrap)
-        shell: bash
-        run: pacman -Syu --noconfirm git
-
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          pacman -Syu --noconfirm base-devel git cmake pkg-config gettext \
-            fcitx5 pipewire libpulse jsoncpp curl onnxruntime-cpu
-
-      # prepare.sh 用 git archive 生成源码包；容器内 checkout 文件属主与 git 用户
-      # 可能不一致（宿主挂载场景），显式声明 safe.directory 避免 dubious ownership
-      - name: Mark workspace as safe for git
-        shell: bash
-        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
-
-      - uses: ./.github/actions/aur
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: package-arch
-          path: |
-            dist/aur/*.pkg.tar.zst
-            dist/aur/PKGBUILD
-            dist/aur/src/*.tar.gz
-          if-no-files-found: error
-
   release:
     name: Create draft release
-    needs: [build, verify, arch]
+    needs: [build, verify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
@@ -156,6 +120,3 @@ jobs:
           files: |
             dist/*.deb
             dist/*.rpm
-            dist/*.pkg.tar.zst
-            dist/PKGBUILD
-            dist/src/*.tar.gz

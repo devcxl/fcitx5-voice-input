@@ -7,7 +7,7 @@
 ## 快速导航
 
 - [入门指南](/guide/getting-started)：5 分钟快速上手语音输入与日常操作流程。
-- [快速安装指南](/guide/installation)：AUR、各发行版预编译包（DEB / RPM）与源码编译安装详解。
+- [快速安装指南](/guide/installation)：AUR 包、各发行版预编译包（DEB / RPM）与源码编译安装详解。
 - [配置指南](/guide/configuration)：详细参数说明、各 ASR 后端配置示例与 LLM 后处理调优。
 - [常见问题与排查 (FAQ)](/guide/troubleshooting)：麦克风故障、API 报错与调试日志获取方法。
 
@@ -37,7 +37,7 @@
 | **语音分段** | Silero ONNX Runtime | 16kHz mono int16，512 采样点/窗口（32ms）极速低开销推理 |
 | **管道架构** | 多线程安全队列 (SPSC/MPSC) | Capture → VAD → ASR Dispatcher → Session Reaper → EventDispatcher |
 | **网络通讯** | libcurl (HTTP / WebSocket) | 支持多路并发会话管理与乱序汇聚按序上屏 |
-| **打包分发** | CMake + CPack + AUR | 覆盖 Arch、Ubuntu、Debian、Fedora、openSUSE 等主流发行版 |
+| **打包分发** | CMake + CPack + AUR | DEB/RPM 由 CI 构建；Arch 用户经 [AUR 包](https://aur.archlinux.org/packages/fcitx5-voice-input)安装 |
 
 ---
 

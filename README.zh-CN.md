@@ -39,7 +39,9 @@
 
 ### 1. 安装
 
-#### AUR (Arch Linux)
+#### [AUR (Arch Linux)](https://aur.archlinux.org/packages/fcitx5-voice-input)
+
+AUR 包在仓库外部单独维护：
 
 ```bash
 yay -S fcitx5-voice-input
