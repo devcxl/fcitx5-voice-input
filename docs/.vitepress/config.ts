@@ -31,9 +31,8 @@ export default withMermaid(
       nav: [
         { text: '首页', link: '/' },
         { text: '入门与配置', link: '/00-overview/getting-started' },
-{ text: '产品需求', link: '/01-product/prd/add-input-method-icon' },
         { text: '系统架构', link: '/03-architecture/system-design/ARCHITECTURE' },
-        { text: '开发记录', link: '/06-development/specs/gpt-realtime-asr' },
+        { text: '开发指南', link: '/06-development/guide' },
         { text: 'CI/CD', link: '/11-ci-cd/multi-distro-build-analysis' },
       ],
       sidebar: [
@@ -62,18 +61,30 @@ export default withMermaid(
           collapsed: false,
           items: [
             { text: 'ARCHITECTURE（当前）', link: '/03-architecture/system-design/ARCHITECTURE' },
+            { text: '组件细节', link: '/03-architecture/system-design/component-details' },
             { text: 'v4 会话模型设计', link: '/03-architecture/system-design/v4-asr-session-model' },
             { text: 'ADR-0001 GPT-Realtime', link: '/03-architecture/adr/ADR-0001-gpt-realtime-asr' },
+            { text: 'ADR-0002 输入上下文生命周期', link: '/03-architecture/adr/ADR-0002-input-context-lifetime' },
+            { text: 'ADR-0003 WS 会话失败边界', link: '/03-architecture/adr/ADR-0003-ws-session-failure-boundary' },
+            { text: 'ADR-0004 系统音频路由', link: '/03-architecture/adr/ADR-0004-system-managed-capture-routing' },
             { text: '架构评审 (2026-07-05)', link: '/03-architecture/reviews/2026-07-05-architecture-review' },
           ],
         },
         {
-          text: '开发记录 (06-development)',
+          text: '开发 (06-development)',
           collapsed: false,
           items: [
+            { text: '开发指南', link: '/06-development/guide' },
             { text: 'Specs：GPT-Realtime', link: '/06-development/specs/gpt-realtime-asr' },
             { text: 'Tasks：GPT-Realtime', link: '/06-development/tasks/gpt-realtime-asr' },
             { text: 'Research：GPT-Realtime Whisper', link: '/06-development/research/gpt-realtime-whisper' },
+          ],
+        },
+        {
+          text: '测试 (08-testing)',
+          collapsed: false,
+          items: [
+            { text: '测试概览与清单', link: '/08-testing/' },
           ],
         },
         {
@@ -83,12 +94,19 @@ export default withMermaid(
             { text: '多发行版构建分析', link: '/11-ci-cd/multi-distro-build-analysis' },
           ],
         },
+        {
+          text: '运维 (13-operations)',
+          collapsed: false,
+          items: [
+            { text: '运行期排查', link: '/13-operations/troubleshooting' },
+          ],
+        },
       ],
       search: {
         provider: 'local',
       },
       footer: {
-        message: 'Managed by Cabbage Documentation System',
+        message: 'Fcitx5 Voice Input Documentation',
         copyright: 'Copyright © 2026',
       },
     },

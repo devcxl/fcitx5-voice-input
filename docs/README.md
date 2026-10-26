@@ -32,16 +32,20 @@ features:
 
 ## 文档目录
 
-本站点是 fcitx5-voice-input 的完整官方文档（由 Cabbage 文档系统管理）。
+本站点是 fcitx5-voice-input 的完整官方文档。
 
 | 分区 | 内容 |
 |------|------|
 | [00-overview 入门与概览](/00-overview/) | [快速入门](/00-overview/getting-started) · [安装指南](/00-overview/installation) · [详细配置](/00-overview/configuration) · [问题排查](/00-overview/troubleshooting) |
 | [01-product 产品需求](/01-product/prd/product-prd-v1) | [产品级 PRD（现状基线）](/01-product/prd/product-prd-v1) · [PRD：输入法图标](/01-product/prd/add-input-method-icon) · [Out of Scope](/01-product/out-of-scope) |
 | [03-architecture 系统架构](/03-architecture/system-design/ARCHITECTURE) | 系统架构、v4 会话模型设计、ADR 决策与架构评审 |
-| [06-development 开发记录](/06-development/specs/gpt-realtime-asr) | 技术方案、任务分解与调研记录 |
+| [06-development 开发](/06-development/guide) | [开发指南](/06-development/guide) · 技术方案、任务分解与调研记录 |
+| [08-testing 测试](/08-testing/) | 测试运行方式与测试清单 |
 | [11-ci-cd CI/CD 体系](/11-ci-cd/multi-distro-build-analysis) | 7 发行版容器矩阵与构建分析 |
+| [13-operations 运维](/13-operations/troubleshooting) | 运行期问题排查 |
 
-## 文档工作流
+## 文档维护
 
-所有变更遵循 Cabbage 生命周期门禁：PRD → Tech Spec → 任务 DAG → 实现 → 双轴评审 → 合并 → 归档。历史决策记录（ADR）不可改写，被新决策显式取代。
+- `ARCHITECTURE.md` 与代码同步更新，Route Map 中未实现的功能保持「待实现」标记。
+- ADR 记录不可改写的历史决策，被新决策显式取代时在新 ADR 中注明。
+- 文档站由 VitePress 构建，源码在 `docs/`，推送至主分支后由 `docs-deploy.yml` 自动部署到 GitHub Pages。

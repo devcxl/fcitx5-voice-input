@@ -288,7 +288,7 @@ build/
 
 ```
 fcitx5-voice-input/
-├── docs/                           # 项目文档（Cabbage 标准树，见 docs/README.md）
+├── docs/                           # 项目文档（VitePress 文档站，见 docs/README.md）
 ├── README.md / README.zh-CN.md     # 用户使用文档（中英文）
 ├── AGENTS.md                       # 开发助手约定
 ├── CHANGELOG.md
@@ -349,10 +349,10 @@ fcitx5-voice-input/
 ├── .github/workflows/
 │   ├── ci.yml                   # PR/push：7 发行版矩阵 + 链接校验 + build-no-pipewire
 │   ├── release.yml              # tag v*：draft release（含 AUR 源码包）
-│   └── cabbage.yml              # 文档门禁 + GitHub Pages 部署
+│   └── docs-deploy.yml          # GitHub Pages 文档站部署
 ```
 
-> 本文档位于 `docs/03-architecture/system-design/ARCHITECTURE.md`（Cabbage 标准树）。
+> 本文档位于 `docs/03-architecture/system-design/ARCHITECTURE.md`。
 
 ---
 

@@ -1,8 +1,5 @@
 ---
-origin_change: product-prd-v1
 change_type: feature
-cabbage_stage: requirement
-synced_at: '2026-09-02T17:31:09.010374+00:00'
 ---
 
 # Goal

@@ -85,7 +85,7 @@ po/
 
 ## 与 ARCHITECTURE.md 的关系
 
-项目文档位于 Cabbage 标准树：`docs/03-architecture/system-design/ARCHITECTURE.md`（当前实现，与代码同步）。
+项目文档位于 `docs/` 文档站（VitePress）：`docs/03-architecture/system-design/ARCHITECTURE.md`（当前实现，与代码同步）。
 `docs/03-architecture/system-design/v4-asr-session-model.md`（AsrSession 详细设计，已实现）、
 `docs/03-architecture/adr/`（ADR 历史决策）与 `docs/03-architecture/reviews/`（评审记录）。
 
