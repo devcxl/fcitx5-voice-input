@@ -16,6 +16,35 @@ using namespace std::chrono_literals;
 
 namespace fcitx {
 
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+auto Milliseconds(Clock::time_point start, Clock::time_point end = Clock::now()) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
+
+bool StartCaptureWithTiming(AudioCapture& capture) {
+    FCITX_DEBUG() << "[voice-input:timing] stage=capture.start backend=" << capture.Name()
+                  << " event=begin";
+    const auto start = Clock::now();
+    const bool success = capture.Start();
+    FCITX_DEBUG() << "[voice-input:timing] stage=capture.start backend=" << capture.Name()
+                  << " event=end elapsed_ms=" << Milliseconds(start) << " success=" << success;
+    return success;
+}
+
+void StopCaptureWithTiming(AudioCapture& capture) {
+    FCITX_DEBUG() << "[voice-input:timing] stage=capture.stop backend=" << capture.Name()
+                  << " event=begin";
+    const auto start = Clock::now();
+    capture.Stop();
+    FCITX_DEBUG() << "[voice-input:timing] stage=capture.stop backend=" << capture.Name()
+                  << " event=end elapsed_ms=" << Milliseconds(start);
+}
+
+} // namespace
+
 Pipeline::Pipeline()
     : vadWorker_(std::make_unique<VADWorker>())
     , reaper_(std::make_unique<SessionReaper>())
@@ -105,32 +134,50 @@ void Pipeline::SetVadStatusCallback(VADWorker::VadStatusCallback cb) {
 }
 
 void Pipeline::Start() {
+    const auto start = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.start event=begin";
     if (running_) {
         results_->Start(utteranceCounter_.load() + 1, generation_.load());
+        FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.start event=end already_running=1 total_ms="
+                      << Milliseconds(start);
         return;
     }
 
     if (!asrEngine_) {
         FCITX_ERROR() << "[voice-input] No ASR engine configured";
+        FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.start event=end success=0 reason=asr total_ms="
+                      << Milliseconds(start);
         return;
     }
 
     // A retained stream may have died while the input context was unfocused.
     if (capture_ && !capture_->IsRunning()) {
-        capture_->Stop();
+        StopCaptureWithTiming(*capture_);
         capture_.reset();
     }
-    if (!capture_ && !StartCapture()) return;
+    if (!capture_ && !StartCapture()) {
+        FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.start event=end success=0 reason=capture total_ms="
+                      << Milliseconds(start);
+        return;
+    }
+    const auto captureDone = Clock::now();
     frameQueue_.Clear();
     speechEventQueue_.Clear();
 
     results_->Start(utteranceCounter_.load() + 1, generation_.load());
 
+    FCITX_DEBUG() << "[voice-input:timing] stage=vad.start event=begin";
+    const auto vadStart = Clock::now();
     vadWorker_->Start();
+    const auto vadDone = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=vad.start event=end elapsed_ms="
+                  << Milliseconds(vadStart, vadDone) << " success=" << vadWorker_->IsRunning();
     if (!vadWorker_->IsRunning()) {
         // VAD 初始化失败（如模型缺失）：回滚 capture，避免无消费者推帧
         FCITX_ERROR() << "[voice-input] VAD failed to start, aborting";
         Stop();
+        FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.start event=end success=0 reason=vad total_ms="
+                      << Milliseconds(start);
         return;
     }
 
@@ -139,6 +186,9 @@ void Pipeline::Start() {
     capture_->SetDeliveryEnabled(true);
 
     FCITX_INFO() << "[voice-input] Pipeline started";
+    FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.start event=end capture_prepare_ms="
+                  << Milliseconds(start, captureDone) << " vad_ms=" << Milliseconds(vadStart, vadDone)
+                  << " total_ms=" << Milliseconds(start) << " success=1";
 }
 
 bool Pipeline::IsCapturing() const {
@@ -146,17 +196,30 @@ bool Pipeline::IsCapturing() const {
 }
 
 void Pipeline::Pause() {
+    const auto start = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.pause event=begin";
     // Close the frame gate first. An in-flight read cannot enqueue after this
     // returns, even across a rapid pause/resume (capture delivery epoch).
     if (capture_) capture_->SetDeliveryEnabled(false);
     const bool wasRunning = running_.exchange(false);
+    const auto gateDone = Clock::now();
     results_->Pause(utteranceCounter_.load() + 1);
+    const auto resultsDone = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=vad.stop event=begin";
     vadWorker_->Stop();
+    const auto vadDone = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=vad.stop event=end elapsed_ms="
+                  << Milliseconds(resultsDone, vadDone);
 
+    FCITX_DEBUG() << "[voice-input:timing] stage=dispatcher.stop event=begin";
+    const auto dispatcherStart = Clock::now();
     if (asrThread_ && asrThread_->joinable()) {
         asrThread_->join();
         asrThread_.reset();
     }
+    const auto dispatcherDone = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=dispatcher.stop event=end elapsed_ms="
+                  << Milliseconds(dispatcherStart, dispatcherDone);
 
     // Dispatcher ownership ends at join. Do not race FeedAudio/End with the
     // control thread's cancellation or pending audio cleanup.
@@ -180,12 +243,18 @@ void Pipeline::Pause() {
     frameQueue_.Clear();
     speechEventQueue_.Clear();
     if (wasRunning) FCITX_INFO() << "[voice-input] Recognition paused; capture retained";
+    FCITX_DEBUG() << "[voice-input:timing] stage=pipeline.pause event=end gate_ms="
+                  << Milliseconds(start, gateDone) << " results_ms=" << Milliseconds(gateDone, resultsDone)
+                  << " vad_ms=" << Milliseconds(resultsDone, vadDone)
+                  << " dispatcher_ms=" << Milliseconds(dispatcherStart, dispatcherDone)
+                  << " cleanup_ms=" << Milliseconds(dispatcherDone)
+                  << " total_ms=" << Milliseconds(start);
 }
 
 void Pipeline::Stop() {
     Pause();
     if (capture_) {
-        capture_->Stop();
+        StopCaptureWithTiming(*capture_);
         capture_.reset();
     }
 }
@@ -201,7 +270,7 @@ bool Pipeline::StartCapture() {
     capture_->SetFrameQueue(&frameQueue_);
     capture_->SetDeliveryEnabled(false);
 
-    if (capture_->Start()) {
+    if (StartCaptureWithTiming(*capture_)) {
         FCITX_INFO() << "[voice-input] Capture: " << capture_->Name();
         return true;
     }
@@ -215,7 +284,7 @@ bool Pipeline::StartCapture() {
     capture_->SetFrameQueue(&frameQueue_);
     capture_->SetDeliveryEnabled(false);
 
-    if (capture_->Start()) {
+    if (StartCaptureWithTiming(*capture_)) {
         FCITX_INFO() << "[voice-input] Capture: " << capture_->Name();
         return true;
     }

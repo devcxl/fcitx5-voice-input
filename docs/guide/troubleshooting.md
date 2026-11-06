@@ -94,15 +94,15 @@
 当遇到难以定位的问题时，可以通过命令行以前台详细日志模式启动 Fcitx5：
 
 ```bash
-# 关闭后台运行的 fcitx5 实例
-killall fcitx5
-
-# 以调试模式启动 fcitx5 并输出日志
-fcitx5 -d --verbose default=5 2>&1 | grep -i voiceinput
+# 替换当前实例并以前台调试模式输出语音输入日志
+fcitx5 -r -D --verbose default=5 2>&1 | grep --line-buffered -F '[voice-input'
 ```
+
+该命令会重启输入法，可能中断正在输入的内容。按 `Ctrl+C` 后前台实例退出，可用 `fcitx5 -r -d` 恢复后台运行。分享日志前请检查并删除可能包含个人信息的内容。
 
 在终端输出中可以直观观察到以下阶段的运行日志：
 - 录音后端与音频服务路由（`Capture: pulseaudio` / `pipewire`，`Capture started ... routing managed by the audio service`）；插件不枚举、不打印具体设备名，实际来源请在音频管理器中查看
+- 切换输入法的耗时（`[voice-input:timing]`，单位毫秒）：`engine.activate/deactivate` 为切换总流程，`capture.start/stop` 为录音后端启停调用，`vad.start/stop` 和 `dispatcher.stop` 为识别线程启停；`pipeline.pause` 汇总各阶段耗时。`begin` 后长时间没有对应 `end` 可能表示停在该阶段，`keep_capture=1` 表示失焦后保留录音流。`capture_prepare_ms` 包括复用或重建录音流的准备过程；PipeWire 后端的启动调用不等待设备协商完成。首次激活可能包含模型加载等一次性开销，DEBUG 日志本身也会增加耗时。计时日志不包含音频、转写文本或密钥
 - VAD 语音开始（`Speech onset`）与结束分段
 - ASR 请求发送与 HTTP / WebSocket 返回状态
 - 火山引擎请求的 `X-Tt-Logid`（可用于向火山引擎客服提交排查工单）

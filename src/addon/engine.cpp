@@ -1,3 +1,4 @@
+#include <chrono>
 #include <string>
 #include <sys/stat.h>
 
@@ -34,6 +35,12 @@
 namespace fcitx {
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+auto Milliseconds(Clock::time_point start, Clock::time_point end = Clock::now()) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
 
 // 配置文件可能含 API Key 等敏感凭据，保存后收紧为仅所有者可读写
 void RestrictConfigFilePermissions(const std::string& relativePath) {
@@ -176,9 +183,12 @@ void VoiceInputEngine::setSubConfig(const std::string& path,
 
 void VoiceInputEngine::activate(const InputMethodEntry& entry,
                                 InputContextEvent& event) {
+    const auto start = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=engine.activate event=begin";
     FCITX_UNUSED(entry);
     FCITX_UNUSED(event);
     InitializeIfNeeded();
+    const auto initDone = Clock::now();
     activeIc_ = event.inputContext()->watch();
     captureOwnerIc_ = event.inputContext()->watch();
     pendingPreeditText_.clear();
@@ -189,7 +199,9 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
     pipeline_->SetGeneration(generation);
 
     bool wasRunning = pipeline_->IsRunning();
+    const auto pipelineStart = Clock::now();
     pipeline_->Start();
+    const auto pipelineDone = Clock::now();
 
     FCITX_INFO() << "[voice-input] Activate: gen=" << generation
                  << " wasRunning=" << wasRunning
@@ -197,6 +209,9 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
 
     statusText_.clear();
     SetStatus(pipeline_->IsRunning() ? _("语音输入就绪") : _("语音识别失败"));
+    FCITX_DEBUG() << "[voice-input:timing] stage=engine.activate event=end init_ms="
+                  << Milliseconds(start, initDone) << " pipeline_ms=" << Milliseconds(pipelineStart, pipelineDone)
+                  << " total_ms=" << Milliseconds(start);
 }
 
 void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
@@ -207,6 +222,8 @@ void VoiceInputEngine::deactivate(const InputMethodEntry& entry,
 }
 
 void VoiceInputEngine::DeactivateContext(bool keepCapture) {
+    const auto start = Clock::now();
+    FCITX_DEBUG() << "[voice-input:timing] stage=engine.deactivate event=begin keep_capture=" << keepCapture;
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
     sessionGeneration_.store(0);
 
@@ -215,6 +232,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 
     ClearUI();
     activeIc_.unwatch();
+    const auto uiDone = Clock::now();
 
     if (keepCapture) {
         pipeline_->Pause();
@@ -222,6 +240,9 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
         pipeline_->Stop();
         captureOwnerIc_.unwatch();
     }
+    FCITX_DEBUG() << "[voice-input:timing] stage=engine.deactivate event=end keep_capture="
+                  << keepCapture << " ui_ms=" << Milliseconds(start, uiDone)
+                  << " pipeline_ms=" << Milliseconds(uiDone) << " total_ms=" << Milliseconds(start);
 }
 
 std::vector<InputMethodEntry> VoiceInputEngine::listInputMethods() {
