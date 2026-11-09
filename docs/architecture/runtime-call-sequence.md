@@ -1,294 +1,310 @@
 # fcitx5-voice-input 运行时调用序列
 
-> **状态:** 与代码同步的实现文档。
-> **关联:** [ARCHITECTURE.md](ARCHITECTURE.md)（总体架构）、[v4-asr-session-model.md](v4-asr-session-model.md)（会话模型）。
-> **目的:** 把「录音 → VAD 分段 → ASR 转写 → LLM 后处理 → 提交文本」整条数据流，按线程与时间轴展开为可追溯的调用时序。
+> **状态:** 当前实现文档（与 `src/addon/` 同步，含本地 Sherpa 后端）。
+> **关联:** [总体架构](index.md)、[组件详述](component-details.md)、[v4 会话模型](v4-asr-session-model.md)。
+> **目的:** 把「录音 → VAD 分段 → ASR 转写 → LLM 后处理 → 提交文本」按线程与时间轴展开，便于排查时序问题。
 
 ---
 
 ## 1. 一句话链路
 
 ```
-录音 ─▶ FrameQueue ─▶ VAD(Silero) ─▶ SpeechEvent ─▶ ASR后端(OpenAI/Realtime/火山)
-   │                                                                          │
-   └───────────────────── AudioFrame ◀── DrainLoop ◀── on_process ◀── PipeWire ──┘
-                                                                          ▼
-                                              ResultQueue ─▶ 主线程 eventDispatcher ─▶ commit / preedit
+麦克风 ─▶ Capture ─▶ FrameQueue ─▶ VADWorker ─▶ SpeechEventQueue ─▶ AsrDispatcherLoop
+                                                                        │
+                                          ┌─────────────────────────────┘
+                                          ▼
+                              AsrSession worker ×N（云端 WS/HTTP 或本地 sherpa）
+                                          │ resultCb(text, isFinal, sessionId)
+                                          ▼
+                          ResultCoordinator（generation 过滤 + 按 utteranceId 保序 + LLM）
+                                          │ ResultQueue
+                                          ▼
+                    主线程 eventDispatcher ─▶ PollResults() ─▶ commitString() / preedit
 ```
 
-一次用户说话，数据沿此链路单向流动；回传路径（ASR 结果 → 主线程）通过 `generation` 与 `utteranceId` 做隔离和排序。
+两个标识贯穿全链路：
+
+- `generation`：每次激活/停用递增。旧 generation 的结果在 `ResultCoordinator` 和主线程都会被丢弃。
+- `utteranceId`：每段语音递增。并发会话的最终结果按它保序上屏。
 
 ---
 
-## 2. 线程模型
+## 2. 线程与队列
 
 | 线程 | 职责 | 关键约束 |
 |---|---|---|
-| **主线程** | Fcitx5 事件循环、`eventDispatcher`、`PollResults`、UI 更新 | 只做 UI 提交，绝不阻塞 |
-| **VADWorker** | 消费 `FrameQueue`，跑 Silero ONNX，产出 `SpeechEvent` | 独立状态机（Idle/Speaking） |
-| **AsrDispatcherLoop** | 消费 `SpeechEventQueue`，起/停 ASR session worker，跑 LLM | 唯一的 ASR 结果生成者 |
-| **Session worker × N** | 每个活跃 session 一个 curl/WS 转写线程 | ≤3 并发（`kMaxActiveSessions`） |
-| **SessionReaper** | 后台 `JoinWithTimeout(15s)` 回收 session worker | 可能晚于管线析构，靠 `resultGuard_` 检查 |
-| **Capture thread** | Pulse: 1 个；PipeWire: `on_process` 回调线程 + `DrainLoop` 线程 | `on_process` ≤100μs 不阻塞 |
+| **主线程** | Fcitx5 事件循环、`eventDispatcher`、`PollResults`、UI 更新 | 只做队列读取与上屏，禁止阻塞 |
+| **Capture** | Pulse：1 个阻塞读线程（`pa_simple_read`）。PipeWire：`on_process` 回调 + `DrainLoop` 线程 | `on_process` ≤100μs，只写 ring buffer；取帧受 delivery gate 控制 |
+| **VADWorker** | 消费 `FrameQueue`，跑 Silero ONNX，产出 `SpeechEvent` | 独立 Idle/Speaking 状态机 |
+| **AsrDispatcherLoop** | 消费 `SpeechEventQueue`，起停会话、按 200ms 批量喂音频 | 唯一创建/回收会话的位置 |
+| **Session worker × N** | 每个活跃会话一个后端线程（HTTP、WS 或本地解码） | 并发上限 3，超限取消最旧会话 |
+| **SessionReaper** | 后台 `JoinWithTimeout(15s)` 回收会话线程 | 不阻塞分发线程与主线程 |
+| **LLM** | 无独立线程：`Process`/`ProcessStream` 在会话 worker 内同步调用 | 30s 超时；按 generation 取消 |
 
-> 参考时序图 3 中的并发上限与回收逻辑。
-
----
-
-
-
-## 3. 三种 ASR 模式的关键差异
-
-| 维度 | OpenAI whisper | OpenAI Realtime | 火山引擎豆包 |
+| 队列 | 类型 | 容量 | 说明 |
 |---|---|---|---|
-| 传输 | HTTP multipart WAV | WebSocket 流 | WebSocket 二进制帧(gzip) |
-| 触发 | VAD End 后一次性转写 | 建立持久会话，流式 append | 同上，流式 |
-| preedit | 无（整句 final） | delta 实时刷新 | utterances 增量 |
-| 重连 | 无 | 断线重连保 sessionId，30min 上限 | — |
-| 并发单元 | 每句一个 session | 每句一个 session | 每句一个 session |
+| `frameQueue_` | `ThreadSafeQueue<AudioFrame>` | 1024 帧（≈32s） | 溢出丢最旧 |
+| `speechEventQueue_` | `ThreadSafeQueue<SpeechEvent>` | 256 事件 | 溢出丢最旧 |
+| `pendingAsrAudio_` | `std::vector<float>` | — | 分发线程内 200ms 批量缓冲 |
+| `resultQueue_` | `ThreadSafeQueue<AsrResult>` | 无界 | 终态由 `ResultCoordinator` 保证不丢 |
+| PipeWire ring buffer | lock-free SPSC | 秒级 | 仅音频回调线程写、`DrainLoop` 读 |
 
 ---
 
-## 4. 详细时序图
+## 3. 阶段 0：激活（主线程）
 
-### 4.1 单次语音段完整流程（OpenAI Whisper 模式）
-
-```mermaid
-sequenceDiagram
-    participant FM as Fcitx5 主线程
-    participant IC as InputContext
-    participant PE as Pipeline (AsrDispatcherLoop)
-    participant VAD as VADWorker
-    participant CAP as Capture (Pulse/PW)
-    participant SE as OpenaiAsrSession
-    participant API as OpenAI API
-
-    Note over FM,API: ===== 阶段0: 激活（activate） =====
-    FM->>PE: activate() → Pipeline::Start()
-    PE->>CAP: StartCapture() → dlopen + 开录音流
-    CAP->>CAP: 采集线程 loop 读取麦克风
-    CAP->>PE: Push AudioFrame → FrameQueue
-
-    Note over FM,API: ===== 阶段1: VAD 分段 =====
-    loop 每 32ms (一帧)
-        PE->>VAD: TryPop AudioFrame
-        VAD->>VAD: Silero ONNX predict()
-        alt 概率 >= speechThreshold
-            VAD->>PE: Push SpeechEvent{Begin}
-            VAD->>VAD: speechFrames 计数
-        end
-        VAD->>PE: Push SpeechEvent{Audio}  (含 int16 pcm)
-        VAD->>VAD: 累计静音帧 silenceFrames++
-    end
-
-    Note over FM,API: ===== 阶段2: Dispatcher 起 session =====
-    PE->>PE: TryPop Begin
-    PE->>PE: 取消旧 session / 检查 ≤3 并发
-    PE->>AsrEngine: StartSession() → sid
-    PE->>SE: StartWorker() (whisper 不发起请求,仅占位)
-    PE->>PE: sessionGenerationMap_[sid] = {gen, uid}
-    PE->>SE: StartWorker() 再次调用 → 起 curl worker 线程
-
-    Note over FM,API: ===== 阶段3: 喂音频 + 攒批 =====
-    loop 说话中
-        PE->>VAD: TryPop Audio
-        PE->>PE: 转 float → pendingAsrAudio 累积
-        alt pending ≥ 200ms 样本
-            PE->>SE: FeedAudio(批次, ~200ms)
-        end
-    end
-
-    Note over FM,API: ===== 阶段4: VAD 结束 + 触发转写 =====
-    VAD->>VAD: 静音或超时 → duration ≥ minSpeechMs
-    VAD->>PE: Push SpeechEvent{End}
-    PE->>SE: End() → state.finished=true
-    SE->>SE: 起 TranscribeWorker 线程
-    SE->>SE: 攒 buffer → 构建 WAV (float→int16)
-    SE->>API: POST audio/transcriptions (multipart WAV)
-    alt 被取消
-        API-->>SE: (传输中断)
-    else 成功
-        API-->>SE: JSON{ "text": "..." }
-    end
-    SE->>PE: resultCb_(text, isFinal=true, sid)
-
-    Note over FM,API: ===== 阶段5: 有序缓冲 + LLM + 回主线程 =====
-    PE->>PE: SetResultCallback 回调
-    PE->>OResult: SubmitOrderedResult(result, terminal=true)
-    OResult-->>PE: 按 uid 排序后 Push → ResultQueue
-    PE->>PE: isFinal 且无 LLM → 直接回调
-    alt LLM 启用
-        PE->>LLM: Process(text) → chat/completions
-        LLM-->>PE: 修正后文本
-        PE->>PE: result.isLLMRefined=true
-    end
-    PE->>FM: OnAsrResult → eventDispatcher schedule
-
-    Note over FM,API: ===== 阶段6: 主线程提交 =====
-    FM->>FM: PollResults() 过滤当前 generation
-    alt autoCommit
-        FM->>IC: commitString("...")  → 提交
-    else 仅 preedit
-        FM->>IC: setPreedit("...") → 显示
-    end
-    FM->>FM: 更新 InputPanel / StatusArea
+```
+activate(entry, event)
+├── InitializeIfNeeded()            # 仅首次
+│   ├── pipeline_->Init(config)     # VAD 参数
+│   ├── ReloadActiveAsrClient()     # CreateAsrEngine() + engine->Init()
+│   │   └── 失败时保留 nullptr / 旧引擎
+│   └── SetLLMClient(...)           # 启用且配置了模型时
+├── generation = ++activeGeneration_
+├── pipeline_->SetGeneration(generation)
+└── pipeline_->Start()
+    ├── 复用保留的 capture；不可用则重新 StartCapture()（Pulse → PipeWire fallback）
+    ├── frameQueue_.Clear() / speechEventQueue_.Clear()
+    ├── results_->Start(utteranceCounter_ + 1, generation)
+    ├── vadWorker_->Start()         # 失败则 Stop() 回滚
+    ├── asrThread_ = AsrDispatcherLoop
+    └── capture_->SetDeliveryEnabled(true)
 ```
 
-### 4.2 Realtime 流式模式（长句实时）
-
-```mermaid
-sequenceDiagram
-    participant PE as Pipeline
-    participant SE as RealtimeAsrSession
-    participant WS as OpenAI Realtime (wss)
-    participant VAD as VADWorker
-
-    Note over PE,WS: 16k int16 → 24k float 线性上采样 (3/2) → 24k int16
-    Note over PE,WS: kAppendChunkSamples≈2400 (~100ms@24k)
-
-    VAD->>PE: Push Begin
-    PE->>SE: StartSession + StartWorker()
-    SE->>WS: session.update (language/model)
-
-    Note over PE,WS: 循环: 取音频 chunk
-    loop 持续说话
-        PE->>SE: FeedAudio → audioChunks_ 队列
-        SE->>SE: 16k→24k 上采样 → pending24k
-        alt pending24k ≥ 2400 样本
-            SE->>WS: input_audio_buffer.append (base64)
-        end
-        Note right of SE: lastCommitTime 不刷新
-    end
-
-    Note over PE,WS: 周期 commit 兜底
-    alt 距上次 commit ≥ commitIntervalMs 且 append 过
-        SE->>WS: input_audio_buffer.commit
-        SE->>SE: commitsInFlight++
-    end
-
-    Note over PE,WS: 服务端事件处理
-    loop 每 20ms handleServer
-        WS-->>SE: transcription.delta
-        SE->>SE: currentTranscript += delta
-        SE->>PE: cb(partial, false) → preedit 刷新整句
-    end
-
-    Note over PE,WS: 长句无停顿
-    alt 持续说话,无 delta
-        SE->>WS: commit (兜底,保证出增量)
-    end
-
-    VAD->>PE: Push End
-    PE->>SE: End() → 起 worker
-    SE->>WS: flush pending24k (尾部)
-    SE->>WS: commit (最终段)
-    Note over SE: endCommitSent=true
-
-    loop 等待最终 completed
-        WS-->>SE: transcription.completed
-        SE->>SE: 判定 isFinalItem = endCommitSent && commitsInFlight≤1
-        alt 是最终 item
-            SE->>PE: cb(fullTranscript, true) → final
-        else 周期 commit
-            SE->>PE: cb(fullTranscript, false) → partial
-        end
-    end
-    SE->>SE: gotFinal=true → 退出
-    SE->>WS: WS close
-```
-
-### 4.3 会话生命周期 & 并发控制（deactivate / generation 隔离）
-
-```mermaid
-sequenceDiagram
-    participant FM as Fcitx5 主线程
-    participant PE as Pipeline
-    participant RE as SessionReaper
-    participant SE as AsrSession worker
-
-    Note over FM,RE: ===== 并发上限 =====
-    activate PE
-    loop 每次 Begin
-        PE->>AsrEngine: StartSession()
-        AsrEngine-->>PE: ≤3 并发,否则 CancelOldestSession
-    end
-
-    Note over FM,RE: ===== deactivate: 分级停止 =====
-    FM->>PE: deactivate() → generation++
-    PE->>PE: 安排 200ms 延迟 Stop 事件
-    Note right of PE: 200ms 内未 deactivate 则取消
-
-    FM->>FM: 用户按键 → keyEvent()
-    FM->>FM: commitString(pendingPreedit) 立即提交
-    FM->>PE: (延迟 Stop 被取消)
-
-    Note over FM,RE: ===== Stop: 级联停止 =====
-    FM->>PE: 200ms 后 Stop()
-    PE->>PE: running_=false
-    PE->>CAP: capture_->Stop() (Pulse 先 join 阻塞线程)
-    PE->>VAD: VADWorker::Stop() (join worker)
-    PE->>PE: activeSession_->Cancel()
-    PE->>RE: reaper_->Add(session)
-    PE->>AsrEngine: engine->CancelAllSessions()
-    PE->>LLM: llmClient_->Cancel()
-    PE->>PE: 排空 frame/speech/result 队列 (防幽灵)
-
-    Note over FM,RE: ===== Reaper 回收 =====
-    activate RE
-    loop 后台
-        RE->>SE: JoinWithTimeout(15s)
-        SE-->>RE: 线程 join 完成
-        RE->>RE: pending_--
-    end
-
-    Note over FM,RE: ===== 异步回调安全 =====
-    rect rgb(#e8f5e9)
-        Note over PE: resultGuard_ 已置 false → 丢弃
-        SE->>PE: resultCb_(text,...) [可能晚于析构]
-        PE->>PE: guard->load()==false → return
-    end
-
-    Note over FM,RE: ===== generation 隔离 =====
-    rect rgb(#fff3e0)
-        Note over FM: 下次 activate → generation++
-        PE->>PE: 所有结果带旧 generation
-        FM->>FM: PollResults 过滤 gen≠activeGeneration
-        FM->>FM: 旧结果被丢弃,仅当前会话生效
-    end
-```
+`Init` 的耗时（模型加载、网络客户端初始化）会被记录为 `stage=engine.activate` 的 `init_ms`；它发生在主线程，因此本地大模型首次激活会表现为一次可感知的停顿。
 
 ---
 
-## 5. 关键数据流与并发保护点
+## 4. 阶段 1：采集与 VAD 分段
 
-| 环节 | 传递载体 | 关键并发保护 |
+音频格式统一为 **16kHz mono / int16 / 512 samples（32ms）**。
+
+```
+Capture 线程
+├── Pulse：pa_simple_read → AudioFrame → DeliverFrame(epoch)
+└── PipeWire：on_process → ring buffer → DrainLoop → AudioFrame → DeliverFrame(epoch)
+                                                   │
+                                                   ▼
+                                             FrameQueue
+                                                   │
+VADWorker                                         ▼
+├── TryPop(frame) 每 32ms
+├── Silero.predict(pcm) → probability
+├── Idle：prob ≥ speechThreshold 连续 startFrames → Speaking
+│   ├── Push SpeechEvent{Begin}
+│   ├── Push SpeechEvent{Audio, pre-roll}   # 最多 preRollMs
+│   └── Push SpeechEvent{Audio, 当前帧}
+├── Speaking：每帧 Push SpeechEvent{Audio}
+└── 结束条件
+    ├── 静音 ≥ endSilenceMs → 时长 ≥ minSpeechMs ? Push{End} : Push{Cancel}
+    └── 时长 ≥ maxSpeechMs  → Push{End}
+```
+
+`SetDeliveryEnabled(false)` 用 epoch 奇偶切换取帧门闸：失焦后立即停止向识别链路提交新帧，但不关闭音频流。
+
+---
+
+## 5. 阶段 2：ASR 分发（AsrDispatcherLoop）
+
+| 事件 | 处理 |
+|---|---|
+| `Begin` | 1) 取消旧会话（`SkipSession` + `Cancel` + 交 reaper）<br>2) `utteranceId = ++utteranceCounter_`<br>3) `engine->StartSession()`；容量 3 已满时引擎同时返回被取消的最旧 `sessionId`，此处 `SkipSession`<br>4) `RegisterSession(sessionId, {generation, utteranceId})`<br>5) `session->StartWorker()` |
+| `Audio` | int16 → float，累计到 200ms（3200 samples）后 `FeedAudio()`；`End` 时补发剩余部分 |
+| `End` | `FeedAudio` 残余 → `session->End()` → 交给 `SessionReaper` |
+| `Cancel` | `SkipSession` → `session->Cancel()` → 交给 `SessionReaper` |
+| 空闲 | 每 5ms 轮询队列；每 500ms 调 `results_->ExpireStale()` 放行卡死的队首语音段 |
+
+`Begin` 时持有 `engineMutex_` 直到会话登记与 worker 启动完成，避免配置热切换与 `StartSession` 交叉。
+
+---
+
+## 6. 阶段 3：各后端会话内部
+
+| 后端 | 传输 | worker 启动 | 增量结果 | 终态 |
+|---|---|---|---|---|
+| `openai`（whisper） | HTTP multipart WAV | `End()` 时起线程 | 无 | 请求返回一条 final |
+| `openai`（chat） | HTTP JSON + base64 | `End()` 时起线程 | 无 | 一条 final |
+| `openai`（realtime） | WebSocket | `StartWorker()` 建连 | delta → `isFinal=false` | `completed` → final |
+| `volcengine` | WebSocket 二进制（gzip） | `StartWorker()` 建连 | `utterances` 增量 | `isFinal` 事件 → final |
+| `mistral` | WebSocket | `StartWorker()` 建连 | 增量文本 | flush/End → final |
+| `sherpa_onnx` | 本地进程内 | `StartWorker()` 起线程 | 每 200ms 解码，文本变化即发 partial | `End` → flush → final |
+| `sherpa_offline` | 本地进程内 | `StartWorker()` 起等待线程 | 无 | `End` 唤醒 → 整段解码 → 一条 final |
+
+共同约定：
+
+- `FeedAudio` 只做入队/缓冲，不做 IO 或推理。
+- `StartWorker()` 必须由分发线程在会话登记后调用一次。
+- `End()` 表示音频结束，允许后端在 worker 内继续收尾。
+- `Cancel()` 是协作式的：本地解码在开始前检查取消标志；HTTP 通过进度回调中止传输；WS 由 `WsDeadline` 预算收敛，`End` 后不再重连。
+
+### 6.1 本地流式（`sherpa_onnx`）
+
+```
+StartWorker → 线程循环
+├── Pop 音频块（200ms）
+├── AcceptWaveform(stream, chunk)
+├── while IsReady(stream): Decode(stream)
+├── GetResult(stream) 有变化 → resultCb(text, false, sid)
+└── End：InputFinished → 解码残余 → resultCb(final, true, sid)
+```
+
+### 6.2 本地离线（`sherpa_offline`）
+
+```
+StartWorker → 线程阻塞等待
+├── 等待 End()/Cancel()
+├── Cancel：直接退出，不发终态
+└── End：整段 AcceptWaveformOffline → Decode → GetResult
+    └── 一条 resultCb(text, true, sid)
+         └── 空音频/空结果也发 final，避免保序闸门等到 40s 停滞放行
+```
+
+X-ASR 为非流式模型，整段解码才有结果；断句完全由 VAD 负责。
+
+热词（`hotwords_file`）按模型词表形态编码：词表含裸汉字时用 `cjkchar`；只有 `▁汉字`（X-ASR）时用 `bpe`，并把连续汉字逐字拆词后写入 `~/.cache/fcitx5/voice-input/hotwords-bpe.txt` 再交给 sherpa（否则第二个汉字起会编码成 `<unk>`）。热词文件缺失或无法生成时自动退回 `greedy_search`。
+
+---
+
+## 7. 阶段 4：结果汇聚（ResultCoordinator）
+
+回调来自会话 worker 线程：`HandleAsrResult(text, isFinal, sessionId)`。
+
+```
+TakeContext(sessionId)
+├── accepting == false 或 sessionId 未登记 → 丢弃
+└── isFinal 时同时移除会话登记
+      │
+      ├── partial：Submit(partial, terminal=false)
+      └── final
+          ├── text 为空 → Submit(isError=true, terminal=true)   # 主线程提示「语音识别失败」
+          └── text 非空
+              ├── 无 LLM：Submit(raw, terminal=true)
+              └── 有 LLM：Submit(raw, terminal=true) + Refine(...)
+                  ├── 非流式：Process() 30s 超时，回调或兜底 final
+                  └── 流式：ProcessStream() 增量 preedit + final
+```
+
+`OrderedResultBuffer` 以 `utteranceId` 为序键：
+
+- 队首未终结时只交付其已缓存的 partial（preedit 需要立即可见），闸门不前进；
+- 某段停滞超过 **40s** 时丢弃其缓存，改下推一条超时错误结果并推进闸门（issue #43）；
+- 旧 generation 的结果在 `Submit` 入口被丢弃。
+
+交付时 `resultQueue_.Push(...)`，并通过回调（`Pipeline::SetResultCallback` → `VoiceInputEngine::OnAsrResult`）通知主线程。
+
+---
+
+## 8. 阶段 5：主线程上屏
+
+```
+OnAsrResult(text)
+└── eventDispatcher_.schedule → generation 校验 → PollResults()
+    └── while (ResultQueue.TryPop(result))
+        ├── 无效结果（generation 不符 / 无 activeIc）→ 丢弃
+        ├── isError → 清空 preedit + 状态「语音识别失败」
+        ├── isLLMRefined
+        │   ├── partial 且 utteranceId 匹配 → 原地更新 preedit
+        │   └── final 且 utteranceId 匹配 → commit + 清空 pending
+        └── 原始 ASR
+            ├── partial → 更新 preedit / 状态区
+            └── final
+                ├── LLM 启用 → preedit +「修正中...」，等待 refine
+                └── 未启用 LLM → 按后端 autoCommit
+                    ├── true：commitString + 清空 status
+                    └── false：保留为 preedit
+```
+
+`autoCommit` 按当前后端读取：`openai` / `sherpa_onnx` / `sherpa_offline` 各有子配置；其余后端沿用默认值。任意按键会把 pending preedit 提交（`keyEvent`）。
+
+---
+
+## 9. 阶段 6：停用与配置热切换
+
+| 触发 | 路径 | 行为 |
 |---|---|---|
-| 采集→VAD→Dispatcher | `FrameQueue` / `SpeechEventQueue`（mutex+cv） | SPSC 生产者-消费者 |
-| Dispatcher→后端 | `engine->StartSession/FeedAudio/End/Cancel` | `engineMutex_` 保护 `sessions_` |
-| 后端→Pipeline | `resultCb_(text,isFinal,sid)` | `SessionReaper` `JoinWithTimeout` |
-| 乱序回调→主线程 | `OrderedResultBuffer`（按 `utteranceId`） | 排序保证 UI 顺序 |
-| 异步回调 vs 析构 | `resultGuard_` + `sessionGenerationMap_` | 双重校验丢弃残留 |
-| 跨会话切换 | `generation` 原子计数 | `PollResults` 过滤幽灵结果 |
+| 失焦 `InputContextFocusOut` | `DeactivateContext(true)` | `Pause()`：关取帧门闸 → `results_->Pause()` → VAD 停止 → 分发线程 join → 取消当前会话 → `CancelAllSessions()` → 清空队列；**保留录音流** |
+| 切换输入法 / 输入法组变更 / IC 销毁 | `DeactivateContext(false)` | `Stop()`：`Pause()` 后释放录音流 |
+| `setConfig` / `setSubConfig` | `ReloadActiveAsrClient()` | 新建引擎并 `Init`；成功才替换；替换时 `SkipAllSessions` + 旧引擎 `CancelAllSessions`；失败保留旧引擎 |
 
-### 5.1 generation 隔离详解
-
-每次 `activate`/`deactivate` 都 `fetch_add` 递增 `generation`。所有 `AsrResult` 携带 `generation`，主线程 `PollResults()` 用 `activeGeneration_` 过滤。这样快速切换输入法时，上一个会话的在途回调（VAD 结束延迟、LLM 慢响应、Reaper 回收）全部被静默丢弃，不会污染当前输入。
-
-### 5.2 异步回调安全
-
-`SessionReaper` 可能晚于 `Pipeline` 析构退出（超时 15s）。其 `resultCb_` 回调前先检查 `resultGuard_`，若已置 `false` 则直接 return，避免访问已析构的 `Pipeline`（use-after-free）。
-
-### 5.3 OrderedResultBuffer
-
-并发 session 的回调可能乱序到达。`OrderedResultBuffer` 以 `utteranceId` 为 key 按序归并（partial 同段覆盖），仅在 `utteranceId == nextUtteranceId_` 时交付主线程，保证 UI 上屏顺序与语音段顺序一致。
+停用会递增 `activeGeneration_` 并把 `sessionGeneration_` 置 0，此后到达的任何结果都会被过滤。
 
 ---
 
-## 6. 与 ARCHITECTURE.md 的关系
+## 10. 时间预算与失败边界
 
-本文件聚焦**运行期调用时序**（谁在什么时刻调用谁），补充 ARCHITECTURE.md 的静态架构图，与 v4 会话模型文档互相印证。涉及的关键实现：
+| 路径 | 预算 | 作用 |
+|---|---|---|
+| `SessionReaper` join | 15s | 超时丢弃会话线程，不阻塞清理 |
+| 会话析构 join | 2s（sherpa）/ 5s（openai） | 正常路径快速回收 |
+| WS 发送单次预算 | 10s | 上游不读 socket 时失败 |
+| WS `End` 总预算 | 8s | 保证收尾路径在 reaper 的 15s 内收敛 |
+| Realtime 空闲超时 | 5s | End 后服务端无响应，以累积文本兜底 final |
+| LLM 请求 | 30s | 超时后兜底提交原始文本 |
+| 保序闸门停滞 | 40s | 单段卡死时以错误结果放行，避免后续全被扣住 |
 
-- 采集后端 dlopen 运行时加载、优雅降级 —— 见 capture 代码
-- Silero VAD 状态机与 pre-roll —— 见 vad 代码
-- 三种后端 WS/HTTP 协议细节 —— 见 asr 代码
-- LLM 后处理（非流式 `Process` / 流式 `ProcessStream`）—— 见 llm_client 代码
+---
+
+## 11. 两张时序图
+
+### 11.1 云端批量（OpenAI whisper）
+
+```mermaid
+sequenceDiagram
+    participant FM as 主线程
+    participant CAP as Capture
+    participant VAD as VADWorker
+    participant DISP as AsrDispatcherLoop
+    participant SE as OpenaiAsrSession
+    participant API as ASR 服务端
+    participant RC as ResultCoordinator
+
+    FM->>CAP: activate → Pipeline::Start()
+    CAP->>VAD: FrameQueue(AudioFrame)
+    VAD->>DISP: Begin + pre-roll + Audio
+    DISP->>SE: StartSession / RegisterSession / StartWorker
+    loop 每 32ms
+        VAD->>DISP: Audio
+        DISP->>SE: 每 200ms FeedAudio
+    end
+    VAD->>DISP: End
+    DISP->>SE: End()（残余音频）
+    DISP->>DISP: SessionReaper 接管 join
+    SE->>API: POST /audio/transcriptions（WAV）
+    API-->>SE: text
+    SE->>RC: resultCb(text, true, sid)
+    RC->>RC: 保序 + generation 过滤
+    RC-->>FM: ResultQueue → OnAsrResult → schedule
+    FM->>FM: PollResults → commitString()
+```
+
+### 11.2 本地流式（sherpa-onnx）
+
+```mermaid
+sequenceDiagram
+    participant VAD as VADWorker
+    participant DISP as AsrDispatcherLoop
+    participant SS as SherpaOnnxAsrSession
+    participant RC as ResultCoordinator
+    participant FM as 主线程
+
+    VAD->>DISP: Begin
+    DISP->>SS: StartSession / StartWorker（起解码线程）
+    loop 每 200ms
+        DISP->>SS: FeedAudio(chunk)
+        SS->>SS: AcceptWaveform + Decode
+        SS->>RC: resultCb(partial, false, sid)
+        RC-->>FM: preedit（按 utteranceId 交付）
+    end
+    VAD->>DISP: End
+    DISP->>SS: End()（InputFinished + 解码残余）
+    SS->>RC: resultCb(final, true, sid)
+    RC-->>FM: commit / preedit
+```
+
+---
+
+## 12. 与文档的关系
+
+- 静态结构与设计取舍见 [ARCHITECTURE](index.md)；
+- 各组件接口与实现细节见 [组件详述](component-details.md)；
+- `AsrSession` 抽象与回收语义见 [v4 会话模型](v4-asr-session-model.md)。

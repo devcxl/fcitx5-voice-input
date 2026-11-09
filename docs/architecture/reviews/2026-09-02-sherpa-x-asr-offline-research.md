@@ -276,7 +276,7 @@
 
 ## 12. ADR
 
-见 `docs/architecture/adr/2026-09-02-sherpa-x-asr-offline-asr.md`（单独文件，本报告为分析过程存档）。
+见 `docs/architecture/adr/ADR-0005-sherpa-x-asr-offline-asr.md`（单独文件，本报告为分析过程存档）。
 
 ---
 

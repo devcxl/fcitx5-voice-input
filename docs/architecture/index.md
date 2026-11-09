@@ -7,7 +7,7 @@
 1. **无独立进程（daemon）** — 全部逻辑跑在 Fcitx5 addon 内部，线程隔离
 2. **无 CLI 二进制** — 配置靠 fcitx5-configtool
 3. **无 Qt GUI 依赖** — 不引入 Qt，避免 50MB+ 的依赖膨胀
-4. **默认云端 ASR** — OpenAI 兼容 API（whisper-1），预留本地 ASR 扩展接口
+4. **默认云端 ASR，可选本地 ASR** — 默认 OpenAI 兼容 API（whisper-1）；可切换到本地 sherpa-onnx（流式 / X-ASR 离线），语音不出本机
 5. **最小依赖** — Fcitx5 + PipeWire/PulseAudio + jsoncpp + libcurl + onnxruntime
 
 ---
@@ -21,7 +21,7 @@ Fcitx5 进程 (voice-input-addon.so)
 ├── [主线] 输入法激活/停用、状态显示、上屏（EventDispatcher 轮询结果）
 ├── [音频线] PulseAudio 优先 → PipeWire fallback → AudioFrame → FrameQueue
 ├── [VAD线] 消费 FrameQueue → Silero ONNX VAD → SpeechEvent (Begin/Audio/End/Cancel) → SpeechEventQueue
-└── [ASR线] AsrDispatcherLoop 消费 SpeechEventQueue → 创建 AsrSession（OpenAI/Volcengine/Mistral）→ ResultCoordinator → ResultQueue → 回调主线程
+└── [ASR线] AsrDispatcherLoop 消费 SpeechEventQueue → 创建 AsrSession（OpenAI/Volcengine/Mistral/Sherpa 本地）→ ResultCoordinator → ResultQueue → 回调主线程
 ```
 
 没有 daemon、没有 D-Bus、没有 CLI 二进制、没有 Qt GUI。
@@ -93,6 +93,7 @@ ASR 推理是 CPU/网络密集型操作，在**同一进程的另一个线程**�
 │  │  │  ├── 消费 SpeechEventQueue → 创建 AsrSession │     │   │
 │  │  │  ├── OpenAI (whisper/chat/realtime)          │     │   │
 │  │  │  ├── Volcengine Doubao / Mistral Realtime    │     │   │
+│  │  │  ├── Sherpa-ONNX 本地流式 / X-ASR 离线         │     │   │
 │  │  │  ├── SessionReaper 超时回收                  │     │   │
 │  │  │  └── ResultCoordinator 保序 + LLM 后处理      │     │   │
 │  │  └─────────────────────────────────────────────┘     │   │
@@ -110,6 +111,8 @@ ASR 推理是 CPU/网络密集型操作，在**同一进程的另一个线程**�
 │  │  ├── OpenAI: BaseUrl / Key / Model / ApiMode          │   │
 │  │  ├── Volcengine: Endpoint / Auth / Key / Resource     │   │
 │  │  ├── Mistral: BaseUrl / Key / Model / CommitInterval  │   │
+│  │  ├── Sherpa-ONNX: ModelDir / Threads / Hotwords         │   │
+│  │  ├── X-ASR 离线: ModelDir / Threads / Hotwords           │   │
 │  │  ├── LLM 后处理: Model / Prompt / Stream (可选)         │   │
 │  │  └── VAD: Threshold / PreRoll / Min/Max Speech        │   │
 │  └──────────────────────────────────────────────────────┘   │
@@ -227,6 +230,9 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 | PulseAudio 读取阻塞（设备挂起/服务断开） | 既有缺陷：`Stop()` 的 join 可能阻塞主线程；跟踪于 issue #14 / PR #17，不承诺可靠停止上界 |
 | ASR HTTP 请求失败 | 丢弃当前段，继续监听下一段 |
 | ASR API Key 未配置 | 对应引擎 Init 返回 false |
+| 本地模型目录不存在/文件不全 | 对应引擎 Init 返回 false（启动时日志给出缺失项），旧引擎在热切换时保留 |
+| 本地热词文件不可读 | 告警并忽略热词，后端按 greedy_search 继续工作 |
+| 未编译 sherpa-onnx | 两个本地后端进入 stub：可选但不可用，`Init` 返回 false |
 | Volcengine 认证失败 / WS 断开 | Init 返回 false；断开则丢弃当前段继续下一段 |
 | Volcengine 服务端错误 | 日志打印响应中的 `message` 和 `X-Tt-Logid` |
 | WS 事件消息跨 TCP 分片 | `WsFrameReceiver` 跨 `CURLE_AGAIN` 保留已收前缀，消息边界到齐后才解析（不丢 delta/completed） |
@@ -256,7 +262,8 @@ fcitx5-voice-input
 ├── jsoncpp                     # JSON 解析
 ├── libcurl                     # HTTP/WebSocket 客户端（ASR 必需，>= 7.86.0）
 ├── zlib                        # Gzip 压缩（火山引擎后端必需）
-└── onnxruntime                 # Silero VAD ONNX Runtime（v1.28.0 / 系统包双策略）
+├── onnxruntime                 # Silero VAD ONNX Runtime（v1.28.0 / 系统包双策略）
+└── sherpa-onnx                 # 可选：本地 ASR（git submodule，内嵌编译或系统库）
 ```
 
 > 录音库（libpulse-simple/libpipewire）**不链接**（无 DT_NEEDED）：各 capture 后端在 Start 时 dlopen + dlsym 函数指针表延迟加载，库缺失/soname 变更/符号不完整时优雅降级，addon 本体不受影响（详见 PR #20：Arch 构建 `-z,now` 兼容）。
@@ -267,12 +274,14 @@ fcitx5-voice-input
 |------|--------|------|
 | `BUILD_TESTS` | OFF | 构建单元/集成测试（`tests/`，`ctest` 运行；CI verify job 开启） |
 | `ONNXRUNTIME_ROOT` | "" | ONNX Runtime 自定义路径（onnxruntime 双策略：pkg-config 系统包或 download 1.28.0，CI 缓存加速） |
+| `ENABLE_SHERPA_ONNX` | ON | 本地 ASR。优先内嵌编译 `third_party/sherpa-onnx`，其次系统库；都不可用时编译为 stub（后端不可选，addon 正常加载） |
 
 ### 构建产物
 
 ```
 build/
-└── voice-input-addon.so        # 唯一的输出产物（无 lib 前缀）
+├── voice-input-addon.so        # addon 本体（无 lib 前缀）
+└── lib/libsherpa-onnx-c-api.so # 仅本地 ASR：submodule 编译时生成，安装到 addon 目录
 ```
 
 ### 打包
@@ -302,7 +311,7 @@ fcitx5-voice-input/
 │       ├── types.h                 # AudioFrame / SpeechEvent / AsrResult 类型定义
 │       ├── voiceinput.conf.in      # Fcitx5 addon 配置模板（@PROJECT_VERSION@ 替换）
 │       ├── config/
-│       │   └── voiceinput-config.h         # FCITX_CONFIGURATION 宏定义（4 个子配置块）
+│       │   └── voiceinput-config.h         # FCITX_CONFIGURATION 宏定义（6 个子配置块）
 │       ├── capture/
 │       │   ├── audio_capture.h             # 捕获后端抽象接口
 │       │   ├── pulse_audio_capture.cpp/.h  # PulseAudio 优先（dlopen）
@@ -322,7 +331,10 @@ fcitx5-voice-input/
 │       │   ├── realtime_asr.cpp/.h              # OpenAI Realtime WS 会话
 │       │   ├── volcengine_asr.cpp/.h            # 火山引擎豆包引擎
 │       │   ├── mistral_asr.cpp/.h               # Mistral Realtime 引擎
+│       │   ├── sherpa_onnx_asr.cpp/.h           # Sherpa-ONNX 本地流式引擎（OnlineRecognizer）
+│       │   ├── sherpa_offline_asr.cpp/.h        # Sherpa-ONNX X-ASR 本地离线引擎（OfflineRecognizer）
 │       │   ├── utils/base64.cpp/.h              # Base64 编解码
+│       │   ├── utils/sherpa_paths.cpp/.h        # 本地模型/热词路径探测（两个本地后端共用）
 │       │   ├── utils/ws_frame_receiver.h        # WS 消息重组（跨 TCP 分片保留前缀）
 │       │   ├── utils/ws_frame_sender.h          # WS 发送（单次预算内失败）
 │       │   └── utils/ws_deadline.h              # 发送/建连截止时间与中止条件
@@ -335,14 +347,14 @@ fcitx5-voice-input/
 │
 ├── third_party/
 │   ├── silero-vad/              # git submodule，VAD ONNX 模型
-│   └── sherpa-onnx/             # git submodule，本地 ASR（预留，未构建）
+│   └── sherpa-onnx/             # git submodule，本地 ASR（可选，ENABLE_SHERPA_ONNX）
 │
 ├── po/
 │   └── zh_CN.po                 # 中文翻译
 │
 ├── cmake/                       # 自定义 FindXXX.cmake
 ├── data/                        # 图标 + 输入法注册文件
-├── scripts/                     # 辅助脚本
+├── scripts/                     # 下载模型 / 导出热词等辅助脚本
 ├── .github/workflows/
 │   ├── ci.yml                   # PR/push：6 发行版矩阵 + 链接校验 + build-no-pipewire
 │   ├── release.yml              # tag v*：draft release（DEB/RPM 产物）
@@ -367,11 +379,12 @@ A: ASR 会话 worker 独立运行，且 v4 起有完整的资源兜底：会话�
 ### Q: 主线程不是还卡？
 A: 主线程只负责事件分发和上屏。音频捕获（实时音频）在独立线程，HTTP/WS ASR 请求（网络 IO 密集型）在会话 worker 线程。唯一的"卡"是主线程的 `PollResults()` 轮询，但只做队列读取和 `commitString()`，微秒级操作。
 
-### Q: 为什么默认用 OpenAI API 而不是本地 ASR？
-A: 当前阶段以中文语音输入为主，云端 Whisper 在中文准确率上优于可用的开源离线方案。`third_party/sherpa-onnx` 子模块已预留，未来通过 `AsrEngine` 工厂接口接入本地引擎。
+### Q: 默认用什么 ASR？本地 ASR 现在可用吗？
+
+A: 默认仍是 OpenAI 兼容 API（中文准确率与免维护是主要原因）。仓库已接入两个本地后端：`sherpa_onnx`（流式，边说边出增量）与 `sherpa_offline`（X-ASR 非流式，整句解码）。本地后端在隐私与离线场景更合适，代价是模型体积、内存与 CPU 占用；模型不随包分发，用 `scripts/download-model.sh` 获取。
 
 ### Q: 没有高级 JSON 配置层了？
-A: 是的。`FCITX_CONFIGURATION` 宏已能满足当前所有配置需求（ASR 后端 + OpenAI/Mistral/Volcengine 子配置 + VAD 参数 + LLM 后处理）。将来场景系统需要复杂结构时可能重新引入 JSON 配置。
+A: 是的。`FCITX_CONFIGURATION` 宏已能满足当前所有配置需求（ASR 后端 + OpenAI/Mistral/Volcengine/Sherpa 本地子配置 + VAD 参数 + LLM 后处理）。将来场景系统需要复杂结构时可能重新引入 JSON 配置。
 
 ### Q: 会话结果会乱序吗？
 A: 不会。v4 的 `ResultCoordinator + OrderedResultBuffer` 以 utteranceId 为序键重排并发会话的最终结果，并按 generation 过滤过期激活；连续语音段的最终结果永远按说话顺序上屏。若某段会话永久无终态，闸门会在其停滞超过 40s 后以超时错误放行该段并推进，后续段仍按序上屏（不会出现「后面全部消失」）。
@@ -383,6 +396,7 @@ A: 不会。v4 的 `ResultCoordinator + OrderedResultBuffer` 以 utteranceId 为
 ## 相关文档
 
 - [组件详述](component-details.md)（engine / config / capture / VAD / pipeline / ASR / 队列的接口与实现细节）
+- [运行时调用序列](runtime-call-sequence.md)（线程、队列与各阶段时序）
 - [v4 会话模型设计](v4-asr-session-model.md)（AsrSession 抽象与线程模型的详细设计）
 - [ADR-0001：GPT-Realtime 流式实时转录](adr/ADR-0001-gpt-realtime-asr.md)
 - [架构评审（2026-07-05）](reviews/2026-07-05-architecture-review.md)

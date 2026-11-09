@@ -1,9 +1,9 @@
-# ADR-2026-09-02：sherpa-onnx 离线后端支持 X-ASR 非流式模型
+# ADR-0005：sherpa-onnx 离线后端支持 X-ASR 非流式模型
 
-> 状态：已接受（PoC 已通过）
+> 状态：已实现（PoC 已通过；代码见 `sherpa_offline_asr.{h,cpp}`）
 > 日期：2026-09-02
 > 决策方：@architect
-> 关联：调研报告 `docs/architecture/reviews/2026-09-02-sherpa-x-asr-offline-research.md`；sherpa-onnx PR #3656/#3662；v4-asr-session-model.md（"本地 ASR 实现待 v5"）
+> 关联：调研报告 `docs/architecture/reviews/2026-09-02-sherpa-x-asr-offline-research.md`；sherpa-onnx PR #3656/#3662；`docs/architecture/v4-asr-session-model.md`、`docs/architecture/runtime-call-sequence.md`
 
 ## 背景
 
@@ -18,21 +18,21 @@
 
 ### D2：新增独立离线后端文件，不改写现有流式实现
 - 新建 `src/addon/asr/sherpa_offline_asr.cpp/.h`，包含：
-  - `SherpaOfflineRecognizerHolder`：共享持有 `SherpaOnnxOfflineRecognizer`，互斥锁串行化 decode，仿现有 holder 生命周期（防热重载 UAF）。
-  - `SherpaOfflineAsrSession`：`FeedAudio` 缓冲 PCM（复用现有队列/vector 模式）；`End()` 后 worker 一次性 `AcceptWaveformOfflineStream` → `DecodeOfflineStream` → `GetOfflineStreamResult` → 回调 `(text, isFinal=true)`。
+  - `SherpaOfflineRecognizerHolder`：共享持有 `SherpaOnnxOfflineRecognizer`，仿现有 holder 生命周期（防热重载 UAF）。不加锁：每次解码使用独立 stream，recognizer 只读，onnxruntime session 线程安全。
+  - `SherpaOfflineAsrSession`：`FeedAudio` 缓冲 PCM；`StartWorker()` 起等待线程，`End()` 唤醒后一次性 `AcceptWaveformOffline` → `DecodeOfflineStream` → `GetOfflineStreamResult` → 回调 `(text, isFinal=true)`。
   - `SherpaOfflineAsrEngine`：`Name()="sherpa_offline"`。
 - 理由：与 RealtimeAsrEngine 先例一致（ADR-2026-08-07 D3，SRP）；现有流式 zipformer 在线模型（download-model.sh 的 xlarge）继续可用。
 
-### D3：离线模型配置使用 BPE 建模单元
+### D3：离线模型配置沿用 cjkchar 建模单元，不传 bpe_vocab
 - `SherpaOnnxOfflineRecognizerConfig.model_config`：
   - `transducer.{encoder,decoder,joiner}` 指向 X-ASR 三件套。
   - `tokens` = tokens.txt。
-  - `bpe_vocab` = bpe.model（X-ASR 为 BPE 模型，**必须**配置，现有 cjkchar 配置不可复用）。
-  - `modeling_unit = "bpe"`。
+  - `modeling_unit = "cjkchar"`：中文逐字、英文按空格分词后送入符号表；符号表缺失的 token 由 sherpa-onnx 的 UTF-8 字节回退（`<0xXX>`）兜底。
+  - `bpe_vocab` 必须留空。传 `bpe.model`（sentencepiece 二进制 proto）会让 `Ssentencepiece::LoadVocab` 解析失败并 `exit(-1)` 终止进程；热词编码在 cjkchar 模式下不依赖 bpe 词表。
   - `num_threads`/`provider="cpu"` 沿用现有配置。
-  - `decoding_method`：无热词 `greedy_search`，有热词 `modified_beam_search`（沿用现有逻辑）。
+  - `decoding_method`：无热词 `greedy_search`，有热词 `modified_beam_search`。
   - `enable_endpoint` 概念不存在于离线；断句仍由 Pipeline VAD 主导。
-- 现有 `ResolveSherpaOnnxModelPaths` 前缀匹配可复用（encoder/decoder/joiner 命名兼容），需补 `bpe.model` 强制探测与校验。
+- 模型/热词路径探测抽到 `src/addon/asr/utils/sherpa_paths.{h,cpp}`，与流式后端共用。
 
 ### D4：配置层新增离线后端开关
 - `voiceinput-config.h` 后端枚举新增 `sherpa_offline`（与现有 4 后端平级），或 Sherpa 配置加 `UseOffline` 布尔。
@@ -58,7 +58,7 @@
 **风险与缓解**：
 - CPU 延迟过高 → PoC 实测，必要时限制单句时长。
 - BPE 配置错误 → Init 校验 + 测试音频回归。
-- 取消不可中断 → worker 循环检查 cancelled，解码后丢弃。
+- 取消不可中断 → 解码前检查 cancelled；解码完成后发现取消则丢弃结果。
 
 ## 待办（实施前置）
 - [x] PoC：本地 onnxruntime 跑官方 test_onnx.py + sherpa 离线 demo，验证解码与延迟（调研报告 §7）—— **已通过**：RTF≈0.04，热词 bpe_vocab 格式限制已记录。
