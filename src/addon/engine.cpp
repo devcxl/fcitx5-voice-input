@@ -399,9 +399,12 @@ std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
     } else if (backend == "sherpa_offline") {
         asrConfig.modelPath = *sherpaOfflineConfig_.modelDir;
         asrConfig.numThreads = *sherpaOfflineConfig_.numThreads;
+        asrConfig.hotwordsFile = *sherpaOfflineConfig_.hotwordsFile;
+        asrConfig.hotwordsScore = static_cast<float>(*sherpaOfflineConfig_.hotwordsScore);
         FCITX_INFO() << "[voice-input] SherpaOffline config: modelDir="
                      << (asrConfig.modelPath.empty() ? "(auto)" : asrConfig.modelPath)
-                     << " threads=" << asrConfig.numThreads;
+                     << " threads=" << asrConfig.numThreads
+                     << " hotwordsScore=" << asrConfig.hotwordsScore;
         asr = std::make_unique<SherpaOfflineAsrEngine>();
     } else {
         asrConfig.apiEndpoint = *openaiConfig_.baseUrl;

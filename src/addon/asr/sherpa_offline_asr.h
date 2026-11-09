@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -19,28 +20,30 @@
 namespace fcitx {
 
 #ifdef HAVE_SHERPA_ONNX
-/// 线程安全封装 SherpaOnnxOfflineRecognizer 生命周期及并发解码操作。
-/// 由 Engine 和所有 Session 共享持有，避免热重载时发生 UAF。
+/// 持有 SherpaOnnxOfflineRecognizer，由 Engine 和所有 Session 共享。
+///
+/// 生命周期由 shared_ptr 管理，热重载时旧会话不会持有已销毁的 recognizer。
+/// 不加锁：每次 Transcribe 使用独立 stream，recognizer 只读；onnxruntime 的
+/// session 本身线程安全（与 sherpa-onnx 官方多线程解码示例一致）。
 class SherpaOfflineRecognizerHolder {
 public:
-    explicit SherpaOfflineRecognizerHolder(const SherpaOnnxOfflineRecognizer* recognizer);
+    explicit SherpaOfflineRecognizerHolder(
+        const SherpaOnnxOfflineRecognizer* recognizer);
     ~SherpaOfflineRecognizerHolder();
 
     SherpaOfflineRecognizerHolder(const SherpaOfflineRecognizerHolder&) = delete;
-    SherpaOfflineRecognizerHolder& operator=(const SherpaOfflineRecognizerHolder&) = delete;
+    SherpaOfflineRecognizerHolder& operator=(
+        const SherpaOfflineRecognizerHolder&) = delete;
 
     const SherpaOnnxOfflineRecognizer* Raw() const { return recognizer_; }
-    const SherpaOnnxOfflineStream* CreateStream() const;
-    void DestroyStream(const SherpaOnnxOfflineStream* stream) const;
 
     /// 整段音频离线解码（Accept + Decode + GetResult），一次调用完成。
-    /// 返回转写文本；失败或取消返回空串。
+    /// 返回转写文本；失败、取消或空音频返回空串。
     std::string Transcribe(const float* pcm, size_t frames,
                            const std::atomic<bool>& cancelled);
 
 private:
     const SherpaOnnxOfflineRecognizer* recognizer_ = nullptr;
-    mutable std::mutex mutex_;
 };
 #endif
 
@@ -63,14 +66,20 @@ public:
     void StartWorker() override;
 
 private:
-    void TranscribeWorker(std::vector<float> pcm);
+    /// 等待 End()/Cancel()，整段解码后发出唯一的 final 结果。
+    void WorkerLoop();
+    void TranscribeUtterance(std::vector<float> pcm);
 
 #ifdef HAVE_SHERPA_ONNX
     std::shared_ptr<SherpaOfflineRecognizerHolder> holder_;
 #endif
 
+    // FeedAudio/End 与 worker 之间的缓冲交接
     std::vector<float> pcmBuffer_;
     std::mutex bufferMutex_;
+    std::condition_variable bufferCv_;
+    bool endRequested_ = false;
+
     std::unique_ptr<std::thread> workerThread_;
 };
 

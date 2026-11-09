@@ -209,6 +209,13 @@ FCITX_CONFIGURATION(SherpaOfflineAsrConfig,
         this, "NumThreads", _("CPU 推理线程数"), 2,
         IntConstrain(1, 16)};
 
+    Option<std::string> hotwordsFile{
+        this, "HotwordsFile", _("热词文件路径 (可选)"), ""};
+
+    Option<int, IntConstrain> hotwordsScore{
+        this, "HotwordsScore", _("热词提权加分 (分值 1~10)"), 2,
+        IntConstrain(1, 10)};
+
     Option<bool> autoCommit{
         this, "AutoCommit", _("无 LLM 时自动上屏"), true};
 );

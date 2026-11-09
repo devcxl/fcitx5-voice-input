@@ -1,133 +1,16 @@
 #include "sherpa_offline_asr.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
-#include <filesystem>
-#include <vector>
+#include <utility>
 
 #include <fcitx-utils/log.h>
+
+#include "utils/sherpa_paths.h"
 
 namespace fcitx {
 
 #ifdef HAVE_SHERPA_ONNX
-
-namespace {
-
-struct ResolvedPaths {
-    std::string encoder;
-    std::string decoder;
-    std::string joiner;
-    std::string tokens;
-    bool valid = false;
-};
-
-std::string FindMatchingModelFile(const std::string& dir, const std::string& prefix) {
-    namespace fs = std::filesystem;
-    std::string int8_candidate;
-    std::string fp32_candidate;
-
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(dir, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file(ec)) continue;
-        std::string filename = entry.path().filename().string();
-        if (filename.rfind(prefix, 0) == 0 && filename.rfind(".onnx") != std::string::npos) {
-            if (filename.rfind(".int8.onnx") != std::string::npos) {
-                int8_candidate = entry.path().string();
-            } else {
-                fp32_candidate = entry.path().string();
-            }
-        }
-    }
-    return !int8_candidate.empty() ? int8_candidate : fp32_candidate;
-}
-
-ResolvedPaths ResolveSherpaOfflineModelPaths(const AsrEngine::Config& config) {
-    namespace fs = std::filesystem;
-    ResolvedPaths res;
-
-    // 1. 用户显式指定所有文件路径，直接校验
-    if (!config.encoderPath.empty() && !config.decoderPath.empty() &&
-        !config.joinerPath.empty() && !config.tokensPath.empty()) {
-        std::error_code ec;
-        if (fs::exists(config.encoderPath, ec) &&
-            fs::exists(config.decoderPath, ec) &&
-            fs::exists(config.joinerPath, ec) &&
-            fs::exists(config.tokensPath, ec)) {
-            res.encoder = config.encoderPath;
-            res.decoder = config.decoderPath;
-            res.joiner = config.joinerPath;
-            res.tokens = config.tokensPath;
-            res.valid = true;
-            return res;
-        }
-    }
-
-    // 2. 候选模型根目录列表（与在线 sherpa 后端一致）
-    std::vector<std::string> baseDirs;
-    if (!config.modelPath.empty()) {
-        baseDirs.push_back(config.modelPath);
-    }
-
-    const char* home = std::getenv("HOME");
-    const char* xdgData = std::getenv("XDG_DATA_HOME");
-    std::string userShare = xdgData ? std::string(xdgData)
-                                    : (home ? std::string(home) + "/.local/share" : "");
-    if (!userShare.empty()) {
-        baseDirs.push_back(userShare + "/fcitx5/voice-input/models");
-    }
-    baseDirs.push_back("/usr/local/share/fcitx5/voice-input/models");
-
-    auto checkDir = [&](const std::string& dir) -> bool {
-        std::error_code ec;
-        if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) {
-            return false;
-        }
-
-        std::string enc = config.encoderPath.empty() ? FindMatchingModelFile(dir, "encoder") : config.encoderPath;
-        std::string dec = config.decoderPath.empty() ? FindMatchingModelFile(dir, "decoder") : config.decoderPath;
-        std::string joi = config.joinerPath.empty() ? FindMatchingModelFile(dir, "joiner") : config.joinerPath;
-        std::string tok = config.tokensPath.empty() ? (fs::exists(fs::path(dir) / "tokens.txt", ec) ? (fs::path(dir) / "tokens.txt").string() : "") : config.tokensPath;
-
-        if (!enc.empty() && !dec.empty() && !joi.empty() && !tok.empty()) {
-            res.encoder = enc;
-            res.decoder = dec;
-            res.joiner = joi;
-            res.tokens = tok;
-            res.valid = true;
-            FCITX_INFO() << "[voice-input:sherpa_offline] Found valid model directory: " << dir;
-            return true;
-        }
-        return false;
-    };
-
-    for (const auto& base : baseDirs) {
-        std::error_code ec;
-        if (!fs::exists(base, ec) || !fs::is_directory(base, ec)) {
-            continue;
-        }
-
-        // 优先检查根目录自身
-        if (checkDir(base)) {
-            return res;
-        }
-
-        // 遍历根目录下的各子文件夹进行智能探测
-        for (const auto& entry : fs::directory_iterator(base, ec)) {
-            if (ec) break;
-            if (entry.is_directory(ec)) {
-                if (checkDir(entry.path().string())) {
-                    return res;
-                }
-            }
-        }
-    }
-
-    return res;
-}
-
-} // namespace
 
 // -------------------------------------------------------------
 // SherpaOfflineRecognizerHolder 实现
@@ -143,27 +26,6 @@ SherpaOfflineRecognizerHolder::~SherpaOfflineRecognizerHolder() {
     }
 }
 
-const SherpaOnnxOfflineStream* SherpaOfflineRecognizerHolder::CreateStream() const {
-    if (!recognizer_) return nullptr;
-    try {
-        return SherpaOnnxCreateOfflineStream(recognizer_);
-    } catch (const std::exception& e) {
-        FCITX_ERROR() << "[voice-input:sherpa_offline] CreateStream exception: " << e.what();
-        return nullptr;
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-void SherpaOfflineRecognizerHolder::DestroyStream(
-    const SherpaOnnxOfflineStream* stream) const {
-    if (stream) {
-        try {
-            SherpaOnnxDestroyOfflineStream(stream);
-        } catch (...) {}
-    }
-}
-
 std::string SherpaOfflineRecognizerHolder::Transcribe(
     const float* pcm, size_t frames, const std::atomic<bool>& cancelled) {
     if (!recognizer_ || !pcm || frames == 0) return "";
@@ -172,8 +34,6 @@ std::string SherpaOfflineRecognizerHolder::Transcribe(
     const SherpaOnnxOfflineRecognizerResult* result = nullptr;
     std::string text;
 
-    // 解码过程不持有锁（单次调用较长），但 recognizer_ 由 holder 共享且
-    // 引擎在会话全部结束前不会被销毁，解码期间 holder 的成员不会变更。
     try {
         stream = SherpaOnnxCreateOfflineStream(recognizer_);
         if (!stream) return "";
@@ -193,9 +53,11 @@ std::string SherpaOfflineRecognizerHolder::Transcribe(
             text = result->text;
         }
     } catch (const std::exception& e) {
-        FCITX_ERROR() << "[voice-input:sherpa_offline] Transcribe exception: " << e.what();
+        FCITX_ERROR() << "[voice-input:sherpa_offline] Transcribe exception: "
+                      << e.what();
     } catch (...) {
-        FCITX_ERROR() << "[voice-input:sherpa_offline] Transcribe unknown exception";
+        FCITX_ERROR()
+            << "[voice-input:sherpa_offline] Transcribe unknown exception";
     }
 
     if (result) {
@@ -230,39 +92,37 @@ SherpaOfflineAsrSession::~SherpaOfflineAsrSession() {
 }
 
 void SherpaOfflineAsrSession::FeedAudio(const float* pcm, size_t frames) {
-    if (!pcm || frames == 0 || state_->cancelled.load(std::memory_order_relaxed) ||
+    if (!pcm || frames == 0 ||
+        state_->cancelled.load(std::memory_order_relaxed) ||
         state_->finished.load(std::memory_order_relaxed)) {
         return;
     }
+
     std::lock_guard<std::mutex> lock(bufferMutex_);
+    if (endRequested_) return;
     pcmBuffer_.insert(pcmBuffer_.end(), pcm, pcm + frames);
 }
 
 void SherpaOfflineAsrSession::End() {
-    state_->finished.store(true, std::memory_order_release);
-    std::vector<float> buffer;
     {
         std::lock_guard<std::mutex> lock(bufferMutex_);
-        if (pcmBuffer_.empty()) return;
-        buffer.swap(pcmBuffer_);
+        if (endRequested_) return;
+        endRequested_ = true;
     }
+    state_->finished.store(true, std::memory_order_release);
 
-    // 用 shared_from_this 保活会话：worker 线程可能因解码较慢在
-    // JoinWithTimeout 超时后被 detach，此时会话对象仍必须存活。
-    auto self = std::static_pointer_cast<SherpaOfflineAsrSession>(shared_from_this());
-    state_->workerDone.store(false, std::memory_order_release);
-    workerThread_ = std::make_unique<std::thread>(
-        [self, buf = std::move(buffer)]() mutable {
-            self->TranscribeWorker(std::move(buf));
-            self->state_->workerDone.store(true, std::memory_order_release);
-        });
+    // 契约要求调用方先 StartWorker()；此处兜底，避免 End 后无人回收缓冲。
+    if (!workerThread_) StartWorker();
+    bufferCv_.notify_all();
 }
 
 void SherpaOfflineAsrSession::Cancel() {
     state_->cancelled.store(true, std::memory_order_release);
+    bufferCv_.notify_all();
 }
 
-void SherpaOfflineAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout) {
+void SherpaOfflineAsrSession::JoinWithTimeout(
+    std::chrono::milliseconds timeout) {
     if (workerThread_ && workerThread_->joinable()) {
         if (workerThread_->get_id() == std::this_thread::get_id()) {
             workerThread_->detach();
@@ -279,10 +139,35 @@ void SherpaOfflineAsrSession::JoinWithTimeout(std::chrono::milliseconds timeout)
 }
 
 void SherpaOfflineAsrSession::StartWorker() {
-    // 离线解码在 End() 时启动（与 OpenAI 批处理一致），此处无操作。
+    if (workerThread_) return;
+
+    // 用 shared_from_this 保活会话：worker 可能因解码较慢在 JoinWithTimeout
+    // 超时后被 detach，此时会话对象仍必须存活。
+    auto self = std::static_pointer_cast<SherpaOfflineAsrSession>(
+        shared_from_this());
+    state_->workerDone.store(false, std::memory_order_release);
+    workerThread_ = std::make_unique<std::thread>([self]() {
+        self->WorkerLoop();
+        self->state_->workerDone.store(true, std::memory_order_release);
+    });
 }
 
-void SherpaOfflineAsrSession::TranscribeWorker(std::vector<float> pcm) {
+void SherpaOfflineAsrSession::WorkerLoop() {
+    std::vector<float> pcm;
+    {
+        std::unique_lock<std::mutex> lock(bufferMutex_);
+        bufferCv_.wait(lock, [this] {
+            return endRequested_ ||
+                   state_->cancelled.load(std::memory_order_acquire);
+        });
+        if (state_->cancelled.load(std::memory_order_acquire)) return;
+        pcm = std::move(pcmBuffer_);
+    }
+
+    TranscribeUtterance(std::move(pcm));
+}
+
+void SherpaOfflineAsrSession::TranscribeUtterance(std::vector<float> pcm) {
     auto state = state_;
     auto cb = resultCb_;
     auto ecb = errorCb_;
@@ -293,7 +178,17 @@ void SherpaOfflineAsrSession::TranscribeWorker(std::vector<float> pcm) {
         return;
     }
 
-    std::string text = holder_->Transcribe(pcm.data(), pcm.size(), state->cancelled);
+    if (pcm.empty()) {
+        // 空音频也要交出终态：否则该语音段只能等保序闸门停滞放行，
+        // 后续结果会被无谓地扣住。
+        FCITX_WARN() << "[voice-input:sherpa_offline] Empty audio session="
+                     << state->sessionId;
+        if (cb) cb("", true, state->sessionId);
+        return;
+    }
+
+    std::string text =
+        holder_->Transcribe(pcm.data(), pcm.size(), state->cancelled);
 
     if (state->cancelled.load(std::memory_order_acquire)) {
         FCITX_DEBUG() << "[voice-input:sherpa_offline] Cancelled session="
@@ -313,8 +208,8 @@ void SherpaOfflineAsrSession::TranscribeWorker(std::vector<float> pcm) {
         return;
     }
 
-    FCITX_DEBUG() << "[voice-input:sherpa_offline] final session=" << state->sessionId
-                  << " \"" << text << "\"";
+    FCITX_DEBUG() << "[voice-input:sherpa_offline] final session="
+                  << state->sessionId << " len=" << text.size();
     if (cb) cb(text, true, state->sessionId);
 }
 
@@ -329,7 +224,11 @@ SherpaOfflineAsrEngine::~SherpaOfflineAsrEngine() {
 
 bool SherpaOfflineAsrEngine::Init(const Config& config) {
     config_ = config;
-    ResolvedPaths paths = ResolveSherpaOfflineModelPaths(config);
+    SherpaModelPaths paths = ResolveSherpaModelPaths(
+        config.modelPath,
+        {config.encoderPath, config.decoderPath, config.joinerPath,
+         config.tokensPath},
+        "voice-input:sherpa_offline");
     if (!paths.valid) {
         FCITX_ERROR() << "[voice-input:sherpa_offline] Failed to find valid model files. "
                       << "Please check encoder, decoder, joiner, tokens.txt.";
@@ -349,11 +248,42 @@ bool SherpaOfflineAsrEngine::Init(const Config& config) {
     c_cfg.model_config.num_threads = std::max(1, config.numThreads);
     c_cfg.model_config.provider = "cpu";
 
-    // X-ASR 为 BPE 建模单元，但 greedy_search 解码仅依赖 tokens.txt 直接映射，
-    // 无需 bpe_vocab。切勿传入 bpe.model：Ssentencepiece::LoadVocab 期望
-    // "token score" 文本格式，传二进制 proto 会直接 exit(-1) 终止进程。
-    c_cfg.decoding_method = "greedy_search";
+    // X-ASR 词表里汉字只有 "▁汉字" 形态（每个汉字单独成词），热词需要逐字拆分
+    // 并用 bpe 编码；常规中文模型仍是 cjkchar。两种情况下都不配置 bpe.model：
+    // Ssentencepiece 期望 "token score" 文本词表，传二进制 proto 会 exit(-1)。
+    constexpr const char* kTag = "voice-input:sherpa_offline";
+    c_cfg.model_config.modeling_unit = "cjkchar";
     c_cfg.max_active_paths = 8;
+    c_cfg.decoding_method = "greedy_search";
+
+    std::string hotwordsFile;
+    std::string bpeVocab;
+    const std::string hotwordsPath =
+        ResolveSherpaHotwordsFile(config.hotwordsFile, kTag);
+    if (!hotwordsPath.empty()) {
+        const HotwordEncoding encoding = DetectHotwordEncoding(paths.tokens);
+        hotwordsFile = PrepareSherpaHotwordsFile(hotwordsPath, encoding, kTag);
+        if (!hotwordsFile.empty()) {
+            if (encoding == HotwordEncoding::CjkChar) {
+                c_cfg.model_config.modeling_unit = "cjkchar";
+            } else {
+                c_cfg.model_config.modeling_unit = "bpe";
+                bpeVocab = ResolveSherpaBpeVocab(paths.tokens);
+                c_cfg.model_config.bpe_vocab = bpeVocab.c_str();
+            }
+            c_cfg.hotwords_file = hotwordsFile.c_str();
+            c_cfg.hotwords_score =
+                config.hotwordsScore > 0 ? config.hotwordsScore : 2.0f;
+            c_cfg.decoding_method = "modified_beam_search";
+            FCITX_INFO() << "[" << kTag << "] Hotwords enabled: " << hotwordsFile
+                         << " encoding="
+                         << (encoding == HotwordEncoding::CjkChar ? "cjkchar"
+                             : encoding == HotwordEncoding::BpePrefixed
+                                 ? "bpe(per-char)"
+                                 : "bpe")
+                         << " score=" << c_cfg.hotwords_score;
+        }
+    }
 
     const SherpaOnnxOfflineRecognizer* rawRecognizer = nullptr;
     try {
@@ -373,8 +303,9 @@ bool SherpaOfflineAsrEngine::Init(const Config& config) {
     }
 
     holder_ = std::make_shared<SherpaOfflineRecognizerHolder>(rawRecognizer);
-    FCITX_INFO() << "[voice-input:sherpa_offline] Initialized successfully. encoder=" << paths.encoder
-                 << " decoder=" << paths.decoder << " joiner=" << paths.joiner
+    FCITX_INFO() << "[voice-input:sherpa_offline] Initialized successfully. encoder="
+                 << paths.encoder << " decoder=" << paths.decoder
+                 << " joiner=" << paths.joiner
                  << " threads=" << c_cfg.model_config.num_threads;
     return true;
 }
@@ -389,7 +320,8 @@ AsrSessionStart SherpaOfflineAsrEngine::StartSession() {
     }
 
     const uint64_t sid = NextSessionId();
-    auto session = std::make_shared<SherpaOfflineAsrSession>(holder_, errorCb_, sid);
+    auto session =
+        std::make_shared<SherpaOfflineAsrSession>(holder_, errorCb_, sid);
     session->SetResultCallback(resultCb_);
     sessions_[sid] = session;
 
