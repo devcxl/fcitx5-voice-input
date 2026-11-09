@@ -257,17 +257,17 @@ if(SHERPA_ONNX_FOUND)
     target_link_libraries(voice-input-addon PRIVATE ${SHERPA_ONNX_LIBRARIES})
     target_compile_definitions(voice-input-addon PRIVATE HAVE_SHERPA_ONNX)
     if(_sherpa_is_target)
-        # submodule 模式：将生成的共享库加入 RPATH
+        # submodule 模式：sherpa 库与 addon 安装在同一目录，$ORIGIN 即可解析。
+        # 不把标准库目录写进 RUNPATH：rpmbuild 的 check-rpaths 会拒绝
+        # "standard runpath '/usr/lib64'"，普通库路径由 ldconfig 负责。
         set_target_properties(voice-input-addon PROPERTIES
             BUILD_RPATH "$<TARGET_FILE_DIR:sherpa-onnx-c-api>"
-            INSTALL_RPATH "$ORIGIN:$ORIGIN/..:${CMAKE_INSTALL_FULL_LIBDIR}"
-            INSTALL_RPATH_USE_LINK_PATH TRUE
+            INSTALL_RPATH "$ORIGIN:$ORIGIN/.."
         )
     elseif(_sherpa_lib_dir)
         set_target_properties(voice-input-addon PROPERTIES
             BUILD_RPATH "${_sherpa_lib_dir}"
-            INSTALL_RPATH "$ORIGIN:$ORIGIN/..:${CMAKE_INSTALL_FULL_LIBDIR}"
-            INSTALL_RPATH_USE_LINK_PATH TRUE
+            INSTALL_RPATH "$ORIGIN:$ORIGIN/.."
         )
     endif()
 endif()
