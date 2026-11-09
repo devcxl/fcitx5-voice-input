@@ -3,6 +3,7 @@
 > 状态：已完成（PoC 已执行）
 > 日期：2026-09-02
 > 关联：sherpa-onnx PR #3656 / #3662；模型 `sherpa-onnx-x-asr-zipformer-transducer-zh-en-int8-2026-06-03`
+> 注：文中 submodule 提交 16586713f 含本地未推送的 hotwords 字节回退补丁，CI 无法拉取，已回退到上游 34eba5a（见 [ADR-0005](../adr/ADR-0005-sherpa-x-asr-offline-asr.md)）。
 
 ---
 
