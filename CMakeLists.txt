@@ -195,6 +195,7 @@ set(ADDON_SOURCES
     src/addon/asr/asr_engine.cpp
     src/addon/asr/session_reaper.cpp
     src/addon/asr/utils/base64.cpp
+    src/addon/asr/utils/sherpa_paths.cpp
     src/addon/asr/utils/chat_asr_request.cpp
     src/addon/llm/llm_client.cpp
 )
@@ -228,6 +229,7 @@ set(ADDON_HEADERS
     src/addon/utils/audio_buffer.h
     src/addon/utils/thread_safe_queue.h
     src/addon/asr/utils/base64.h
+    src/addon/asr/utils/sherpa_paths.h
     src/addon/asr/utils/chat_asr_request.h
 )
 

@@ -20,6 +20,22 @@ target_include_directories(audio_frame_assembler_test PRIVATE
 
 add_test(NAME audio_frame_assembler_test COMMAND audio_frame_assembler_test)
 
+add_executable(sherpa_paths_test
+    sherpa_paths_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/sherpa_paths.cpp
+)
+
+target_include_directories(sherpa_paths_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+)
+
+target_link_libraries(sherpa_paths_test PRIVATE
+    ${FCITX5_LIBRARIES}
+)
+
+add_test(NAME sherpa_paths_test COMMAND sherpa_paths_test)
+
 add_executable(llm_request_cancellation_test
     llm_request_cancellation_test.cpp
     ${CMAKE_SOURCE_DIR}/src/addon/llm/llm_client.cpp

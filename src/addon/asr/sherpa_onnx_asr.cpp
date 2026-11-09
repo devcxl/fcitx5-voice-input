@@ -1,138 +1,16 @@
 #include "sherpa_onnx_asr.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <vector>
 
 #include <fcitx-utils/log.h>
 
+#include "utils/sherpa_paths.h"
+
 namespace fcitx {
 
 #ifdef HAVE_SHERPA_ONNX
-
-namespace {
-
-struct ResolvedPaths {
-    std::string encoder;
-    std::string decoder;
-    std::string joiner;
-    std::string tokens;
-    std::string bpe_vocab;
-    bool valid = false;
-};
-
-std::string FindMatchingModelFile(const std::string& dir, const std::string& prefix) {
-    namespace fs = std::filesystem;
-    std::string int8_candidate;
-    std::string fp32_candidate;
-
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(dir, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file(ec)) continue;
-        std::string filename = entry.path().filename().string();
-        if (filename.rfind(prefix, 0) == 0 && filename.rfind(".onnx") != std::string::npos) {
-            if (filename.rfind(".int8.onnx") != std::string::npos) {
-                int8_candidate = entry.path().string();
-            } else {
-                fp32_candidate = entry.path().string();
-            }
-        }
-    }
-    return !int8_candidate.empty() ? int8_candidate : fp32_candidate;
-}
-
-ResolvedPaths ResolveSherpaOnnxModelPaths(const AsrEngine::Config& config) {
-    namespace fs = std::filesystem;
-    ResolvedPaths res;
-
-    // 1. 如果用户显式指定了所有文件路径，直接校验
-    if (!config.encoderPath.empty() && !config.decoderPath.empty() &&
-        !config.joinerPath.empty() && !config.tokensPath.empty()) {
-        std::error_code ec;
-        if (fs::exists(config.encoderPath, ec) &&
-            fs::exists(config.decoderPath, ec) &&
-            fs::exists(config.joinerPath, ec) &&
-            fs::exists(config.tokensPath, ec)) {
-            res.encoder = config.encoderPath;
-            res.decoder = config.decoderPath;
-            res.joiner = config.joinerPath;
-            res.tokens = config.tokensPath;
-            res.valid = true;
-            return res;
-        }
-    }
-
-    // 2. 候选模型根目录列表
-    std::vector<std::string> baseDirs;
-    if (!config.modelPath.empty()) {
-        baseDirs.push_back(config.modelPath);
-    }
-
-    const char* home = std::getenv("HOME");
-    const char* xdgData = std::getenv("XDG_DATA_HOME");
-    std::string userShare = xdgData ? std::string(xdgData)
-                                    : (home ? std::string(home) + "/.local/share" : "");
-    if (!userShare.empty()) {
-        baseDirs.push_back(userShare + "/fcitx5/voice-input/models");
-    }
-    baseDirs.push_back("/usr/local/share/fcitx5/voice-input/models");
-
-    // 辅助检查单个目录是否包含完整模型文件
-    auto checkDir = [&](const std::string& dir) -> bool {
-        std::error_code ec;
-        if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) {
-            return false;
-        }
-
-        std::string enc = config.encoderPath.empty() ? FindMatchingModelFile(dir, "encoder") : config.encoderPath;
-        std::string dec = config.decoderPath.empty() ? FindMatchingModelFile(dir, "decoder") : config.decoderPath;
-        std::string joi = config.joinerPath.empty() ? FindMatchingModelFile(dir, "joiner") : config.joinerPath;
-        std::string tok = config.tokensPath.empty() ? (fs::exists(fs::path(dir) / "tokens.txt", ec) ? (fs::path(dir) / "tokens.txt").string() : "") : config.tokensPath;
-        std::string bpe = fs::exists(fs::path(dir) / "bpe.model", ec) ? (fs::path(dir) / "bpe.model").string() : "";
-
-        if (!enc.empty() && !dec.empty() && !joi.empty() && !tok.empty()) {
-            res.encoder = enc;
-            res.decoder = dec;
-            res.joiner = joi;
-            res.tokens = tok;
-            res.bpe_vocab = bpe;
-            res.valid = true;
-            FCITX_INFO() << "[voice-input:sherpa_onnx] Found valid model directory: " << dir
-                         << " (bpe_vocab=" << (bpe.empty() ? "none" : bpe) << ")";
-            return true;
-        }
-        return false;
-    };
-
-    for (const auto& base : baseDirs) {
-        std::error_code ec;
-        if (!fs::exists(base, ec) || !fs::is_directory(base, ec)) {
-            continue;
-        }
-
-        // 优先检查根目录自身
-        if (checkDir(base)) {
-            return res;
-        }
-
-        // 遍历根目录下的各子文件夹进行智能探测
-        for (const auto& entry : fs::directory_iterator(base, ec)) {
-            if (ec) break;
-            if (entry.is_directory(ec)) {
-                if (checkDir(entry.path().string())) {
-                    return res;
-                }
-            }
-        }
-    }
-
-    return res;
-}
-
-} // namespace
 
 // -------------------------------------------------------------
 // SherpaRecognizerHolder 实现
@@ -367,7 +245,11 @@ SherpaOnnxAsrEngine::~SherpaOnnxAsrEngine() {
 
 bool SherpaOnnxAsrEngine::Init(const Config& config) {
     config_ = config;
-    ResolvedPaths paths = ResolveSherpaOnnxModelPaths(config);
+    SherpaModelPaths paths = ResolveSherpaModelPaths(
+        config.modelPath,
+        {config.encoderPath, config.decoderPath, config.joinerPath,
+         config.tokensPath},
+        "voice-input:sherpa_onnx");
     if (!paths.valid) {
         FCITX_ERROR() << "[voice-input:sherpa_onnx] Failed to find valid model files. "
                       << "Please check encoder, decoder, joiner, tokens.txt.";
@@ -392,24 +274,11 @@ bool SherpaOnnxAsrEngine::Init(const Config& config) {
     // 断句由 Pipeline 的 Silero VAD 统一控制，关闭内置断句避免双重切分冲突
     c_cfg.enable_endpoint                 = 0;
 
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    std::string hotwordsPath = config.hotwordsFile;
-
     // 如果未显式配置热词路径，自动探测默认位置
-    if (hotwordsPath.empty()) {
-        const char* home = std::getenv("HOME");
-        const char* xdgData = std::getenv("XDG_DATA_HOME");
-        std::string userShare = xdgData ? std::string(xdgData)
-                                        : (home ? std::string(home) + "/.local/share" : "");
-        if (!userShare.empty() && fs::exists(userShare + "/fcitx5/voice-input/hotwords.txt", ec)) {
-            hotwordsPath = userShare + "/fcitx5/voice-input/hotwords.txt";
-        } else if (home && fs::exists(std::string(home) + "/.config/fcitx5/hotwords.txt", ec)) {
-            hotwordsPath = std::string(home) + "/.config/fcitx5/hotwords.txt";
-        }
-    }
+    const std::string hotwordsPath = ResolveSherpaHotwordsFile(
+        config.hotwordsFile, "voice-input:sherpa_onnx");
 
-    if (!hotwordsPath.empty() && fs::exists(hotwordsPath, ec)) {
+    if (!hotwordsPath.empty()) {
         c_cfg.hotwords_file               = hotwordsPath.c_str();
         c_cfg.hotwords_score              = config.hotwordsScore > 0 ? config.hotwordsScore : 2.0f;
         c_cfg.decoding_method             = "modified_beam_search";
