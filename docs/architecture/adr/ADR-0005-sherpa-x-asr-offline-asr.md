@@ -27,7 +27,7 @@
 - `SherpaOnnxOfflineRecognizerConfig.model_config`：
   - `transducer.{encoder,decoder,joiner}` 指向 X-ASR 三件套。
   - `tokens` = tokens.txt。
-  - `modeling_unit = "cjkchar"`：中文逐字、英文按空格分词后送入符号表；符号表缺失的 token 由 sherpa-onnx 的 UTF-8 字节回退（`<0xXX>`）兜底。
+  - `modeling_unit` 由模型词表形态决定：裸汉字词表用 `cjkchar`；X-ASR 这类只有 `▁汉字` 的词表用 `bpe`，并把热词逐字拆开（见 `sherpa_paths.cc`），避免第二个汉字起被编码成 `<unk>`。
   - `bpe_vocab` 必须留空。传 `bpe.model`（sentencepiece 二进制 proto）会让 `Ssentencepiece::LoadVocab` 解析失败并 `exit(-1)` 终止进程；热词编码在 cjkchar 模式下不依赖 bpe 词表。
   - `num_threads`/`provider="cpu"` 沿用现有配置。
   - `decoding_method`：无热词 `greedy_search`，有热词 `modified_beam_search`。
@@ -40,7 +40,7 @@
 - `engine.cpp::CreateAsrEngine` 增加对应分支，复用 `modelDir`/`numThreads`/`hotwords*` 配置字段。
 
 ### D5：CMake 与依赖零改动
-- 本地 submodule（16586713f，2026-08-28）已含离线 zipformer2 transducer 编译单元与 C API；`HAVE_SHERPA_ONNX` 编译定义已覆盖。
+- 本地 submodule（34eba5a，上游 master）已含离线 zipformer2 transducer 编译单元与 C API；`HAVE_SHERPA_ONNX` 编译定义已覆盖。
 - 仅需确认 target 源文件收集方式（glob 或显式列表），新增 .cpp 纳入编译。
 
 ### D6：交互语义 = 整句出结果（无增量 preedit）
