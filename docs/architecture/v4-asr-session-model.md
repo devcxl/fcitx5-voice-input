@@ -375,7 +375,7 @@ setConfig(rawConfig)
 | ConnectionPool（WS 连接复用） | WS 协议的 reset 语义不统一，引入状态污染风险 | v4.2 |
 | 每句一个 WS 连接 | 简单可靠，稳定后评估复用 | v4.1 ✅ |
 | 自动重试 | 先保证基础正确，再考虑可靠性 | v4.3 |
-| 本地 ASR sherpa-onnx | 接口已预留，实现待后续 | v5 |
+| 本地 ASR sherpa-onnx | 原计划 v5；v0.6 已接入流式与 X-ASR 离线两个本地后端 | 已交付 ✅ |
 
 ---
 

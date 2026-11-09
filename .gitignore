@@ -15,5 +15,5 @@ docs/.vitepress/dist/
 # 本地 agent skill 工作区与元数据
 .agents/
 
-# 本地预留目录（未注册为 submodule）
-third_party/sherpa-onnx/
+# 本地热词表
+/hotwords.txt

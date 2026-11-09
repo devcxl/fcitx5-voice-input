@@ -13,6 +13,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 # ─── Options ─────────────────────────────────────────────────────────────────
 option(BUILD_TESTS "Build unit tests" OFF)
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to an ONNX Runtime installation")
+option(ENABLE_SHERPA_ONNX "Enable Sherpa-ONNX local streaming ASR" ON)
+set(SHERPA_ONNX_ROOT "" CACHE PATH "Path to a sherpa-onnx installation")
 
 # ─── Dependencies ─────────────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
@@ -102,6 +104,80 @@ endif()
 set(VOICE_INPUT_MODEL_DIR "${CMAKE_INSTALL_FULL_DATADIR}/fcitx5/voice-input/models")
 message(STATUS "Silero VAD enabled with model: ${SILERO_VAD_MODEL_SOURCE}")
 
+# Sherpa-ONNX local streaming ASR (optional)
+if(ENABLE_SHERPA_ONNX)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/sherpa-onnx/CMakeLists.txt")
+        # 优先使用 Submodule 源码内嵌编译
+        set(SHERPA_ONNX_ENABLE_BINARY OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_CHECK OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_PORTAUDIO OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_C_API ON CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_TTS OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_BUILD_C_API_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE ON CACHE BOOL "" FORCE)
+        set(SHERPA_ONNX_ENABLE_GPU OFF CACHE BOOL "" FORCE)
+        set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+
+        if(ONNXRUNTIME_INCLUDE_DIRS)
+            set(ENV{SHERPA_ONNXRUNTIME_INCLUDE_DIR} "${ONNXRUNTIME_INCLUDE_DIRS}")
+        endif()
+        if(ONNXRUNTIME_LIBRARIES)
+            get_filename_component(_ort_libdir "${ONNXRUNTIME_LIBRARIES}" DIRECTORY)
+            set(ENV{SHERPA_ONNXRUNTIME_LIB_DIR} "${_ort_libdir}")
+        endif()
+
+        add_subdirectory(third_party/sherpa-onnx EXCLUDE_FROM_ALL)
+
+        set(SHERPA_ONNX_FOUND TRUE)
+        set(SHERPA_ONNX_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/third_party/sherpa-onnx")
+        set(SHERPA_ONNX_LIBRARIES sherpa-onnx-c-api)
+        set(_sherpa_is_target TRUE)
+        message(STATUS "Sherpa-ONNX ASR enabled via submodule")
+    else()
+        pkg_check_modules(SHERPA_ONNX QUIET sherpa-onnx)
+        if(NOT SHERPA_ONNX_FOUND)
+            find_path(SHERPA_ONNX_INCLUDE_DIR
+                NAMES sherpa-onnx/c-api/c-api.h
+                HINTS
+                    "${SHERPA_ONNX_ROOT}/include"
+                    /usr/include
+                    /usr/local/include
+            )
+            find_library(SHERPA_ONNX_C_API_LIB
+                NAMES sherpa-onnx-c-api
+                HINTS
+                    "${SHERPA_ONNX_ROOT}/lib"
+                    "${SHERPA_ONNX_ROOT}/lib64"
+                    /usr/lib
+                    /usr/local/lib
+            )
+            if(SHERPA_ONNX_INCLUDE_DIR AND SHERPA_ONNX_C_API_LIB)
+                set(SHERPA_ONNX_FOUND TRUE)
+                set(SHERPA_ONNX_INCLUDE_DIRS "${SHERPA_ONNX_INCLUDE_DIR}")
+                set(SHERPA_ONNX_LIBRARIES "${SHERPA_ONNX_C_API_LIB}")
+                get_filename_component(_sherpa_lib_dir "${SHERPA_ONNX_C_API_LIB}" DIRECTORY)
+                find_library(KALDI_FBANK_LIB
+                    NAMES kaldi-native-fbank-core
+                    HINTS "${_sherpa_lib_dir}"
+                )
+                if(KALDI_FBANK_LIB)
+                    list(APPEND SHERPA_ONNX_LIBRARIES "${KALDI_FBANK_LIB}")
+                endif()
+            endif()
+        endif()
+
+        if(SHERPA_ONNX_FOUND)
+            message(STATUS "Sherpa-ONNX ASR enabled with system library: ${SHERPA_ONNX_INCLUDE_DIRS}")
+        else()
+            message(STATUS "sherpa-onnx not found — Sherpa-ONNX backend built in stub mode")
+        endif()
+    endif()
+endif()
+
 # ─── Sources ──────────────────────────────────────────────────────────────────
 set(ADDON_SOURCES
     src/addon/engine.cpp
@@ -114,9 +190,12 @@ set(ADDON_SOURCES
     src/addon/asr/realtime_asr.cpp
     src/addon/asr/mistral_asr.cpp
     src/addon/asr/volcengine_asr.cpp
+    src/addon/asr/sherpa_onnx_asr.cpp
+    src/addon/asr/sherpa_offline_asr.cpp
     src/addon/asr/asr_engine.cpp
     src/addon/asr/session_reaper.cpp
     src/addon/asr/utils/base64.cpp
+    src/addon/asr/utils/sherpa_paths.cpp
     src/addon/asr/utils/chat_asr_request.cpp
     src/addon/llm/llm_client.cpp
 )
@@ -143,11 +222,14 @@ set(ADDON_HEADERS
     src/addon/asr/realtime_asr.h
     src/addon/asr/mistral_asr.h
     src/addon/asr/volcengine_asr.h
+    src/addon/asr/sherpa_onnx_asr.h
+    src/addon/asr/sherpa_offline_asr.h
     src/addon/llm/llm_client.h
     src/addon/pipeline/pipeline.h
     src/addon/utils/audio_buffer.h
     src/addon/utils/thread_safe_queue.h
     src/addon/asr/utils/base64.h
+    src/addon/asr/utils/sherpa_paths.h
     src/addon/asr/utils/chat_asr_request.h
 )
 
@@ -170,6 +252,25 @@ target_include_directories(voice-input-addon PRIVATE
     ${ONNXRUNTIME_INCLUDE_DIRS}
     src/addon
 )
+if(SHERPA_ONNX_FOUND)
+    target_include_directories(voice-input-addon PRIVATE ${SHERPA_ONNX_INCLUDE_DIRS})
+    target_link_libraries(voice-input-addon PRIVATE ${SHERPA_ONNX_LIBRARIES})
+    target_compile_definitions(voice-input-addon PRIVATE HAVE_SHERPA_ONNX)
+    if(_sherpa_is_target)
+        # submodule 模式：sherpa 库与 addon 安装在同一目录，$ORIGIN 即可解析。
+        # 不把标准库目录写进 RUNPATH：rpmbuild 的 check-rpaths 会拒绝
+        # "standard runpath '/usr/lib64'"，普通库路径由 ldconfig 负责。
+        set_target_properties(voice-input-addon PROPERTIES
+            BUILD_RPATH "$<TARGET_FILE_DIR:sherpa-onnx-c-api>"
+            INSTALL_RPATH "$ORIGIN:$ORIGIN/.."
+        )
+    elseif(_sherpa_lib_dir)
+        set_target_properties(voice-input-addon PROPERTIES
+            BUILD_RPATH "${_sherpa_lib_dir}"
+            INSTALL_RPATH "$ORIGIN:$ORIGIN/.."
+        )
+    endif()
+endif()
 # 录音库仅在编译期需要头文件（结构体/枚举/宏定义）；
 # 运行期通过 dlopen 按需加载（见 pulse/pipewire capture 的 LoadLib），
 # 因此不链接这两个库——避免 DT_NEEDED 硬依赖，库升级/soname 变更时 addon 仍可加载。
@@ -242,6 +343,12 @@ configure_file(
 install(TARGETS voice-input-addon
     LIBRARY DESTINATION ${FCITX5_ADDON_DIR}
 )
+
+if(SHERPA_ONNX_FOUND AND _sherpa_is_target)
+    install(TARGETS sherpa-onnx-c-api
+        LIBRARY DESTINATION ${FCITX5_ADDON_DIR}
+    )
+endif()
 
 install(FILES ${CMAKE_BINARY_DIR}/share/fcitx5/addon/voiceinput.conf
     DESTINATION share/fcitx5/addon

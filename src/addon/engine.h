@@ -15,6 +15,8 @@
 
 #include "config/voiceinput-config.h"
 #include "asr/asr_engine.h"
+#include "asr/sherpa_onnx_asr.h"
+#include "asr/sherpa_offline_asr.h"
 #include "pipeline/pipeline.h"
 #include "types.h"
 
@@ -65,6 +67,8 @@ private:
     OpenAIAsrConfig openaiConfig_;
     VolcengineAsrConfig volcengineConfig_;
     MistralAsrConfig mistralConfig_;
+    SherpaOnnxAsrConfig sherpaOnnxConfig_;
+    SherpaOfflineAsrConfig sherpaOfflineConfig_;
 
     // Main-thread only: generation checks do not keep an InputContext alive.
     TrackableObjectReference<InputContext> activeIc_;

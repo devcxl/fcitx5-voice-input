@@ -80,11 +80,13 @@ export default withMermaid(
           items: [
             { text: 'ARCHITECTURE（当前）', link: '/architecture/' },
             { text: '组件细节', link: '/architecture/component-details' },
+            { text: '运行时调用序列', link: '/architecture/runtime-call-sequence' },
             { text: 'v4 会话模型设计', link: '/architecture/v4-asr-session-model' },
             { text: 'ADR-0001 GPT-Realtime', link: '/architecture/adr/ADR-0001-gpt-realtime-asr' },
             { text: 'ADR-0002 输入上下文生命周期', link: '/architecture/adr/ADR-0002-input-context-lifetime' },
             { text: 'ADR-0003 WS 会话失败边界', link: '/architecture/adr/ADR-0003-ws-session-failure-boundary' },
             { text: 'ADR-0004 系统音频路由', link: '/architecture/adr/ADR-0004-system-managed-capture-routing' },
+            { text: 'ADR-0005 Sherpa X-ASR 离线', link: '/architecture/adr/ADR-0005-sherpa-x-asr-offline-asr' },
             { text: '架构评审 (2026-07-05)', link: '/architecture/reviews/2026-07-05-architecture-review' },
           ],
         },

@@ -7,7 +7,7 @@
 ```cpp
 class VoiceInputEngine : public fcitx::InputMethodEngineV2 {
     // Fcitx5 生命周期
-    void reloadConfig() override;     // 重载配置（全局 + 3 个后端子配置）
+    void reloadConfig() override;     // 重载配置（全局 + 5 个后端子配置）
     void setConfig() override;        // 配置变更时保存并热更新 pipeline
     void activate() override;         // 切换到语音输入 → pipeline.Start()（复用保留的录音流）
     void deactivate() override;       // 切出 → 按事件类型 Pause() 或 Stop()
