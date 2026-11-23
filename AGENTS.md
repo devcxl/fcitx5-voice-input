@@ -20,8 +20,8 @@ cmake --build build -j"$(nproc)"
 
 ## 依赖
 
-必需：`fcitx5`（pkg-config 名 fcitx5 或 Fcitx5Core）、`jsoncpp`、`libcurl`（>= 7.86.0）、`zlib`、`onnxruntime`（Silero VAD）。
-可选（至少其一）：`pipewire-0.3`（libpipewire-0.3）、`libpulse-simple`。缺少任一录音后端时仅失去对应 capture 后端，addon 仍可构建；两个都缺则 CMake 报错。**运行时**两个库均为 dlopen 延迟加载（无链接期依赖），库升级/soname 变更不影响已安装 addon。
+必需：`fcitx5` 开发包（Debian/Ubuntu `libfcitx5core-dev`，Fedora/openSUSE `fcitx5-devel`；pkg-config 名 fcitx5 或 Fcitx5Core）、`jsoncpp`、`libcurl`（>= 7.86.0）、`zlib`、`onnxruntime`（Silero VAD）、`gettext`（`msgfmt` 编译 `po/`，配置期必需）、`libpulse-simple`（PulseAudio 采集基线）。
+可选：`pipewire-0.3`（libpipewire-0.3）仅提供 PulseAudio 不可用时的直连回退；未安装其开发包时不编入该后端，构建不受影响。**运行时**两个录音库均为 dlopen 延迟加载（无链接期依赖），库升级/soname 变更不影响已安装 addon。
 
 克隆后需执行：`git submodule update --init --recursive`。
 

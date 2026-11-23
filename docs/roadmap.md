@@ -14,7 +14,7 @@
 - [x] v4 会话模型：AsrSession / SessionReaper / ResultCoordinator 保序交付
 - [x] LLM 后处理（流式/非流式，generation 取消）
 - [x] fcitx5-configtool 配置界面（多后端子配置）
-- [x] 多发行版打包（7 发行版 CI 矩阵：DEB / RPM / pkg.tar.zst）
+- [x] 多发行版打包（6 发行版 CI 矩阵：DEB / RPM；Arch 由外部 AUR 维护）
 
 ## 待实现 ⏳
 
