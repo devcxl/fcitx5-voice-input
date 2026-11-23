@@ -49,7 +49,7 @@ sherpa-onnx 本地流式后端（`sherpa_onnx`）使用流式 zipformer transduc
 
 也可以用 `scripts/export-hotwords.sh` 从 fcitx5 自定义短语与用户词库导出默认位置的热词文件。
 
-热词文件为 UTF-8 纯文本，每行一个热词（如 `深度学习`），行尾可附 `:分值` 覆盖 `HotwordsScore`。流式后端把文件原样交给 sherpa-onnx（建模单元固定为 `cjkchar`，按词语整行编码），插件不做切分或改写。检测到可用热词文件时，解码方法自动切换为 `modified_beam_search`，否则使用 `greedy_search`。热词只参与本地解码，不会发送到任何服务器。
+热词文件为 UTF-8 纯文本，每行一个热词（如 `深度学习`）；可在词后加空格和 `:分值` 覆盖该词权重（如 `深度学习 :3`，分值必须与词之间用空白分隔）。流式后端把文件原样交给 sherpa-onnx（建模单元固定为 `cjkchar`，按词语整行编码），插件不做切分或改写。检测到热词文件存在时，解码方法切换为 `modified_beam_search`，否则使用 `greedy_search`。热词只参与本地解码，不会发送到任何服务器。
 
 ## 行为说明
 

@@ -47,12 +47,12 @@ sherpa-onnx X-ASR 离线后端（`sherpa_offline`）使用非流式 zipformer tr
 1. `$XDG_DATA_HOME/fcitx5/voice-input/hotwords.txt`（未设置时为 `~/.local/share/fcitx5/voice-input/hotwords.txt`）
 2. `~/.config/fcitx5/hotwords.txt`
 
-热词文件为 UTF-8 纯文本，每行一个热词，行尾可附 `:分值` 覆盖 `HotwordsScore`。与流式后端不同，离线后端会根据模型目录中 `tokens.txt` 的词表形态自动处理：
+热词文件为 UTF-8 纯文本，每行一个热词；可在词后加空格和 `:分值` 覆盖该词权重（如 `深度学习 :3`，分值必须与词之间用空白分隔）。与流式后端不同，离线后端会根据模型目录中 `tokens.txt` 的词表形态自动处理：
 
 - **裸汉字词表（`cjkchar`）**：直接使用热词文件，按整行词语编码（如 `深度学习`），插件不做拆分。
 - **`▁汉字` 前缀词表（X-ASR 这类每字成词的 BPE 词表）**：把每行汉字逐字拆开、以空格连接并保留行尾分值，写入 `$XDG_CACHE_HOME/fcitx5/voice-input/hotwords-bpe.txt`（未设置时为 `~/.cache/fcitx5/voice-input/hotwords-bpe.txt`），同时切换到 `modeling_unit=bpe`。BPE 词表优先取模型目录下的 `bpe.vocab`，不存在时退回 `tokens.txt`。
 
-热词文件不可读、为空或无法生成缓存文件时，插件告警并关闭热词，后端按 `greedy_search` 继续识别（上述检查发生在 `▁汉字` 词表需要重写热词的路径上）；热词生效时使用 `modified_beam_search` 并应用 `HotwordsScore`。
+热词文件为空、无法读取（`▁汉字` 词表需要重写热词的路径）或无法生成缓存文件时，插件告警并关闭热词，后端按 `greedy_search` 继续识别；`cjkchar` 路径把热词文件原样交给 sherpa-onnx，不预先读取。热词生效时使用 `modified_beam_search` 并应用 `HotwordsScore`。
 
 ## 行为说明
 
