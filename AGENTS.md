@@ -5,7 +5,7 @@
 Fcitx5 addon（共享库），多线程（主线程/Capture/VAD Worker/ASR Worker），无 daemon/CLI/Qt。
 
 **LICENSE**: LGPL v3。  
-**默认 ASR 后端**: OpenAI 兼容 API（whisper-1），预留 AsrEngine 抽象接口。
+**默认 ASR 后端**: OpenAI 兼容 API（whisper-1），已接入 5 个后端（openai / volcengine / mistral / sherpa_onnx / sherpa_offline）。
 
 ## 构建命令
 
@@ -30,11 +30,14 @@ cmake --build build -j"$(nproc)"
 ```
 src/addon/
 ├── engine.cpp/.h          # Fcitx5 InputMethodEngineV2 入口
+├── engine_results.cpp     # 识别结果上屏/状态栏/preedit（engine.cpp 拆分）
 ├── types.h                # AudioFrame/SpeechEvent/AsrResult 类型定义
 ├── voiceinput.conf.in     # addon 配置模板（@PROJECT_VERSION@ 替换）
 ├── config/
-│   └── voiceinput-config.h   # FCITX_CONFIGURATION 宏配置（4 个子配置块：全局/OpenAI/Mistral/Volcengine）
+│   └── voiceinput-config.h   # FCITX_CONFIGURATION 宏配置（6 个：全局 + OpenAI/Mistral/Volcengine/SherpaOnnx/SherpaOffline）
 ├── capture/audio_capture.h      # 音频捕获抽象接口
+├── capture/audio_frame_assembler.h  # 任意长度 float PCM → 固定 512 samples 帧
+├── capture/audio_buffer_segments.h  # PipeWire SPA chunk 环形偏移/stride 遍历
 ├── capture/pulse_audio_capture.cpp/.h  # PulseAudio 音频捕获（优先，直推 FrameQueue）
 ├── capture/pipewire_capture.cpp/.h  # PipeWire 音频捕获（fallback, ringbuffer+drain thread）
 ├── vad/silero_vad.cpp/.h   # Silero ONNX 封装（int16 输入, predict() 返回概率）
@@ -51,11 +54,21 @@ src/addon/
 │   ├── realtime_asr.cpp/.h         # OpenAI Realtime WS 会话（16k→24k 上采样、周期 commit）
 │   ├── volcengine_asr.cpp/.h       # 火山引擎豆包引擎（WS 流式）
 │   ├── mistral_asr.cpp/.h          # Mistral Realtime 引擎（WS 流式）
+│   ├── sherpa_onnx_asr.cpp/.h      # Sherpa-ONNX 本地流式引擎（OnlineRecognizer）
+│   ├── sherpa_offline_asr.cpp/.h   # Sherpa-ONNX X-ASR 离线引擎（OfflineRecognizer，整句解码）
+│   ├── protocol/                   # 纯协议编解码（无状态/无 I/O）
+│   │   ├── realtime_protocol.h     # OpenAI Realtime 事件构建/解析
+│   │   └── volcengine_protocol.h   # 火山引擎 SAUC 帧编解码
 │   └── utils/                      # ASR 内部工具
 │       ├── base64.cpp/.h       # Base64 编解码
+│       ├── chat_asr_request.cpp/.h  # OpenAI 兼容 chat 转录请求体构造
+│       ├── curl_resources.h    # CURL 句柄/头部 RAII
+│       ├── realtime_commit_tracker.h # Realtime commit 在途 item 追踪与终态判定
+│       ├── sherpa_paths.cpp/.h # 本地模型/热词路径探测（两个本地后端共用）
 │       ├── ws_frame_receiver.h # WS 消息重组（跨 TCP 分片保留已收前缀）
 │       ├── ws_frame_sender.h   # WS 发送（单次预算内失败）
-│       └── ws_deadline.h       # 发送/建连截止时间与中止条件
+│       ├── ws_deadline.h       # 发送/建连截止时间与中止条件
+│       └── asr_worker_boundary.h  # worker 异常边界（日志不含异常正文）
 ├── llm/
 │   ├── llm_client.cpp/.h          # LLM 后处理（流式/非流式，generation 取消）
 │   └── llm_request_cancellation.h
@@ -89,7 +102,7 @@ po/
 `docs/architecture/v4-asr-session-model.md`（AsrSession 详细设计，已实现）、
 `docs/architecture/adr/`（ADR 历史决策）与 `docs/architecture/reviews/`（评审记录）。
 
-ARCHITECTURE.md 已同步至 v4 会话模型。[路线图](docs/roadmap.md)中标记为待实现的超前功能（本地 ASR、Command 引擎、场景系统、热词优化）仍是代码与文档的一致状态；LLM 后处理、多发行版打包与单元测试（`tests/` + CI verify job 的 `ctest`）已实现。
+ARCHITECTURE.md 已同步至 v4 会话模型。本地 ASR（`sherpa_onnx` / `sherpa_offline`）已交付；[路线图](docs/roadmap.md)中标记为待实现的超前功能（Command 引擎、场景系统、云端热词增强）仍是代码与文档的一致状态；LLM 后处理、多发行版打包与单元测试（`tests/` + CI `tests` job 的 `ctest`）已实现。
 
 ## CI
 
@@ -98,13 +111,17 @@ GitHub Actions（详见 `.github/workflows/` 与 `.github/actions/build/distro/*
 - `ci.yml`：PR/push 触发。**6 发行版容器矩阵**（ubuntu-24.04 / ubuntu-26.04 /
 debian-12 / debian-13 / fedora-44 / opensuse-tumbleweed），每发行版在
 原生容器内构建原生包（DEB/RPM）；另含链接校验（nm/readelf/dlopen
-smoke，仅 verify job 跑一次）与 build-no-pipewire 回归防护 job。
+smoke，仅 verify job 跑一次）、build-no-pipewire 回归防护 job 与独立的
+`tests` job。
 - `release.yml`：tag `v*` 触发。复用同一构建矩阵，`softprops/action-gh-release`
   v3 生成 draft release（含全部发行版 DEB/RPM 产物）。
 - onnxruntime 双策略：`system`（发行版系统包，DEB 开 dpkg-shlibdeps 自动依赖，
   RPM 由 rpmbuild 自动依赖）或 `download`（upstream release 1.28.0，缓存加速）。
 
-无测试步骤。
+测试：6 发行版 build 矩阵只构建打包、不跑测试；`verify` job 只做构建与链接校验。
+单元/协议级用例在独立 `tests` job 执行：Ubuntu 26.04 容器（系统 libcurl 具备
+WebSocket 支持），`-DBUILD_TESTS=ON` 构建后运行
+`ctest --test-dir build --output-on-failure`。
 
 ## 打包
 

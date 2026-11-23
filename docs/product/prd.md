@@ -11,7 +11,7 @@ change_type: feature
 ## 产品定位与价值
 
 - **免按即说语音输入**：切换输入法即启动；说话自动分段，静音自动提交，无需 Push-to-Talk。
-- **多后端 ASR 可插拔**：默认 OpenAI 兼容 API（whisper-1），另支持火山引擎豆包、Mistral Realtime、OpenAI Realtime 三种 WebSocket 流式后端。
+- **多后端 ASR 可插拔**：默认 OpenAI 兼容 API（whisper-1），另支持火山引擎豆包、Mistral Realtime、OpenAI Realtime 三种 WebSocket 流式后端，以及 sherpa-onnx 本地流式（`sherpa_onnx`）与 X-ASR 离线（`sherpa_offline`）两种本地后端（语音不出本机、无需网络）。
 - **LLM 智能后处理**：可将转写文本送入大语言模型做同音错字修正、排版与标点润色。
 - **发行版全量打包**：DEB/RPM 由 CI 构建，Arch 经 [AUR 包](https://aur.archlinux.org/packages/fcitx5-voice-input)（外部维护）覆盖主流桌面发行版。
 
@@ -33,10 +33,13 @@ change_type: feature
 1. **音频捕获**：PulseAudio 优先、PipeWire 直连回退的双后端；16kHz/mono/int16/512 samples(32ms) 统一音频格式；运行期 `dlopen` 延迟加载音频库（无链接期依赖）。
 2. **VAD 自动分段**：Silero ONNX 唯一后端，Idle/Speaking 状态机，pre-roll 预卷、静音判停、最短/最长语音限幅。
 3. **ASR 抽象与会话管理**：AsrEngine/AsrSession 工厂抽象，会话容量控制（最多 3 活跃）、SessionReaper 防僵尸线程、generation 过滤。
-4. **ASR 后端**：
+4. **ASR 后端**（`ActiveBackend` 五选一）：
    - OpenAI 兼容（默认）：whisper 音频上传 / chat 多模态 / realtime 流式，三种 apiMode；
    - 火山引擎豆包：WebSocket 流式，支持 ITN、标点、语义顺滑(DDC)、二次识别(nonstream)；
-   - Mistral Realtime：16kHz PCM WebSocket 流式。
+   - Mistral Realtime：16kHz PCM WebSocket 流式；
+   - `sherpa_onnx`（本地流式）：sherpa-onnx OnlineRecognizer，边说边出增量，无需网络；
+   - `sherpa_offline`（X-ASR 离线）：sherpa-onnx OfflineRecognizer 整句解码，静音分段后一次性出全文；
+   - 本地后端：模型留空时按默认目录自动探测（模型不随包分发，用 `scripts/download-model.sh` 获取），支持热词文件（`HotwordsFile`/`HotwordsScore`）与 CPU 推理线程数配置，两者均无需网络。
 5. **LLM 后处理**：非流式/流式两类，停顿文本修正后上屏，generation 取消。
 6. **结果汇聚与保序**：多会话并发结果按 utteranceId 保序汇聚，过滤过期 generation。
 7. **Fcitx5 集成 UI**：输入法切换激活/停用、候选栏 preedit 增量预览、状态栏提示（就绪/录音中/修正中/失败）、失焦保流但暂停识别、配置热更新。
@@ -47,10 +50,8 @@ change_type: feature
 
 以下能力当前未实现，明确排除于本产品基线（未来可另行评估）：
 
-- 本地/离线 ASR（Sherpa-ONNX 本地推理）
 - Command 命令引擎（语音触发系统命令/快捷键）
 - 场景系统（按应用窗口差异化配置）
-- 热词/自定义词库优化
 - VAD 多模型支持（仅 Silero ONNX）
 - 手动 Push-to-Talk 交互模式（本产品为免按即说设计）
 
@@ -160,4 +161,4 @@ change_type: feature
 
 # Open Questions
 
-- N/A — 本 PRD 为现状还原，不引入新决策；roadmap 能力（本地 ASR/Command/场景/热词）已在 Out of Scope 中显式标注，待未来单独立项评估。
+- N/A — 本 PRD 为现状还原，不引入新决策；roadmap 中尚未实现的 Command 引擎与场景系统已在 Out of Scope 中显式标注，云端热词与领域词表增强待未来单独立项评估。
