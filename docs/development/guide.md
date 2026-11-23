@@ -75,7 +75,7 @@ ctest --test-dir build --output-on-failure
 src/addon/
 ├── engine.cpp/.h          # Fcitx5 InputMethodEngineV2 入口
 ├── types.h                # AudioFrame/SpeechEvent/AsrResult 类型定义
-├── config/                # FCITX_CONFIGURATION 配置定义（4 个子配置块）
+├── config/                # FCITX_CONFIGURATION 配置定义（全局 + 5 个后端子配置）
 ├── capture/               # 音频捕获：PulseAudio（优先）/ PipeWire（fallback）
 ├── vad/                   # Silero ONNX VAD + Idle/Speaking 状态机
 ├── pipeline/              # 管道编排、结果汇聚（保序 + LLM 后处理）
