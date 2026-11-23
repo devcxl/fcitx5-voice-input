@@ -16,10 +16,13 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 
 ## 测试清单
 
+表按 `tests/CMakeLists.txt` 的 `add_test` 注册项维护；`*` 通配行对应同一测试可执行文件展开的多个场景用例，新增或删除测试须同步本表。
+
 | 测试 | 覆盖范围 | 类型 |
 |------|---------|------|
 | `session_worker_completion_test` | worker 完成标志的等待语义（`WaitForWorkerCompletion`） | 单元 |
 | `audio_frame_assembler_test` | 音频帧组装（16kHz/512 samples 窗口） | 单元 |
+| `sherpa_paths_test` | 本地 ASR 模型路径探测：默认模型目录按前缀匹配 encoder/decoder/joiner 且 int8 优先、无 int8 回退 fp32，模型目录下一层子目录同样探测，显式配置的模型文件优先于目录探测；热词文件存在则采用、缺失返回空；`DetectHotwordEncoding` 三种词表形态（`▁` 前缀汉字→逐字 BPE、裸汉字→cjkchar、无汉字→BPE）；`PrepareSherpaHotwordsFile` 汉字逐字拆分、保留 `:score`、写缓存，cjkchar 保留原文件；`ResolveSherpaBpeVocab` 优先 `bpe.vocab`、否则回退 `tokens.txt` | 单元 |
 | `llm_request_cancellation_test` | LLM 请求按 generation 取消/发布门 | 单元 |
 | `result_coordinator_test` | 结果汇聚：保序、跳过、LLM 回退、终态不丢 | 单元 + 并发 |
 | `asr_ordering_test` | `OrderedResultBuffer` 保序与引擎容量取消 | 单元 |
