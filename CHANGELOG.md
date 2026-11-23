@@ -1,5 +1,7 @@
 # Changelog
 
+> 早期补丁版本 v0.1.1–v0.1.4 未单独维护条目，变更历史见对应 Git tag 与 GitHub Releases。
+
 ## [0.6.1] - 2026-11-06
 
 ### Added
@@ -36,6 +38,22 @@
   `BUILD_TESTS` 使用说明同步
 - 文档：入门/安装/配置/排障指南（#40）、产品 PRD 现状基线、测试现状、流式
   后端运行排查；小米 MiMo 配置融合进 Chat 模式文档（#50）
+
+## [0.5.0] - 2026-08-26
+
+### Added
+- Mistral Realtime 流式语音转写（`voxtral-mini-transcribe-realtime-2602`），
+  支持 `target_streaming_delay_ms` 延迟配置（#33）
+
+### Fixed
+- 修复多会话并发结果乱序：按 utteranceId 保序交付（#28）
+- 修复 PipeWire 非对齐采样点被丢弃导致的音频截断（#29）
+- 修复 LLM 请求取消后无法再次发起的问题（#30）
+- 修复已完成会话的 worker 线程未回收（#31）
+
+### Changed
+- 打包/依赖：PulseAudio 捕获列为必需基线，PipeWire 保留为可选回退（#27）
+- release workflow 支持 `workflow_dispatch` 手动触发（tag 参数）
 
 ## [0.4.1] - 2026-08-12
 
