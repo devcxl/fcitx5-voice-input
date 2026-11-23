@@ -47,6 +47,6 @@ features:
 
 ## 文档维护
 
-- `docs/architecture/index.md` 与代码同步更新；[路线图](/roadmap)记录交付进展与待实现规划。
+- `ARCHITECTURE.md` 与代码同步更新；[路线图](/roadmap)记录交付进展与待实现规划。
 - ADR 记录不可改写的历史决策，被新决策显式取代时在新 ADR 中注明。
 - 文档站由 VitePress 构建，源码在 `docs/`，推送至主分支后由 `docs-deploy.yml` 自动部署到 GitHub Pages。
