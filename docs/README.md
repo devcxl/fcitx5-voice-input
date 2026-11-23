@@ -43,7 +43,7 @@ features:
 | [系统架构](/architecture/) | 系统架构、v4 会话模型设计、ADR 决策与架构评审 |
 | [开发](/development/guide) | [开发指南](/development/guide) · 技术方案、任务分解与调研记录 |
 | [测试](/testing/) | 测试运行方式与测试清单 |
-| [CI/CD](/ci/multi-distro-build-analysis) | 7 发行版容器矩阵与构建分析 |
+| [CI/CD](/ci/multi-distro-build-analysis) | 6 发行版容器矩阵与构建分析 |
 
 ## 文档维护
 

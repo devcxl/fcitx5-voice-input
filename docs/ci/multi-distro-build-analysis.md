@@ -1,5 +1,7 @@
 # GitHub Workflow 多发行版构建重构调研（2026-08 修订版）
 
+> **⚠️ 历史快照**：本文是 2026-08-12 的调研记录，保留当时的现状、方案与数据，**正文不再更新**。当前 CI 为 **6 发行版**矩阵（Ubuntu 24.04/26.04、Debian 12/13、Fedora、openSUSE Tumbleweed），仅产出 **DEB / RPM**；仓库不再构建 Arch 包（无 `pkg.tar.zst` 产物），Arch 由外部 AUR 维护。当前矩阵以 [路线图](/roadmap) 与 `.github/workflows/ci.yml` 为准。
+
 > 调研日期：2026-08-12（数据经 repology / Launchpad / GitHub API 实测核验）
 > 仓库现状：main 分支 v0.4.0（2026-08-11 发布），本次重构在 `refactor/build-pipeline` 分支。
 > 目的：为 workflow 重构提供依据，重点是构建流程的多发行版化。
