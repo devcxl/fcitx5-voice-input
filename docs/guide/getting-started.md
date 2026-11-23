@@ -62,9 +62,11 @@ flowchart LR
 
 1. 在 `fcitx5-configtool` 中切换到 **附加组件 (Addon)** 标签页。
 2. 找到 **VoiceInput** 插件，点击齿轮图标 ⚙ 打开配置界面。
-3. 选择您使用的 ASR 后端（默认支持 OpenAI 兼容、火山引擎豆包、Mistral Realtime）：
+3. 选择您使用的 ASR 后端（内置 OpenAI 兼容、火山引擎豆包、Mistral Realtime 以及本地 sherpa-onnx）：
    - **OpenAI 兼容后端**：填入 API Key，支持 OpenAI 官方、Groq、硅基流动 (SiliconFlow)、阿里云百炼 DashScope 或小米 MiMo。
    - **火山引擎后端**：填入 API Key（或 AppKey + AccessKey）以及购买的资源 ID。
+   - **Mistral Realtime 后端**：填入 Mistral API Key。
+   - **Sherpa-ONNX 本地后端**（`sherpa_onnx` 流式 / `sherpa_offline` 离线）：无需 API Key 与网络，先用 `scripts/download-model.sh --online`（或 `--offline`）下载模型，再在配置中选择对应后端。
 4. 点击“应用”保存设置。
 
 > 各后端的详细配置参数与示例请参考 [配置指南](/guide/configuration)。
@@ -98,6 +100,7 @@ flowchart LR
 - **OpenAI Realtime**：在 OpenAI 配置页将 `ApiMode` 设为 `realtime`，模型选用 `gpt-live-transcribe`。
 - **火山引擎豆包**：配置 `ActiveBackend=volcengine`，自带低延迟实时流式识别与标点预测。
 - **Mistral Realtime**：配置 `ActiveBackend=mistral`，模型使用 `voxtral-mini-transcribe-realtime-2602`。
+- **Sherpa-ONNX 本地流式**：配置 `ActiveBackend=sherpa_onnx`，下载模型后在本机 CPU 推理，断网可用；见 [本地流式后端](/guide/providers/sherpa-onnx)。
 
 ### 3. LLM 智能后处理
 在 OpenAI 后端配置中开启 `LLMEnabled` 并指定大语言模型（如 `gpt-4o-mini` 或 `qwen-plus`），可以为转写结果自动修正同音错字、规范中英文空格排版并补全标点符号。

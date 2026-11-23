@@ -28,31 +28,44 @@ makepkg -si
 
 ## 方式二：预编译安装包 (GitHub Releases)
 
-项目的 CI 流水线会自动为多个主流 Linux 发行版构建原生安装包。请前往 [Releases 页面](https://github.com/devcxl/fcitx5-voice-input/releases) 下载对应系统的最新版本安装包。
+项目的 CI 会针对下列发行版构建原生安装包，构建矩阵与实际 Release 资产一致。请前往 [Releases 页面](https://github.com/devcxl/fcitx5-voice-input/releases) 下载对应系统的最新版本安装包。
+
+| 发行版 | 包格式 | 产物标识 |
+|---|---|---|
+| Ubuntu 24.04 | `.deb` | `ubuntu-24.04` |
+| Ubuntu 26.04 | `.deb` | `ubuntu-26.04` |
+| Debian 12 | `.deb` | `debian-12` |
+| Debian 13 | `.deb` | `debian-13` |
+| Fedora 44 | `.rpm` | `fedora-44` |
+| openSUSE Tumbleweed | `.rpm` | `opensuse-tumbleweed` |
 
 ### 1. Ubuntu / Debian (`.deb`)
 
-支持 Ubuntu 24.04+、Debian 12+：
+当前提供 Ubuntu 24.04、Ubuntu 26.04、Debian 12、Debian 13 的构建产物：
 
 ```bash
 # 下载对应的 .deb 包后执行安装
 sudo apt install ./fcitx5-voice-input_*_amd64.deb
 ```
 
-### 2. Fedora (`.rpm`)
+### 2. Fedora 44 (`.rpm`)
 
-支持 Fedora 40+：
+当前只构建 Fedora 44 的产物：
 
 ```bash
 # 下载对应的 .rpm 包后执行安装
 sudo dnf install ./fcitx5-voice-input-*.x86_64.rpm
 ```
 
-### 3. openSUSE Tumbleweed / Leap (`.rpm`)
+### 3. openSUSE Tumbleweed (`.rpm`)
+
+当前只构建 openSUSE Tumbleweed 的产物：
 
 ```bash
 sudo zypper install ./fcitx5-voice-input-*.x86_64.rpm
 ```
+
+> **其他版本**：Ubuntu 22.04、Debian 11、Fedora 40–43、openSUSE Leap 等未经 CI 构建与验证，Releases 中没有对应产物。请参考下方「方式三：源码手动编译安装」，或使用 [AUR 包](https://aur.archlinux.org/packages/fcitx5-voice-input)。
 
 ---
 

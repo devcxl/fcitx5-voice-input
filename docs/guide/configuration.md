@@ -7,6 +7,8 @@ fcitx5-voice-input 支持通过图形化工具（`fcitx5-configtool`）或直接
 - [OpenAI 兼容后端](/guide/providers/openai)——OpenAI、Groq、硅基流动、阿里云百炼、小米 MiMo
 - [火山引擎豆包后端](/guide/providers/volcengine)
 - [Mistral Realtime 后端](/guide/providers/mistral)
+- [Sherpa-ONNX 本地流式后端](/guide/providers/sherpa-onnx)——完全在本机识别，无需网络与 API Key
+- [Sherpa-ONNX X-ASR 本地离线后端](/guide/providers/sherpa-offline)——整句本地解码
 
 ---
 
@@ -20,8 +22,10 @@ fcitx5-voice-input 支持通过图形化工具（`fcitx5-configtool`）或直接
 | `~/.config/fcitx5/conf/voiceinput-openai.conf` | OpenAI 兼容后端子配置（包含 API Key、模型、LLM 后处理等） |
 | `~/.config/fcitx5/conf/voiceinput-volcengine.conf` | 火山引擎豆包 ASR 子配置（鉴权密钥、资源 ID、标点规则等） |
 | `~/.config/fcitx5/conf/voiceinput-mistral.conf` | Mistral Realtime 子配置（WebSocket 实时转写参数） |
+| `~/.config/fcitx5/conf/voiceinput-sherpa-onnx.conf` | Sherpa-ONNX 本地流式子配置（模型目录、线程数、热词） |
+| `~/.config/fcitx5/conf/voiceinput-sherpa-offline.conf` | Sherpa-ONNX X-ASR 本地离线子配置（模型目录、线程数、热词） |
 
-> **安全提示**：API Key 与认证凭证以明文形式保存在上述子配置文件中，请确保 `~/.config/fcitx5/conf/` 目录权限安全。
+> **安全提示**：API Key 与认证凭证以明文形式保存在上述子配置文件中，请确保 `~/.config/fcitx5/conf/` 目录权限安全。两个本地 sherpa 子配置不含密钥。
 
 ---
 
@@ -31,7 +35,7 @@ fcitx5-voice-input 支持通过图形化工具（`fcitx5-configtool`）或直接
 
 | 参数项 | 说明 | 默认值 | 推荐调节建议 |
 |---|---|---|---|
-| `ActiveBackend` | 当前生效的 ASR 识别后端 | `openai` | 可选 `openai`（OpenAI 兼容）、`volcengine`（火山引擎）、`mistral`（Mistral Realtime） |
+| `ActiveBackend` | 当前生效的 ASR 识别后端 | `openai` | 可选 `openai`（OpenAI 兼容）、`volcengine`（火山引擎）、`mistral`（Mistral Realtime）、`sherpa_onnx`（Sherpa-ONNX 本地流式）、`sherpa_offline`（Sherpa-ONNX X-ASR 本地离线） |
 | `VADThreshold` | VAD 语音检测阈值百分比（0-100） | `20` | 值越低越灵敏；如果环境杂音较大引起误识别，可调高至 `30`~`50` |
 | `SilenceThresholdMs` | 判定说话结束的静音等待时长 (ms) | `800` | 语速较慢或思考停顿多时可调至 `1000`~`1500`；追求极速上屏可调至 `500`~`600` |
 | `StartFrames` | 连续多少帧判定为有效人声开始 | `2` | 每帧 32ms。默认 2 帧（64ms），可过滤突发的短暂杂音（如键盘敲击声） |
