@@ -131,22 +131,28 @@ engine / config / capture / VAD / pipeline / ASR 与线程安全队列的接口�
 
 ### 录音状态指示
 
-通过 `subModeLabelImpl()` 返回当前状态文字，fcitx5 会显示在候选词区上方：
+状态文字由 `subModeLabelImpl()` 返回，fcitx5 显示在候选词区上方。代码中实际出现的固定文案只有四种（`src/addon/engine_results.cpp`）：
 
-```
-🎙 录音中...     ← 录音时
-🤖 识别中...     ← ASR 推理时
-你好世界         ← 识别完成，自动上屏
-```
+| 状态文字 | 出现时机 |
+|---|---|
+| `语音输入就绪` | 激活且 pipeline 运行中；某段提交完成后；VAD 结束说话段时 |
+| `正在录音中...` | VAD 进入 Speaking（同时写入 `inputPanel().setAuxDown()`） |
+| `修正中...` | 该段已有原始文本、正在等 LLM 后处理（auxDown） |
+| `语音识别失败` | 该段以 `isError` 终态返回（空结果 / 传输失败）；激活时 pipeline 未能启动 |
 
-状态通过 `activeIc_->updateUserInterface(UserInterfaceComponent::StatusArea)` 更新。
+- 没有独立的识别进度状态：ASR 推理期间状态保持 `正在录音中...`，直到该段结果返回。
+- 流式后端的增量 partial 会把已识别文本写进状态区；终态文本走 `commitString()` 直接上屏，随后状态回到 `语音输入就绪`，不把终态识别文本留作状态。
+- 状态更新统一经 `SetStatus()`：`eventDispatcher_.schedule()` 到主线程，校验 generation 后对 `activeIc_` 调用 `updateUserInterface(UserInterfaceComponent::StatusArea)`。
 
 ### 输入法激活与录音流生命周期
 
 ```cpp
-void VoiceInputEngine::activate(...) {
+void VoiceInputEngine::activate(const InputMethodEntry&, InputContextEvent& event) {
     InitializeIfNeeded();
     activeIc_ = event.inputContext()->watch();
+    captureOwnerIc_ = event.inputContext()->watch();   // 录音流归属，失焦后仍保留
+    pendingPreeditText_.clear();
+    pendingPreeditUtteranceId_ = 0;
     uint64_t generation = activeGeneration_.fetch_add(1) + 1;
     sessionGeneration_.store(generation);
     pipeline_->SetGeneration(generation);
@@ -154,7 +160,7 @@ void VoiceInputEngine::activate(...) {
 }
 
 void VoiceInputEngine::deactivate(const InputMethodEntry&, InputContextEvent& event) {
-    if (activeIc_.get() && activeIc_.get() != event.inputContext()) return;
+    if (captureOwnerIc_.get() != event.inputContext()) return;
     DeactivateContext(event.type() == EventType::InputContextFocusOut);
 }
 
@@ -163,18 +169,23 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
     sessionGeneration_.store(0);
     ClearUI();
     activeIc_.unwatch();
-    if (keepCapture) pipeline_->Pause();   // 失焦：停止识别，保留录音流
-    else             pipeline_->Stop();    // 显式切走：释放录音流
+    if (keepCapture) {
+        pipeline_->Pause();        // 失焦：停止识别，保留录音流
+    } else {
+        pipeline_->Stop();         // 显式切走：释放录音流
+        captureOwnerIc_.unwatch();
+    }
 }
 ```
 
+- **保流期间的归属**：`captureOwnerIc_` 与 `activeIc_` 是两个独立引用，失焦后仍保留。`deactivate()` 只处理 `captureOwnerIc_` 指向的上下文，其他上下文从 Voice Input 切走/销毁都不会关闭本流（回归用例 `engine_ui_lifecycle_test` 的 `focus-unrelated-switch` / `focus-other-voice-switch`）。
 - **失焦（`InputContextFocusOut`）→ `Pause()`**：关闭取帧门闸后停止 VAD 与 ASR 分发线程，取消当前会话与引擎全部会话，清空队列并作废 generation；麦克风流保留给音频服务管理，但不再提交新的应用帧。
 - **回焦 → `activate()` → `Start()`**：复用保留的录音流，清空旧应用缓存（结果队列 / 保序缓冲）并恢复识别。
-- **显式切换到其他输入法 / 更改输入法组 / 关闭输入法 / 退出 fcitx5 → `Stop()`**：释放录音流。由事件监听兜底（`InputContextSwitchInputMethod` 与 `InputMethodGroupAboutToChange`，`PostInputMethod`，非 `voiceinput` 或捕获中即触发）。
+- **显式切换到其他输入法 / 更改输入法组 / 关闭输入法 / 退出 fcitx5 → `Stop()`**：释放录音流。由事件监听兜底：`InputContextSwitchInputMethod`（`PostInputMethod`，切换前是 `voiceinput`、本上下文持有采集归属、切换后不再是 `voiceinput` 才触发）与 `InputMethodGroupAboutToChange`（`PostInputMethod`，初始化后无条件释放）。
 - **原输入框销毁（`InputContextDestroyed`，`PreInputMethod`）**：清空待提交文本并 `DeactivateContext(true)` 保流。
 - 析构时 `Abort()`（`Stop()`）释放；不再有 200ms 延迟停止定时器。
 
-> **契约与风险**：录音流由音频服务管理，插件不枚举/筛选设备、不保存设备 ID；PulseAudio `dev=nullptr`、原生 PipeWire 无显式 target，尊重系统默认或该应用的设备偏好（见 [ADR-0004](adr/ADR-0004-system-managed-capture-routing.md)）。`Pause()` 禁止新的应用帧进入识别链路，并在停止 VAD/dispatcher 后取消当前会话；但已上传到服务端的 ASR/LLM 请求无法撤回。已删除的 200ms 延迟也从未是可靠的隐私上界；PulseAudio 阻塞停止的既有缺陷仍由 issue #14 / PR #17 跟踪。2026-10-13 用户确认 XFCE 双麦与音频管理器切换通过，其他桌面/未确认的采集后端及完整生命周期现场验收仍待补充。
+> **契约与风险**：录音流由音频服务管理，插件不枚举/筛选设备、不保存设备 ID；PulseAudio `dev=nullptr`、原生 PipeWire 无显式 target，尊重系统默认或该应用的设备偏好（见 [ADR-0004](adr/ADR-0004-system-managed-capture-routing.md)）。`Pause()` 禁止新的应用帧进入识别链路，并在停止 VAD/dispatcher 后取消当前会话；但已上传到服务端的 ASR/LLM 请求无法撤回。已删除的 200ms 延迟也从未是可靠的隐私上界；PulseAudio 同步 `pa_simple_read` + `join` 导致的阻塞停止仍是既有缺陷，由 issue #95（CAPTURE-54-001）跟踪，不承诺可靠的停止上界。2026-10-13 用户确认 XFCE 双麦与音频管理器切换通过，其他桌面/未确认的采集后端及完整生命周期现场验收仍待补充。
 
 ### 结果过滤机制
 
@@ -227,13 +238,13 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 | 失焦后回焦 | 复用保留录音流恢复识别，清空旧应用缓存与在途结果 |
 | 显式切换其他输入法 / 更改输入法组 / 退出 | `Stop()` 释放录音流 |
 | 在途 ASR/LLM 请求 | 取消只作用于尚未完成的本地请求；已上传服务端的请求无法撤回，200ms 不是可靠隐私上界 |
-| PulseAudio 读取阻塞（设备挂起/服务断开） | 既有缺陷：`Stop()` 的 join 可能阻塞主线程；跟踪于 issue #14 / PR #17，不承诺可靠停止上界 |
-| ASR HTTP 请求失败 | 丢弃当前段，继续监听下一段 |
-| ASR API Key 未配置 | 对应引擎 Init 返回 false |
+| PulseAudio 读取阻塞（设备挂起/服务断开） | 既有缺陷：`pa_simple_read` 同步阻塞使 `Stop()` 的 `join` 可能阻塞主线程；由 issue #95（CAPTURE-54-001）跟踪，不承诺可靠停止上界 |
+| ASR HTTP 请求失败 | 错误回调 + 一次空 final；该段按 `isError` 终态交付：清空候选栏并提示「语音识别失败」，继续监听下一段 |
+| ASR API Key 未配置 | 四个云端引擎 `Init` 均无条件返回 true，不会出现 `ASR init failed` / 保留旧引擎。`mistral`、`volcengine` 与 `openai` 的 `apiMode=realtime` 在**会话构造期**发现缺凭据：置 `finished` + 错误日志 + 一次空 final（此时工厂尚未安装结果回调，空 final 通常丢失）；分发线程见 `already finished` 即 `SkipUtterance()` 跳过该段，故通常只有 `ASR error: ...` 日志、无「语音识别失败」提示（CRASH-ASR-002 已知缺陷）。`openai` 的 whisper/chat 不检查 Key，照常发请求（不带 `Authorization`），由服务端拒绝后按 HTTP 失败处理，该段提示「语音识别失败」 |
 | 本地模型目录不存在/文件不全 | 对应引擎 Init 返回 false（启动时日志给出缺失项），旧引擎在热切换时保留 |
 | 本地热词文件不可读 | 告警并忽略热词，后端按 greedy_search 继续工作 |
 | 未编译 sherpa-onnx | 两个本地后端进入 stub：可选但不可用，`Init` 返回 false |
-| Volcengine 认证失败 / WS 断开 | Init 返回 false；断开则丢弃当前段继续下一段 |
+| Volcengine 认证失败 / WS 断开 | `Init` 恒 true；缺凭据在会话构造期置 `finished`（同上，整段被跳过）；WS 建连/传输失败在 worker 内 `reportError` + 一次空 final，该段以 `isError` 清空候选栏并提示「语音识别失败」，继续监听下一段 |
 | Volcengine 服务端错误 | 日志打印响应中的 `message` 和 `X-Tt-Logid` |
 | WS 事件消息跨 TCP 分片 | `WsFrameReceiver` 跨 `CURLE_AGAIN` 保留已收前缀，消息边界到齐后才解析（不丢 delta/completed） |
 | WS 单条消息超过 16MB | 整条丢弃（`Skipped`），在消息边界恢复解析；不当作传输错误，不触发重连 |
@@ -246,7 +257,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 | 服务端 `error` 事件（如空 buffer 的 `commit_empty`） | 日志 `server error session=N: <message>` + 错误回调上报；不产生转写 item，不影响最终 item 判定 |
 | End 后服务端无响应 | 空闲超时 5s（距最后一个服务端事件）触发，以已累积文本兜底 final |
 | 某段 ASR 永久无终态（会话卡死） | 保序闸门停滞放行：超过 40s 时该段以超时错误上屏（`语音识别失败` 提示），后续段结果照常交付，不再被永久扣住 |
-| OpenAI API 返回空结果 | 丢弃不上屏 |
+| OpenAI API 返回空结果（HTTP 成功但 `text` 为空） | 以 `isError` 终态交付：清空候选栏并提示「语音识别失败」，不产生转写文本 |
 
 ---
 
@@ -274,7 +285,7 @@ fcitx5-voice-input
 |------|--------|------|
 | `BUILD_TESTS` | OFF | 构建单元/集成测试（`tests/`，`ctest` 运行；CI verify job 开启） |
 | `ONNXRUNTIME_ROOT` | "" | ONNX Runtime 自定义路径（onnxruntime 双策略：pkg-config 系统包或 download 1.28.0，CI 缓存加速） |
-| `ENABLE_SHERPA_ONNX` | ON | 本地 ASR。优先内嵌编译 `third_party/sherpa-onnx`，其次系统库；都不可用时编译为 stub（后端不可选，addon 正常加载） |
+| `ENABLE_SHERPA_ONNX` | ON | 本地 ASR。优先内嵌编译 `third_party/sherpa-onnx`，其次系统库；都不可用时编译为 stub（两个本地后端仍出现在后端枚举与子配置页中，选中后 `Init` 返回 false、无法识别，addon 正常加载） |
 
 ### 构建产物
 
@@ -361,7 +372,7 @@ fcitx5-voice-input/
 │   └── docs-deploy.yml          # GitHub Pages 文档站部署
 ```
 
-> 本文档位于 `docs/architecture/.md`。
+> 本文档位于 `docs/architecture/index.md`。
 
 ---
 
@@ -374,7 +385,7 @@ fcitx5-voice-input/
 ## FAQ
 
 ### Q: Fcitx5 线程崩溃不就输入法没了？
-A: ASR 会话 worker 独立运行，且 v4 起有完整的资源兜底：会话超时 `JoinWithTimeout`（默认 2s）、`SessionReaper` 独立回收线程、引擎容量上限 `kMaxActiveSessions=3`（超限取消最旧会话）。会话崩溃不会阻塞 dispatcher，pipeline 可继续处理后续语音段。
+A: ASR 会话 worker 独立运行，且 v4 起有完整的资源兜底：会话回收 `JoinWithTimeout`（默认 15s，由 `SessionReaper` 执行；会话内 `Cancel()`/`End()` 的短 join 为 5s）、`SessionReaper` 独立回收线程、引擎容量上限 `kMaxActiveSessions=3`（超限取消最旧会话）。会话崩溃不会阻塞 dispatcher，pipeline 可继续处理后续语音段。
 
 ### Q: 主线程不是还卡？
 A: 主线程只负责事件分发和上屏。音频捕获（实时音频）在独立线程，HTTP/WS ASR 请求（网络 IO 密集型）在会话 worker 线程。唯一的"卡"是主线程的 `PollResults()` 轮询，但只做队列读取和 `commitString()`，微秒级操作。
