@@ -20,16 +20,17 @@
 
 </div>
 
-**fcitx5-voice-input** 是一个 Fcitx5 语音输入插件。通过 PulseAudio（或 PipeWire fallback）捕获音频，使用 Silero ONNX VAD 检测人声分段，通过 OpenAI 兼容 API、火山引擎豆包流式语音或 Mistral Realtime 流式实时转录进行识别。
+**fcitx5-voice-input** 是一个 Fcitx5 语音输入插件。通过 PulseAudio（或 PipeWire fallback）捕获音频，使用 Silero ONNX VAD 检测人声分段，通过 OpenAI 兼容 API、火山引擎豆包流式语音、Mistral Realtime 流式实时转录，或完全本地的 sherpa-onnx 后端（流式 / X-ASR 离线）进行识别。
 
 ## 功能
 
-- 中文语音输入（OpenAI Whisper API / 兼容服务、火山引擎豆包流式语音，或 Mistral Realtime 流式实时转录）
+- 中文语音输入（OpenAI Whisper API / 兼容服务、火山引擎豆包流式语音、Mistral Realtime 流式实时转录，或本地 sherpa-onnx / X-ASR 离线识别）
 - Silero ONNX VAD 自动分段录音（无需手动按键控制开始结束）
-- 说话过程中实时显示识别中间结果（火山引擎 / Mistral Realtime / OpenAI Realtime 后端支持）
+- 说话过程中实时显示识别中间结果（火山引擎 / Mistral Realtime / OpenAI Realtime / 本地 sherpa-onnx 流式后端支持）
+- 完全本地离线识别：选择 sherpa-onnx 后端时语音不出本机，无网环境也可用
 - 队列管道架构：音频采集 → VAD 分段 → ASR 识别 → EventDispatcher 上屏
 - 通过 `fcitx5-configtool` 图形化配置
-- 窗口快速切换自动延迟停止，防止误停
+- 切窗即暂停识别、保留录音流：失焦立即停止识别并丢弃新采样，回焦复用同一条流继续输入，不会重启流水线
 
 <p align="center">
   <img width="720" alt="演示" src="https://github.com/user-attachments/assets/48164962-deba-4328-bf26-70cd258f86a6" />
@@ -170,7 +171,7 @@ makepkg -si
 | `ApiKey` | API Key | **（必填）** |
 | `Model` | 模型名 | `voxtral-mini-transcribe-realtime-2602` |
 | `CommitIntervalMs` | 周期性提交间隔 (ms)，长句无停顿也能持续出增量 | `5000` |
-| `TargetStreamingDelayMs` | 目标流式延迟 (ms, 0-1000)，越大延迟越低但增量更激进 | `0` |
+| `TargetStreamingDelayMs` | 目标流式延迟 (ms, 0-1000)：数值越大等待的上下文越多，文本更晚但更准确；越小出字更快但更不准确 | `0` |
 
 该后端通过 WebSocket 使用 [Mistral Realtime 转录 API](https://docs.mistral.ai/capabilities/transcription/)。音频以 16kHz PCM 直推（无需重采样）。`transcription.text.delta` 增量事件实时刷入 preedit，`transcription.done` 在说话结束时提交最终结果。断线自动重连并保持同一会话。
 
@@ -182,7 +183,7 @@ makepkg -si
 4. 停止说话（默认 800ms 静音超时），最终识别结果自动上屏
 5. 保持语音输入模式，继续说话可连续识别
 
-切换窗口时插件会自动延迟 200ms 停止，快速切回会取消停止，避免不必要的重启。
+切换窗口时插件会立即暂停识别：丢弃新采样并取消在途会话，但录音流保持打开。切回 Voice Input 后复用同一条流继续识别；只有显式切换到其他输入法、更改输入法组、关闭语音输入或退出 Fcitx5 时才释放录音流。
 
 ## 编译构建
 
@@ -229,12 +230,12 @@ sudo cmake --install build --prefix /usr
 ## 注意事项
 
 - **API Key 安全**：API Key 明文存储在 `~/.config/fcitx5/conf/voiceinput-openai.conf`、`voiceinput-volcengine.conf` 和 `voiceinput-mistral.conf` 中，请注意文件权限
-- **网络要求**：OpenAI / 火山引擎 / Mistral 后端需要网络连接。本地 ASR 可通过 `AsrEngine` / `AsrSession` 接口后续扩展
-- **音频设备**：启动时自动选择系统音频输入设备（优先 `alsa_input.*` 麦克风，自动排除 Monitor 与回声消除源），暂不支持手动指定设备
+- **网络要求**：OpenAI / 火山引擎 / Mistral 后端需要网络连接。内置的本地后端 `sherpa_onnx`（流式）与 `sherpa_offline`（X-ASR 离线）完全在本机识别，无需联网，见 [sherpa-onnx.md](docs/guide/providers/sherpa-onnx.md) 与 [sherpa-offline.md](docs/guide/providers/sherpa-offline.md)
+- **音频设备**：录音路由由系统音频服务（PulseAudio / WirePlumber）决定。插件不枚举、不筛选设备，也不保存设备 ID：建流时不指定 source，尊重系统默认输入或音频管理器为本应用保存的设备偏好。暂不支持手动指定设备；请确认默认输入不是回放 Monitor 源
 - **VAD 模型**：Silero VAD 模型通过 git submodule 分发（`third_party/silero-vad/`），编译时自动复制到安装目录。构建前务必执行 `git submodule update --init --recursive`
 - **PipeWire 用户**：PulseAudio 后端也能在 pipewire-pulse 下正常工作，仅在 PulseAudio 完全不可用时 fallback 到 PipeWire 直连
-- **本地 ASR**：暂未实现。代码提供了 `AsrEngine`（会话工厂）/ `AsrSession`（会话）抽象接口，后续可扩展本地引擎
-- **窗口切换**：快速切换窗口时插件使用延迟停止机制（200ms），不会频繁重启流水线。长时间切出后会自动停止
+- **本地 ASR**：已实现。`sherpa_onnx` 在本机流式识别（边说边出增量），`sherpa_offline` 整句离线解码（X-ASR）。模型不随安装包分发，用 `scripts/download-model.sh --online` / `--offline` 下载后在 `ActiveBackend` 中选择对应后端
+- **窗口切换**：失焦会立即暂停识别（丢弃新采样、取消在途会话），但录音流保持打开；回焦复用同一条流。切换到其他输入法、更改输入法组或退出 Fcitx5 时才释放录音流
 
 ## 架构简介
 
@@ -245,7 +246,7 @@ sudo cmake --install build --prefix /usr
 SpeechEvent 类型: Begin（说话开始）→ Audio（32ms 帧，Pipeline 聚合到 200ms）→ End（静音）/ Cancel（语音太短丢弃）
 ```
 
-主线程 + 捕获线程 + VAD worker + 每语音段独立的会话 worker，通过 `ThreadSafeQueue` 连接各阶段。每句语音是一个 `AsrSession`（由 `AsrEngine::StartSession` 工厂创建），完成后由 `SessionReaper` 超时回收，并发结果按说话顺序保序上屏。详见 [ARCHITECTURE.md](docs/03-architecture/system-design/ARCHITECTURE.md)。
+主线程 + 捕获线程 + VAD worker + 每语音段独立的会话 worker，通过 `ThreadSafeQueue` 连接各阶段。每句语音是一个 `AsrSession`（由 `AsrEngine::StartSession` 工厂创建），完成后由 `SessionReaper` 超时回收，并发结果按说话顺序保序上屏。详见 [ARCHITECTURE.md](docs/architecture/index.md)。
 
 ## 许可证
 

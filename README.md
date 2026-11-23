@@ -20,16 +20,17 @@
 
 </div>
 
-**fcitx5-voice-input** is a Fcitx5 addon for voice input. Captures audio via PulseAudio (or PipeWire fallback), detects speech segments with Silero ONNX VAD, and transcribes via OpenAI-compatible API, Volcengine Doubao streaming ASR, or Mistral Realtime streaming transcription.
+**fcitx5-voice-input** is a Fcitx5 addon for voice input. Captures audio via PulseAudio (or PipeWire fallback), detects speech segments with Silero ONNX VAD, and transcribes via OpenAI-compatible API, Volcengine Doubao streaming ASR, Mistral Realtime streaming transcription, or fully local sherpa-onnx backends (streaming / X-ASR offline).
 
 ## Features
 
-- Voice input (OpenAI Whisper API / compatible services, Volcengine Doubao streaming ASR, or Mistral Realtime streaming)
+- Voice input (OpenAI Whisper API / compatible services, Volcengine Doubao streaming ASR, Mistral Realtime streaming, or local sherpa-onnx / X-ASR offline recognition)
 - Silero ONNX VAD for automatic speech segmentation (no push-to-talk required)
-- Real-time partial transcript update during speech (Volcengine / Mistral Realtime / OpenAI Realtime backends)
+- Real-time partial transcript update during speech (Volcengine / Mistral Realtime / OpenAI Realtime / local sherpa-onnx streaming backends)
+- Fully offline operation with the local sherpa-onnx backends — audio never leaves the machine
 - Queue-based pipeline: Audio Capture → VAD → ASR → EventDispatcher → commit
 - Graphical configuration via `fcitx5-configtool`
-- Smart delayed stop on window switching
+- Focus-aware capture: switching windows pauses recognition immediately while keeping the audio stream; returning to Voice Input resumes without a restart
 
 <p align="center">
   <img width="720" alt="Demo" src="https://github.com/user-attachments/assets/48164962-deba-4328-bf26-70cd258f86a6" />
@@ -169,7 +170,7 @@ Set `ActiveBackend=mistral`, click the gear button to open the Mistral config pa
 | `ApiKey` | API Key | **(required)** |
 | `Model` | Model name | `voxtral-mini-transcribe-realtime-2602` |
 | `CommitIntervalMs` | Periodic commit interval (ms); keeps emitting partials for long speech | `5000` |
-| `TargetStreamingDelayMs` | Target streaming delay (ms, 0-1000); higher = lower latency but more aggressive partials | `0` |
+| `TargetStreamingDelayMs` | Target streaming delay (ms, 0-1000); higher = waits for more context, so text arrives later but is more accurate; lower = faster but less accurate | `0` |
 
 This backend uses the [Mistral Realtime transcription API](https://docs.mistral.ai/capabilities/transcription/) over WebSocket. Audio is sent as 16kHz PCM directly (no resampling needed). Partial `transcription.text.delta` events update the preedit live; the final `transcription.done` commits on speech end. Connection drops are handled with automatic reconnection keeping the same session.
 
@@ -181,7 +182,7 @@ This backend uses the [Mistral Realtime transcription API](https://docs.mistral.
 4. Stop speaking (default 800ms silence timeout) — final recognition result is committed
 5. Stay in Voice Input mode and continue speaking for consecutive recognition
 
-When switching windows, the plugin delays stop by 200ms. Quick switch-back cancels the stop, avoiding unnecessary restarts.
+When you switch windows, the plugin pauses recognition immediately: new audio is discarded and in-flight sessions are cancelled, but the capture stream stays open. Switching back to Voice Input resumes with the same stream. The stream is released only when you explicitly switch to another input method, change the input method group, disable Voice Input, or quit Fcitx5.
 
 ## Build
 
@@ -228,12 +229,12 @@ sudo cmake --install build --prefix /usr
 ## Notes
 
 - **API Key Security**: API keys are stored in plain text in `~/.config/fcitx5/conf/voiceinput-openai.conf`, `voiceinput-volcengine.conf` and `voiceinput-mistral.conf`. Ensure proper file permissions
-- **Network Required**: OpenAI / Volcengine / Mistral backends require internet. Local ASR can be added via the `AsrEngine` / `AsrSession` interfaces
-- **Audio Device**: The input device is auto-selected at startup (prefers `alsa_input.*` microphones; Monitor and echo-cancel sources are skipped). Manual device selection is not supported yet
+- **Network Required**: OpenAI / Volcengine / Mistral backends require internet. The built-in local backends — `sherpa_onnx` (streaming) and `sherpa_offline` (X-ASR) — run entirely on-device, see [sherpa-onnx.md](docs/guide/providers/sherpa-onnx.md) and [sherpa-offline.md](docs/guide/providers/sherpa-offline.md)
+- **Audio Device**: Recording routes are managed by the system audio service (PulseAudio / WirePlumber). The addon does not enumerate, filter or store device IDs: it opens a stream without an explicit source and respects the system default or the per-application preference saved by your audio manager. Manual device selection is not supported yet; make sure the default input is not a playback Monitor source
 - **VAD Model**: The Silero VAD model is distributed via git submodule (`third_party/silero-vad/`) and copied to the install directory at build time. Run `git submodule update --init --recursive` before building
 - **PipeWire Users**: The PulseAudio backend works fine under pipewire-pulse. Native PipeWire is only used as fallback when PulseAudio is completely unavailable
-- **Local ASR**: Not yet implemented. The codebase provides `AsrEngine` (session factory) / `AsrSession` abstract interfaces for future local ASR integration
-- **Window Switching**: A 200ms delayed stop prevents unnecessary restarts on quick window switches. Long inactivity will stop the pipeline
+- **Local ASR**: Implemented. `sherpa_onnx` streams on-device (incremental preedit) and `sherpa_offline` decodes each utterance offline (X-ASR). Models are not shipped with the package; fetch them with `scripts/download-model.sh --online` / `--offline`, then pick the backend in `ActiveBackend`
+- **Window Switching**: Losing focus pauses recognition (new audio is discarded, in-flight sessions are cancelled) while the capture stream stays open; regaining focus reuses the same stream. Switching to another input method, changing the input method group, or quitting Fcitx5 releases it
 
 ## Architecture Overview
 
@@ -244,7 +245,7 @@ Audio Capture Thread → FrameQueue → VAD Worker → SpeechEventQueue → ASR 
 SpeechEvent types: Begin (speech onset) → Audio (32ms frames, batched to 200ms by Pipeline) → End (silence) / Cancel (too short)
 ```
 
-Main thread + capture thread + VAD worker + per-session ASR workers, connected by `ThreadSafeQueue`. Every utterance is an `AsrSession` (factory: `AsrEngine::StartSession`); finished sessions are reaped by `SessionReaper` with timeout, and concurrent results are delivered in creation order. See [ARCHITECTURE.md](docs/03-architecture/system-design/ARCHITECTURE.md) for details.
+Main thread + capture thread + VAD worker + per-session ASR workers, connected by `ThreadSafeQueue`. Every utterance is an `AsrSession` (factory: `AsrEngine::StartSession`); finished sessions are reaped by `SessionReaper` with timeout, and concurrent results are delivered in creation order. See [ARCHITECTURE.md](docs/architecture/index.md) for details.
 
 ## License
 
