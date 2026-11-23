@@ -1,6 +1,6 @@
 # ADR-0005：sherpa-onnx 离线后端支持 X-ASR 非流式模型
 
-> 状态：已实现（PoC 已通过；代码见 `sherpa_offline_asr.{h,cpp}`）
+> 状态：已实现（PoC 已通过；代码见 `sherpa_offline_asr.{h,cpp}`；含 2026-11-24 D3 修订）
 > 日期：2026-09-02
 > 决策方：@architect
 > 关联：调研报告 `docs/architecture/reviews/2026-09-02-sherpa-x-asr-offline-research.md`；sherpa-onnx PR #3656/#3662；`docs/architecture/v4-asr-session-model.md`、`docs/architecture/runtime-call-sequence.md`
@@ -24,10 +24,13 @@
 - 理由：与 RealtimeAsrEngine 先例一致（ADR-2026-08-07 D3，SRP）；现有流式 zipformer 在线模型（download-model.sh 的 xlarge）继续可用。
 
 ### D3：离线模型配置沿用 cjkchar 建模单元，不传 bpe_vocab
+
+> ⚠️ **实现口径已更正（2026-11-24）**：`bpe_vocab` 并非「必须留空」——真正不能传的是二进制 `bpe.model`。当 `modeling_unit=bpe` 时 `bpe_vocab` 必须指向文本词表（`bpe.vocab`，缺失回退 `tokens.txt`）。下方 D3 原文保留为历史决策记录，现行口径见文末「修订记录（2026-11-24）」。
+
 - `SherpaOnnxOfflineRecognizerConfig.model_config`：
   - `transducer.{encoder,decoder,joiner}` 指向 X-ASR 三件套。
   - `tokens` = tokens.txt。
-  - `modeling_unit` 由模型词表形态决定：裸汉字词表用 `cjkchar`；X-ASR 这类只有 `▁汉字` 的词表用 `bpe`，并把热词逐字拆开（见 `sherpa_paths.cc`），避免第二个汉字起被编码成 `<unk>`。
+  - `modeling_unit` 由模型词表形态决定：裸汉字词表用 `cjkchar`；X-ASR 这类只有 `▁汉字` 的词表用 `bpe`，并把热词逐字拆开（见 `sherpa_paths.cpp`），避免第二个汉字起被编码成 `<unk>`。
   - `bpe_vocab` 必须留空。传 `bpe.model`（sentencepiece 二进制 proto）会让 `Ssentencepiece::LoadVocab` 解析失败并 `exit(-1)` 终止进程；热词编码在 cjkchar 模式下不依赖 bpe 词表。
   - `num_threads`/`provider="cpu"` 沿用现有配置。
   - `decoding_method`：无热词 `greedy_search`，有热词 `modified_beam_search`。
@@ -69,3 +72,13 @@
 - 调研报告：`docs/architecture/reviews/2026-09-02-sherpa-x-asr-offline-research.md`
 - 会话模型：`docs/architecture/v4-asr-session-model.md`
 - 历史 ADR：`docs/architecture/adr/ADR-0001-gpt-realtime-asr.md`（D3 独立引擎先例）
+
+## 修订记录（2026-11-24）
+
+D3 关于 `bpe_vocab` 的取值为**实现口径更正**，原文保留为历史决策，以本节为准：
+
+- **不能传二进制 `bpe.model`**：`bpe.model` 是 sentencepiece 二进制 proto，传它会让 `Ssentencepiece::LoadVocab` 解析失败并 `exit(-1)` 终止进程。
+- **`bpe_vocab` 不能留空**：当词表为 X-ASR 形态（只有 `▁汉字`）时 `modeling_unit=bpe`，`bpe_vocab` 必须指向文本 token-score 词表——模型目录的 `bpe.vocab`，缺失时回退 `tokens.txt`。留空会使离线 recognizer 校验失败（`bpe_vocab: '' does not exist`，`SherpaOnnxCreateOfflineRecognizer` 返回空、后端 `Init` 返回 false）；若绕过校验，热词编码会在 `modeling_unit=bpe` 分支解引用空的 `bpe_encoder`（`bpe_encoder_` 仅在 `bpe_vocab` 非空时创建）。
+- 只有裸汉字词表（`cjkchar` 编码）时，热词编码不依赖 bpe 词表，此时 `bpe_vocab` 保持留空。
+- 实现位置：`src/addon/asr/sherpa_offline_asr.cpp`（`bpeVocab = ResolveSherpaBpeVocab(paths.tokens)` 后赋给 `model_config.bpe_vocab`）与 `src/addon/asr/utils/sherpa_paths.cpp` 的 `ResolveSherpaBpeVocab()`（优先 `bpe.vocab`，否则 `tokens.txt`）。
+- 勘误：D3 原文 `sherpa_paths.cc` 为笔误，实际文件是 `sherpa_paths.cpp`。
