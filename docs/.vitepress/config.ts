@@ -52,6 +52,8 @@ export default withMermaid(
                 { text: 'OpenAI 兼容（含 DashScope / MiMo / Groq / 硅基流动）', link: '/guide/providers/openai' },
                 { text: '火山引擎豆包', link: '/guide/providers/volcengine' },
                 { text: 'Mistral Realtime', link: '/guide/providers/mistral' },
+                { text: 'Sherpa-ONNX 本地流式', link: '/guide/providers/sherpa-onnx' },
+                { text: 'Sherpa-ONNX X-ASR 本地离线', link: '/guide/providers/sherpa-offline' },
               ],
             },
             { text: '常见问题 (FAQ)', link: '/guide/troubleshooting' },

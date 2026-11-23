@@ -12,7 +12,7 @@ Mistral Realtime 转录提供高质量多语言实时流式语音转写（基于
 | `ApiKey` | Mistral API 密钥 | (空，必填) |
 | `Model` | 实时语音转录模型 | `voxtral-mini-transcribe-realtime-2602` |
 | `CommitIntervalMs` | 实时提交间隔 (ms) | `5000` |
-| `TargetStreamingDelayMs` | 目标流式延迟 (ms, 0-1000) | `0`（数值越小延迟越低） |
+| `TargetStreamingDelayMs` | 目标流式延迟 (ms, 0-1000) | `0`（数值越小出字越快但更不准确；越大等待更多上下文，文本更晚但更准确） |
 
 ## 运行排查
 
