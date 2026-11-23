@@ -223,7 +223,8 @@ OnAsrResult(text)
 | 触发 | 路径 | 行为 |
 |---|---|---|
 | 失焦 `InputContextFocusOut` | `DeactivateContext(true)` | `Pause()`：关取帧门闸 → `results_->Pause()` → VAD 停止 → 分发线程 join → 取消当前会话 → `CancelAllSessions()` → 清空队列；**保留录音流** |
-| 切换输入法 / 输入法组变更 / IC 销毁 | `DeactivateContext(false)` | `Stop()`：`Pause()` 后释放录音流 |
+| 切换输入法 / 输入法组变更 / 关闭 / 退出 | `DeactivateContext(false)` | `Stop()`：`Pause()` 后释放录音流，并 `captureOwnerIc_.unwatch()` 放弃归属 |
+| 原输入框销毁 `InputContextDestroyed`（`PreInputMethod`） | `DeactivateContext(true)` | 清空待提交文本后 `Pause()`：**保流**，不再提交新帧、不再识别 |
 | `setConfig` / `setSubConfig` | `ReloadActiveAsrClient()` | 新建引擎并 `Init`；成功才替换；替换时 `SkipAllSessions` + 旧引擎 `CancelAllSessions`；失败保留旧引擎 |
 
 停用会递增 `activeGeneration_` 并把 `sessionGeneration_` 置 0，此后到达的任何结果都会被过滤。

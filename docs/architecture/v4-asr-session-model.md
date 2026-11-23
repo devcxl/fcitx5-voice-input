@@ -228,11 +228,16 @@ SessionReaper 线程
 
 ### 超时保障
 
-| 后端 | 参数 | 确保 |
+| 后端 | 参数 | 现状 |
 |------|------|------|
-| OpenAI | `CURLOPT_TIMEOUT=10s`, `CONNECTTIMEOUT=5s` | 网络请求 10s 内结束 |
-| Volcengine | `CURLOPT_TIMEOUT=15s`, `CONNECTTIMEOUT=5s`, recv 轮询 ≤500ms | 线程 15s 内退出 |
+| OpenAI whisper/chat | `CURLOPT_TIMEOUT=30s`, `CONNECTTIMEOUT=10s` | 单次 HTTP 请求最长 30s；**可能超过** `SessionReaper` 的 `JoinWithTimeout(15s)` 预算，超出后由 reaper 放弃 join（现状，本文不收敛） |
+| OpenAI Realtime | `CONNECTTIMEOUT=10s`, `CURLOPT_TIMEOUT=15s`；WS 发送单次预算 10s、`End` 总预算 8s | 建连 15s 内失败退出；`End()` 在 8s 预算内交出兜底 final |
+| Volcengine | `CONNECTTIMEOUT=10s`, `CURLOPT_TIMEOUT=15s`；recv 轮询切片 20ms（End 路径 50ms） | 线程 15s 内退出 |
+| Mistral | `CONNECTTIMEOUT=10s`, `CURLOPT_TIMEOUT=15s`；WS 发送/收尾同 `WsDeadline` 预算 | 线程 15s 内退出 |
+| LLM 后处理 | `CURLOPT_TIMEOUT=30s`, `CONNECTTIMEOUT=10s` | 超时后兜底提交原始文本 |
 | Cancel | 主动 `curl_easy_cleanup` + close socket | 不再阻塞在 recv |
+
+> 上表是**现状值**，不是「网络请求 10s 内结束」的设计目标：OpenAI 上传/chat 的 30s 上界大于 reaper 的 15s join 预算，两者是否需要收敛由后续任务单独判断。
 
 ### 线程上限
 
@@ -271,25 +276,24 @@ if (result.sessionId != activeSessionId_) {
 
 ---
 
-## 队列架构
+## 队列架构（现状）
 
 ```
 Capture → [FrameQueue] → VAD → [SpeechEventQueue] → Pipeline → [ResultQueue] → commit
-          Bounded(512)          Bounded(64)                     Bounded(128)
+          1024 帧(≈32s)         256 事件                       无界（默认构造容量 0）
 ```
 
-### SpeechEventQueue 满时策略
+### 队列满时策略（现状）
 
-普通 FIFO 丢弃对语音事件不安全。改为事件感知策略：
+有界队列共用 `ThreadSafeQueue::Push()` 的单一策略：满时 `pop()` 掉最旧元素再压入新元素。**没有**事件感知的优先级子队列，`End` / `Cancel` 与 `Audio` 走同一通道，极端积压时同样会被丢弃。
 
-| 事件 | 队列满策略 |
-|------|-----------|
-| `Begin` | 保留。先插入隐式 `Cancel` 通知当前 Session |
-| `Audio` | 丢弃最旧的 Audio 帧（可接受，VAD 是实时的） |
-| `End` | **必须保留**。丢失 End 会导致 Session 永不结束 |
-| `Cancel` | **必须保留，优先级最高**。丢失 Cancel 会导致旧 Session 残留 |
+| 队列 | 容量 | 满时行为 | 风险 |
+|------|------|---------|------|
+| `FrameQueue` | 1024 帧（≈32s） | 丢最旧帧 | 消费端长期落后时只保留最近约 32s 音频 |
+| `SpeechEventQueue` | 256 事件 | 丢最旧事件 | 丢弃 `End` 会让该段会话永不结束（只能等保序闸门 40s 停滞放行）；丢弃 `Cancel` 会让旧会话残留 |
+| `ResultQueue` | 无界（容量 0） | 不丢弃 | 终态由 `ResultCoordinator` 保证不丢；主线程长期不消费时内存无界增长 |
 
-实现：`SpeechEventQueue` 内部维护两个优先级子队列，`End`/`Cancel` 走高优先级通道，`Audio` 可丢。
+> 「事件感知队列、`End`/`Cancel` 走高优先级通道」曾是 v4.1 的设计草案，**并未落地**；若确需该保护（例如满队列至少保留 `End`/`Cancel`）应另立增强 issue 实现，不是本文描述的现状。
 
 ---
 
@@ -414,7 +418,7 @@ setConfig(rawConfig)
 | 2 | 析构 `detach` 危险 | `Cancel()` 超时后直接 `detach()` | `JoinWithTimeout` + Reaper 线程统一回收 |
 | 3 | 所有权矛盾 | `unique_ptr` 给 Pipeline 但 Engine 又要取消 | `shared_ptr` + Engine 内部 `weak_ptr` 追踪 |
 | 4 | 取消后结果误提交 | 无 sessionId 过滤 | 所有 `AsrResult` 带 `sessionId`，commit 前检查 |
-| 5 | 队列丢弃不安全 | 统一"丢弃最旧" | 事件感知队列，`End`/`Cancel` 优先保留 |
+| 5 | 队列丢弃不安全 | 统一"丢弃最旧" | 设计为事件感知队列、`End`/`Cancel` 优先保留；**未落地**，现状见「队列架构（现状）」 |
 | 6 | 连接池过早 | 引入 ConnectionPool | 暂不实现，一句话一个 WS 连接 |
 | 7 | Cancel 只设标志不够 | 仅 `cancelled_ = true` | + 短超时轮询 + 主动 close socket + curl 超时 |
 | 8 | 线程峰值 | 无限制 | `maxActiveSessions=3` |
