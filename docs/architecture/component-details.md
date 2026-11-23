@@ -33,6 +33,8 @@ private:
     OpenAIAsrConfig openaiConfig_;
     VolcengineAsrConfig volcengineConfig_;
     MistralAsrConfig mistralConfig_;
+    SherpaOnnxAsrConfig sherpaOnnxConfig_;
+    SherpaOfflineAsrConfig sherpaOfflineConfig_;
     TrackableObjectReference<InputContext> activeIc_; // 仅主线程访问
     TrackableObjectReference<InputContext> captureOwnerIc_; // 失焦保留，隔离其他上下文的关闭事件
     atomic<uint64_t> activeGeneration_;   // 当前有效 generation
@@ -54,7 +56,7 @@ private:
 
 ## 2. 配置 (`src/addon/config/`)
 
-单层配置，全部通过 fcitx5 `FCITX_CONFIGURATION` 宏定义，由 fcitx5-configtool 可视化编辑。配置按后端分为 4 个子配置块（`fcitx://config/addon/voiceinput/asr/...` 子路径）：
+单层配置，全部通过 fcitx5 `FCITX_CONFIGURATION` 宏定义，由 fcitx5-configtool 可视化编辑。配置共 6 个配置块：1 个全局块 + 5 个后端子配置块（`fcitx://config/addon/voiceinput/asr/...` 子路径：`openai` / `volcengine` / `mistral` / `sherpa_onnx` / `sherpa_offline`）：
 
 ```
 src/addon/config/
@@ -65,7 +67,7 @@ src/addon/config/
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
-| `ActiveBackend` | Enum | `openai` | ASR 后端（openai / volcengine / mistral） |
+| `ActiveBackend` | Enum | `openai` | ASR 后端（`Enum/0=openai`、`1=volcengine`、`2=mistral`、`3=sherpa_onnx`、`4=sherpa_offline`；枚举与子配置路径在 `AsrBackendAnnotation` 中无条件注册，不受 `ENABLE_SHERPA_ONNX` 影响） |
 | `VADThreshold` | Int 0-100 | `20` | VAD 阈值百分比 |
 | `SilenceThresholdMs` | Int | `800` | 静音超时毫秒数 |
 | `StartFrames` | Int 1-10 | `2` | 连续几帧说话触发 onset |
@@ -111,6 +113,28 @@ src/addon/config/
 | `ChunkMs` | Int 100-200 | `200` | 音频分片（毫秒） |
 | `EnableITN` / `EnablePunc` / `EnableDDC` / `EnableNonstream` | Bool | 见代码 | ITN / 标点 / 语义顺滑 / 二次识别 |
 | `EndWindowMs` | Int | `800` | 判停窗口（毫秒） |
+
+**SherpaOnnxAsrConfig（`ActiveBackend=sherpa_onnx`，本地流式）：**
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `ModelDir` | String | `""` | 模型目录（需含 encoder / decoder / joiner / tokens.txt）；留空时按默认目录自动探测，仍找不到则 `Init` 返回 false |
+| `NumThreads` | Int 1-16 | `2` | CPU 推理线程数 |
+| `HotwordsFile` | String | `""` | 热词文件路径（可选）；留空自动探测默认位置 |
+| `HotwordsScore` | Int 1-10 | `2` | 热词提权加分 |
+| `AutoCommit` | Bool | `true` | 无 LLM 时自动上屏 |
+
+**SherpaOfflineAsrConfig（`ActiveBackend=sherpa_offline`，X-ASR 非流式）：**
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `ModelDir` | String | `""` | 模型目录（同上，缺失或不完整时 `Init` 返回 false） |
+| `NumThreads` | Int 1-16 | `2` | CPU 推理线程数 |
+| `HotwordsFile` | String | `""` | 热词文件路径（可选）；留空自动探测默认位置 |
+| `HotwordsScore` | Int 1-10 | `2` | 热词提权加分 |
+| `AutoCommit` | Bool | `true` | 无 LLM 时自动上屏 |
+
+两个本地后端的配置项结构相同，都映射到 `AsrEngine::Config` 的 `modelPath` / `numThreads` / `hotwordsFile` / `hotwordsScore`。热词按模型词表形态编码：词表含裸汉字时用 `cjkchar`；只有 `▁汉字`（X-ASR）时用 `bpe` 并在缓存目录生成逐字拆分的词表；热词文件不可用时退回 `greedy_search`。以 `-DENABLE_SHERPA_ONNX=OFF` 构建时两个后端仍是可选项，但 `Init` 直接返回 false（stub，addon 正常加载）。
 
 音频设备无手动配置项：插件不枚举、筛选、指定或保存物理录音设备，路由由系统音频服务与会话管理器负责（默认输入或该应用的设备偏好，见 capture 章节）。无高级 JSON 配置层。
 
@@ -275,6 +299,8 @@ class AsrEngine {
 | `OpenaiAsrEngine` | openai | OpenAI 兼容 API | `apiMode=whisper` 批量 multipart WAV；`chat` Chat Completions（DashScope qwen3-asr-flash、小米 MiMo mimo-v2.5-asr 等，请求体由 `asr/utils/chat_asr_request.h` 构造）；`realtime` GPT Realtime WS 流式（16k→24k 线性上采样、周期 commit 兜底） |
 | `VolcengineAsrEngine` | volcengine | 火山豆包 WS | 200ms chunk 实时发送，服务端 partial/final 回调；ITN/标点/DDC/二次识别选项 |
 | `MistralAsrEngine` | mistral | Mistral Realtime WS | 16kHz PCM 直推（无需重采样）；`transcription.text.delta` 增量 preedit；周期 flush + 断线重连（保持同一 sessionId）；`TargetStreamingDelayMs` 权衡延迟/准确性 |
+| `SherpaOnnxAsrEngine` | sherpa_onnx | 本地进程内（sherpa-onnx C API） | `OnlineRecognizer` 由 `SherpaRecognizerHolder` 共享持有并加锁解码，每会话独立 stream；按 200ms 块 `AcceptWaveform` + `Decode`，文本变化即发 partial；`Init` 校验模型文件，缺失返回 false；未编译时为 stub（`Init` 返回 false） |
+| `SherpaOfflineAsrEngine` | sherpa_offline | 本地进程内（sherpa-onnx C API） | `OfflineRecognizer` 共享持有；会话只缓冲整段音频，`End` 唤醒后一次性解码出一条 final（空音频也发 final，避免保序闸门等 40s）；`Init` 校验模型文件；未编译时为 stub |
 
 - OpenAI `realtime` 与 Mistral 的流式会话在 `StartWorker()` 即建立持久 WS 连接，断线自动重连并保持 sessionId
 - Realtime 的终态判定按服务端确认的 `item_id` 追踪在途 item（`utils/realtime_commit_tracker.h`）：`error` 事件不再造成计数漂移，最终 `completed` 到达即上屏；`error` 事件的内容（message/code）进入日志与错误回调；End 等待以「距最后服务端事件 5s」的空闲超时为上界（见错误处理策略表）
@@ -284,6 +310,7 @@ class AsrEngine {
 - Volcengine 每个语音段建立独立 WebSocket 连接，使用完毕后关闭
 - `SessionReaper`（独立回收线程）对完成/取消的会话做超时 join，防止僵尸线程（详见 [v4-asr-session-model.md](v4-asr-session-model.md)）
 - `LLMClient`（`src/addon/llm/`）：可选 LLM 后处理（纠错/格式化），支持流式与非流式，按 generation 取消过期请求
+- 两个本地后端共用 `src/addon/asr/utils/sherpa_paths.cpp/.h` 的模型与热词路径探测：`ModelDir` 留空时按候选目录自动搜索 encoder/decoder/joiner/tokens；热词按词表形态（`cjkchar` 或 `bpe` 逐字拆分）准备，不可用时退回 `greedy_search`。识别器由 `Engine` 与所有会话通过 `shared_ptr` 共享持有，热切换不会销毁仍被旧会话使用的 recognizer
 
 **线程模型对比（会话视角）：**
 
@@ -293,6 +320,8 @@ class AsrEngine {
 | OpenAI realtime | StartWorker 即建 WS | 重采样 24k → base64 推送 | 发 `input_audio_buffer.commit` → 收 final |
 | Volcengine | StartWorker 即建 WS | 入队 → 按 chunkMs 实时发送 | 发结束包 → 等 final → 关 WS |
 | Mistral | StartWorker 即建 WS | int16 → base64 直推 | 周期 flush / `transcription.done` |
+| sherpa_onnx | StartWorker 起解码线程 | 入队会话内音频块，worker 逐块 Accept + Decode | `InputFinished` → 解码残余 → 一条 final |
+| sherpa_offline | StartWorker 起等待线程 | 只追加到会话 buffer | 唤醒后整段解码 → 一条 final（`Cancel` 直接退出，不发终态） |
 
 ## 7. 线程安全队列 (`src/addon/utils/` + `src/addon/pipeline/ordered_result_buffer.h`)
 
