@@ -62,13 +62,13 @@ sudo zypper install ./fcitx5-voice-input-*.x86_64.rpm
 
 ### 1. 安装编译依赖
 
-fcitx5-voice-input 依赖 Fcitx5 核心头文件、JSON 解析库、curl、zlib、ONNX Runtime 以及音频采集后端（PulseAudio 或 PipeWire，至少具备其一）。
+fcitx5-voice-input 依赖 Fcitx5 核心开发包、JSON 解析库、curl、zlib、ONNX Runtime、gettext（`msgfmt`），以及 PulseAudio 采集基线 `libpulse-simple`；PipeWire（`libpipewire-0.3`）为可选，仅提供 PulseAudio 不可用时的直连回退。
 
 ::: code-group
 
 ```bash [Arch Linux]
 sudo pacman -S --needed \
-    base-devel cmake git extra-cmake-modules \
+    base-devel cmake git extra-cmake-modules gettext \
     fcitx5 fcitx5-configtool jsoncpp curl zlib \
     pulseaudio pipewire onnxruntime-cpu
 ```
@@ -76,7 +76,7 @@ sudo pacman -S --needed \
 ```bash [Ubuntu / Debian]
 sudo apt update
 sudo apt install -y \
-    build-essential cmake git extra-cmake-modules \
+    build-essential cmake git extra-cmake-modules gettext \
     fcitx5 fcitx5-modules-dev libfcitx5core-dev fcitx5-config-qt \
     libjsoncpp-dev libcurl4-openssl-dev zlib1g-dev \
     libpulse-dev libpipewire-0.3-dev libonnxruntime-dev
@@ -84,7 +84,7 @@ sudo apt install -y \
 
 ```bash [Fedora]
 sudo dnf install -y \
-    gcc-c++ cmake git extra-cmake-modules \
+    gcc-c++ cmake git extra-cmake-modules gettext \
     fcitx5-devel fcitx5-configtool jsoncpp-devel \
     libcurl-devel zlib-devel pulseaudio-libs-devel \
     pipewire-devel onnxruntime-devel
@@ -92,7 +92,7 @@ sudo dnf install -y \
 
 ```bash [openSUSE]
 sudo zypper install -y \
-    gcc-c++ cmake git extra-cmake-modules \
+    gcc-c++ cmake git extra-cmake-modules gettext-runtime \
     fcitx5-devel fcitx5-configtool jsoncpp-devel \
     libcurl-devel zlib-devel libpulse-devel \
     pipewire-devel onnxruntime-devel
@@ -100,20 +100,20 @@ sudo zypper install -y \
 
 :::
 
-> **说明**：音频采集库（`libpulse-simple` 与 `libpipewire-0.3`）在运行时均采用 `dlopen` 延迟加载设计，无强制硬链接。即使系统仅安装了其中一个音频库，插件也能正常编译并优雅降级。
+> **说明**：`libpulse-simple` 是**必需编译依赖**（PulseAudio 是基线采集后端，同时兼容现代 PipeWire 桌面的 pipewire-pulse 服务）；`libpipewire-0.3` 为可选，仅提供 PulseAudio 不可用时的直连回退。两个库在运行时均采用 `dlopen` 延迟加载设计，不形成链接期硬依赖；未安装 PipeWire 开发包时只是不编入 PipeWire 直连后端，构建仍可完成（CI 的 `build-no-pipewire` job 即验证该路径）。
 
 ---
 
 ### 2. 获取源码与初始化子模块
 
-插件的 VAD 模块依赖 Silero ONNX 模型，模型通过 Git Submodule 进行管理：
+插件的 VAD 模块依赖 Silero ONNX 模型，本地 ASR 依赖 sherpa-onnx 源码，二者均通过 Git Submodule 进行管理：
 
 ```bash
 # 克隆仓库
 git clone https://github.com/devcxl/fcitx5-voice-input.git
 cd fcitx5-voice-input
 
-# 初始化子模块（下载 Silero VAD 模型文件，必需步骤）
+# 初始化子模块（Silero VAD 模型 + sherpa-onnx 源码，必需步骤）
 git submodule update --init --recursive
 ```
 
@@ -140,6 +140,10 @@ cmake --build build -j"$(nproc)"
 | `CMAKE_INSTALL_PREFIX` | `/usr` | 安装前缀（Fcitx5 插件通常要求安装至 `/usr`） |
 | `BUILD_TESTS` | `OFF` | 是否编译测试用例 |
 | `ONNXRUNTIME_ROOT` | (系统路径) | 手动指定自定义 ONNX Runtime 安装目录 |
+| `ENABLE_SHERPA_ONNX` | `ON` | 是否编入本地 ASR。优先内嵌编译 `third_party/sherpa-onnx`，其次系统库；`OFF` 时两个本地后端编译为 stub |
+| `SHERPA_ONNX_ROOT` | (自动探测) | 手动指定系统 sherpa-onnx 安装目录（子模块缺失时使用） |
+
+> **说明**：音频捕获后端由依赖探测自动决定，不提供 CMake 开关（`HAVE_PULSEAUDIO` / `HAVE_PIPEWIRE` 只是编译宏）。不安装 `pipewire-0.3` 开发包即不会编入 PipeWire 直连后端。
 
 ---
 

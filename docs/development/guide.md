@@ -12,15 +12,17 @@ Fcitx5 Addon（共享库），多线程架构（主线程 / Capture / VAD Worker
 
 | 依赖 | 说明 |
 |------|------|
-| fcitx5 | pkg-config 名 `fcitx5` / CMake 目标 `Fcitx5Core` |
+| fcitx5 开发包 | Debian/Ubuntu `libfcitx5core-dev`，Fedora/openSUSE `fcitx5-devel`，Arch `fcitx5`；pkg-config 名 `fcitx5`（Debian/Ubuntu 回退 `Fcitx5Core`），CMake 目标 `Fcitx5Core` |
+| gettext | 提供 `msgfmt`，编译 `po/` 翻译；`find_program(... REQUIRED)`，配置阶段硬性要求 |
 | jsoncpp | 配置与协议解析 |
 | libcurl (>= 7.86.0) | HTTP/WebSocket 客户端 |
 | zlib | 压缩 |
 | onnxruntime | Silero VAD 推理 |
+| libpulse-simple | **必需**采集基线（PulseAudio，兼容 pipewire-pulse） |
 
-**录音后端（至少其一）：** `pipewire-0.3`（libpipewire-0.3）或 `libpulse-simple`。缺少任一只失去对应捕获后端，addon 仍可构建；两个都缺则 CMake 报错。运行期两个库均为 dlopen 延迟加载，无链接期依赖。
+**可选：** `pipewire-0.3`（libpipewire-0.3）仅提供 PulseAudio 不可用时的直连回退；未安装其开发包时不编入该后端，构建不受影响。运行期两个录音库均为 dlopen 延迟加载，无链接期依赖。
 
-各发行版安装命令可参考 [`.github/actions/build/distro/*.sh`](https://github.com/devcxl/fcitx5-voice-input/tree/main/.github/actions/build/distro)（CI 在 7 个发行版容器中验证过）。
+各发行版安装命令可参考 [`.github/actions/build/distro/*.sh`](https://github.com/devcxl/fcitx5-voice-input/tree/main/.github/actions/build/distro)（CI 在 6 个发行版容器中验证过：Ubuntu 24.04/26.04、Debian 12/13、Fedora、openSUSE Tumbleweed）。
 
 ## 获取源码
 
@@ -46,7 +48,10 @@ cmake --build build -j"$(nproc)"
 | 选项 | 默认 | 说明 |
 |------|------|------|
 | `BUILD_TESTS` | `OFF` | 编译 `tests/` 下的测试 |
-| `HAVE_PULSEAUDIO` / `HAVE_PIPEWIRE` | 自动检测 | 音频捕获后端，仅编译进来的后端可用 |
+| `ENABLE_SHERPA_ONNX` | `ON` | 本地 ASR。优先内嵌编译 `third_party/sherpa-onnx`，其次系统库；`OFF` 时两个本地后端编译为 stub |
+| `SHERPA_ONNX_ROOT` | (自动探测) | 系统 sherpa-onnx 自定义安装路径（子模块缺失时使用） |
+
+音频捕获后端由依赖探测自动决定，不提供 CMake 开关（`HAVE_PULSEAUDIO` / `HAVE_PIPEWIRE` 只是由探测结果定义的编译宏，`-D` 设置无效）；不安装 `pipewire-0.3` 开发包即不会编入 PipeWire 直连。
 
 ::: warning 不要随意安装
 除非明确需要，构建即可，不要执行 `cmake --install`——安装会写入 `/usr` 等系统路径，覆盖现有 fcitx5 环境。

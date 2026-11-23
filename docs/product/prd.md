@@ -142,7 +142,7 @@ change_type: feature
 
 # Dependencies and Constraints
 
-- **构建依赖**：fcitx5（≥5.1.19）、jsoncpp、libcurl（≥7.86.0，WS 要求）、zlib、onnxruntime（Silero VAD）、pipewire-0.3/libpulse-simple 至少其一。
+- **构建依赖**：fcitx5（≥5.1.19）开发包（Debian/Ubuntu `libfcitx5core-dev`，Fedora/openSUSE `fcitx5-devel`）、gettext（`msgfmt`，必需）、jsoncpp、libcurl（≥7.86.0，WS 要求）、zlib、onnxruntime（Silero VAD）、`libpulse-simple`（必需采集基线）；PipeWire（`pipewire-0.3`）可选，仅作直连回退。
 - **运行时依赖（dlopen）**：libpulse-simple / libpipewire 运行期按候选 soname 加载，库缺失时优雅降级。
 - **Silero VAD 模型**：`silero_vad.onnx` 需随包分发至 `VOICE_INPUT_MODEL_DIR`，模型缺失时管道启动失败并回滚捕获。
 - **Fcitx5 集成**：addon 为 `OnDemand=True` 共享库，必须保持主线程渲染/事件处理不被阻塞。

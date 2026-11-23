@@ -187,22 +187,32 @@ When switching windows, the plugin delays stop by 200ms. Quick switch-back cance
 
 ### Dependencies
 
-- `fcitx5` — Input method framework
-- `libpulse-simple` — PulseAudio capture (preferred)
-- `libpipewire-0.3` — PipeWire capture (fallback)
+**Required:**
+
+- `fcitx5` development package — Input method framework (`libfcitx5core-dev` on Debian/Ubuntu, `fcitx5-devel` on Fedora/openSUSE, `fcitx5` on Arch; pkg-config `fcitx5` / CMake target `Fcitx5Core`)
+- `libpulse-simple` — PulseAudio capture: required build dependency and preferred capture backend
 - `jsoncpp` — JSON parsing
 - `libcurl` — HTTP/WebSocket client (>= 7.86.0, required for ASR)
 - `zlib` — Gzip compression (required for Volcengine backend)
 - `onnxruntime` — Silero VAD ONNX Runtime
+- `gettext` — `msgfmt`, compiles `po/` translations (required at configure time)
+- `cmake` >= 3.20, a C++20 compiler, `pkg-config`, `git`
 
-> **Arch Linux:** `sudo pacman -S fcitx5 pulseaudio pipewire jsoncpp curl onnxruntime-cpu zlib`
+**Optional:**
+
+- `libpipewire-0.3` — Native PipeWire capture, used only as fallback when PulseAudio is unavailable. Without its development package the addon is simply built without the PipeWire backend
+- `sherpa-onnx` — Local ASR. Built from the `third_party/sherpa-onnx` submodule by default; `-DENABLE_SHERPA_ONNX=OFF` compiles both local backends as stubs
+
+> **Arch Linux:** `sudo pacman -S base-devel cmake git fcitx5 gettext pulseaudio jsoncpp curl onnxruntime-cpu zlib`
 >
-> **Debian/Ubuntu:** `sudo apt install fcitx5 libpulse-dev libpipewire-0.3-dev libjsoncpp-dev libcurl4-openssl-dev libonnxruntime-dev zlib1g-dev`
+> **Debian/Ubuntu:** `sudo apt install build-essential cmake git pkg-config gettext fcitx5 libfcitx5core-dev libpulse-dev libpipewire-0.3-dev libjsoncpp-dev libcurl4-openssl-dev libonnxruntime-dev zlib1g-dev`
+
+Both capture libraries are `dlopen`-ed at runtime, so they never become link-time dependencies of the addon; PulseAudio headers are still required to compile.
 
 ### Build Steps
 
 ```bash
-# Clone and init submodules (for Silero VAD model)
+# Clone and init submodules (Silero VAD model + sherpa-onnx sources)
 git clone https://github.com/devcxl/fcitx5-voice-input.git
 cd fcitx5-voice-input
 git submodule update --init --recursive
@@ -223,6 +233,10 @@ sudo cmake --install build --prefix /usr
 |--------|---------|-------------|
 | `BUILD_TESTS` | `OFF` | Build tests |
 | `ONNXRUNTIME_ROOT` | — | Custom ONNX Runtime install path |
+| `ENABLE_SHERPA_ONNX` | `ON` | Local ASR. Built from the `third_party/sherpa-onnx` submodule, else a system library; `OFF` compiles both local backends as stubs |
+| `SHERPA_ONNX_ROOT` | — | Custom system sherpa-onnx install path (used when the submodule is absent) |
+
+Audio capture backends are selected automatically by dependency probing — there is no CMake switch to disable one. Skipping the `pipewire-0.3` development package is what builds the addon without native PipeWire capture.
 
 
 ## Notes

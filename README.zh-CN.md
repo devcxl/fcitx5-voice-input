@@ -188,22 +188,32 @@ makepkg -si
 
 ### 依赖
 
-- `fcitx5` — 输入法框架
-- `libpulse-simple` — PulseAudio 音频捕获（优先）
-- `libpipewire-0.3` — PipeWire 音频捕获（fallback）
+**必需：**
+
+- `fcitx5` 开发包 — 输入法框架（Debian/Ubuntu 为 `libfcitx5core-dev`，Fedora/openSUSE 为 `fcitx5-devel`，Arch 为 `fcitx5`；pkg-config 名 `fcitx5` / CMake 目标 `Fcitx5Core`）
+- `libpulse-simple` — PulseAudio 音频捕获：必需编译依赖，也是首选采集后端
 - `jsoncpp` — JSON 解析
 - `libcurl` — HTTP/WebSocket 客户端（>= 7.86.0，ASR 必需）
 - `zlib` — Gzip 压缩（火山引擎后端必需）
 - `onnxruntime` — Silero VAD ONNX Runtime
+- `gettext` — 提供 `msgfmt`，编译 `po/` 翻译（配置阶段硬性要求）
+- `cmake` >= 3.20、C++20 编译器、`pkg-config`、`git`
 
-> **Arch Linux:** `sudo pacman -S fcitx5 pulseaudio pipewire jsoncpp curl onnxruntime-cpu zlib`
+**可选：**
+
+- `libpipewire-0.3` — PipeWire 直连采集，仅在 PulseAudio 不可用时作为回退。未安装其开发包时，只是不编入 PipeWire 后端
+- `sherpa-onnx` — 本地 ASR。默认由 `third_party/sherpa-onnx` 子模块内嵌编译；`-DENABLE_SHERPA_ONNX=OFF` 时两个本地后端编译为 stub
+
+> **Arch Linux:** `sudo pacman -S base-devel cmake git fcitx5 gettext pulseaudio jsoncpp curl onnxruntime-cpu zlib`
 >
-> **Debian/Ubuntu:** `sudo apt install fcitx5 libpulse-dev libpipewire-0.3-dev libjsoncpp-dev libcurl4-openssl-dev libonnxruntime-dev zlib1g-dev`
+> **Debian/Ubuntu:** `sudo apt install build-essential cmake git pkg-config gettext fcitx5 libfcitx5core-dev libpulse-dev libpipewire-0.3-dev libjsoncpp-dev libcurl4-openssl-dev libonnxruntime-dev zlib1g-dev`
+
+两个音频采集库均在运行期 `dlopen` 加载，不会成为 addon 的链接期依赖；但编译期仍需要 PulseAudio 头文件。
 
 ### 编译
 
 ```bash
-# 克隆并初始化子模块（获取 Silero VAD 模型）
+# 克隆并初始化子模块（Silero VAD 模型 + sherpa-onnx 源码）
 git clone https://github.com/devcxl/fcitx5-voice-input.git
 cd fcitx5-voice-input
 git submodule update --init --recursive
@@ -224,6 +234,10 @@ sudo cmake --install build --prefix /usr
 |------|--------|------|
 | `BUILD_TESTS` | `OFF` | 构建测试 |
 | `ONNXRUNTIME_ROOT` | — | ONNX Runtime 自定义安装路径 |
+| `ENABLE_SHERPA_ONNX` | `ON` | 本地 ASR。优先内嵌编译 `third_party/sherpa-onnx`，其次系统库；`OFF` 时两个本地后端编译为 stub |
+| `SHERPA_ONNX_ROOT` | — | 系统 sherpa-onnx 自定义安装路径（子模块缺失时使用） |
+
+音频捕获后端由依赖探测自动决定，不提供 CMake 开关；不安装 `pipewire-0.3` 开发包即不会编入 PipeWire 直连后端。
 
 
 ## 注意事项
