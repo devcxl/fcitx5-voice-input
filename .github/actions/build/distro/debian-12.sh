@@ -11,10 +11,14 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 $RUN apt-get update -qq
+# bookworm 的 fcitx5-config-qt 为 Qt5 → 装 Qt5 + Fcitx5Qt5WidgetsAddons（libfcitx5-qt-dev）。
+# 注意：bookworm 的 libfcitx5-qt6-dev 不含 Fcitx5Qt6WidgetsAddons（无 CMake config 与 .so），
+# 因此本发行版只能构建 Qt5 变体；CMake 会在找不到 Qt6 目标时自动跳过。
 $RUN apt-get install -y -qq \
     git curl ca-certificates g++ cmake pkg-config \
     libfcitx5core-dev libjsoncpp-dev libcurl4-openssl-dev zlib1g-dev \
-    gettext dpkg-dev file \
+    libarchive-dev libssl-dev qtbase5-dev libfcitx5-qt-dev \
+    gettext dpkg-dev file dbus-daemon \
     ${CAPTURE_PKGS:-libpipewire-0.3-dev libspa-0.2-dev libpulse-dev}
 
 if [ "${ONNX_STRATEGY:-download}" = "system" ]; then
@@ -24,5 +28,16 @@ else
     echo "CPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF" >> "${GITHUB_ENV}"
 fi
 
-echo "CPACK_DEBIAN_PACKAGE_DEPENDS=fcitx5, libjsoncpp25, libcurl4, zlib1g, libpulse0" >> "${GITHUB_ENV}"
+export CPACK_DEBIAN_PACKAGE_DEPENDS="fcitx5, libjsoncpp25, libcurl4, zlib1g, libpulse0"
+if [ "${ONNX_STRATEGY:-download}" != "system" ]; then
+    # SHLIBDEPS=OFF（download 策略）时必须手写 GUI 运行时依赖：
+    # libfcitx5-qt1（Qt5 WidgetsAddons，连带 libqt5* 运行时）、
+    # libarchive13（模型安装器）、libssl3（addon 与安装器的 OpenSSL Crypto）。
+    CPACK_DEBIAN_PACKAGE_DEPENDS="${CPACK_DEBIAN_PACKAGE_DEPENDS}, libfcitx5-qt1, libarchive13, libssl3"
+fi
+# SHLIBDEPS=ON（system 策略）时上述 GUI 依赖由 dpkg-shlibdeps 从 ELF NEEDED 推导。
+echo "CPACK_DEBIAN_PACKAGE_DEPENDS=${CPACK_DEBIAN_PACKAGE_DEPENDS}" >> "${GITHUB_ENV}"
 echo "CPACK_DEBIAN_PACKAGE_RECOMMENDS=libpipewire-0.3-0" >> "${GITHUB_ENV}"
+
+# 打包冒烟断言用：本发行版实际构建的 Qt 主版本（跟随 fcitx5-config-qt）。
+echo "VOICE_INPUT_GUI_QT_MAJOR=5" >> "${GITHUB_ENV}"
