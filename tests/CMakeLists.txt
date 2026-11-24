@@ -23,10 +23,12 @@ add_test(NAME audio_frame_assembler_test COMMAND audio_frame_assembler_test)
 add_executable(sherpa_paths_test
     sherpa_paths_test.cpp
     ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/sherpa_paths.cpp
+    ${CMAKE_SOURCE_DIR}/src/model_manager/model_paths.cpp
 )
 
 target_include_directories(sherpa_paths_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/addon
+    ${CMAKE_SOURCE_DIR}/src/model_manager
     ${FCITX5_INCLUDE_DIRS}
 )
 
@@ -35,6 +37,98 @@ target_link_libraries(sherpa_paths_test PRIVATE
 )
 
 add_test(NAME sherpa_paths_test COMMAND sherpa_paths_test)
+
+add_executable(sherpa_model_verify_test
+    sherpa_model_verify_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/sherpa_model_verify.cpp
+    ${CMAKE_SOURCE_DIR}/src/addon/asr/utils/sherpa_model_resolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/model_manager/model_catalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/model_manager/model_paths.cpp
+    ${CMAKE_SOURCE_DIR}/src/model_manager/sha256.cpp
+)
+target_include_directories(sherpa_model_verify_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${CMAKE_SOURCE_DIR}/src/model_manager
+)
+target_link_libraries(sherpa_model_verify_test PRIVATE OpenSSL::Crypto)
+add_test(NAME sherpa_model_verify_test COMMAND sherpa_model_verify_test)
+
+add_executable(model_manager_config_test model_manager_config_test.cpp)
+target_include_directories(model_manager_config_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon
+    ${FCITX5_INCLUDE_DIRS}
+)
+target_link_libraries(model_manager_config_test PRIVATE ${FCITX5_LIBRARIES})
+add_test(NAME model_manager_config_test COMMAND model_manager_config_test)
+
+if(SHERPA_ONNX_FOUND)
+    set(MODEL_MANAGER_TEST_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/model_manager/model_catalog.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/model_paths.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/sha256.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/fs_safe.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/safe_remove.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/archive_extract.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/install_lock.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/install_events.cpp
+        ${CMAKE_SOURCE_DIR}/src/model_manager/installed_model.cpp
+    )
+    foreach(test_name model_manager_test model_manager_extract_test model_manager_fs_test model_manager_child_test model_manager_publish_test model_manager_safe_remove_test)
+        add_executable(${test_name} ${test_name}.cpp ${MODEL_MANAGER_TEST_SOURCES})
+        if(test_name STREQUAL "model_manager_child_test")
+            target_sources(${test_name} PRIVATE
+                ${CMAKE_SOURCE_DIR}/src/model_manager/trial_load.cpp)
+        endif()
+        if(test_name STREQUAL "model_manager_publish_test")
+            target_sources(${test_name} PRIVATE
+                ${CMAKE_SOURCE_DIR}/src/model_manager/publish.cpp)
+        endif()
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/model_manager
+            ${CMAKE_SOURCE_DIR}/tests
+            ${JSONCPP_INCLUDE_DIRS}
+        )
+        target_link_libraries(${test_name} PRIVATE
+            LibArchive::LibArchive OpenSSL::Crypto ${JSONCPP_LIBRARIES} ${CMAKE_DL_LIBS})
+        add_test(NAME ${test_name} COMMAND ${test_name})
+        set_tests_properties(${test_name} PROPERTIES TIMEOUT 30)
+    endforeach()
+    add_test(NAME model_manager_status_absent
+        COMMAND ${CMAKE_COMMAND} -E env
+            "XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/model-status-absent"
+            $<TARGET_FILE:voice-input-model-installer>
+            --check-model offline-x-asr)
+    set_tests_properties(model_manager_status_absent PROPERTIES
+        PASS_REGULAR_EXPRESSION "\"state\":\"absent\""
+        TIMEOUT 10)
+    add_test(NAME model_manager_status_unknown
+        COMMAND $<TARGET_FILE:voice-input-model-installer> --check-model unknown)
+    set_tests_properties(model_manager_status_unknown PROPERTIES
+        WILL_FAIL TRUE TIMEOUT 10)
+endif()
+
+add_executable(engine_backend_prepare_test engine_backend_prepare_test.cpp)
+target_include_directories(engine_backend_prepare_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon ${FCITX5_INCLUDE_DIRS})
+target_link_libraries(engine_backend_prepare_test PRIVATE
+    "-Wl,$<TARGET_FILE:voice-input-addon>" ${FCITX5_LIBRARIES})
+add_dependencies(engine_backend_prepare_test voice-input-addon)
+add_test(NAME engine_backend_prepare_test COMMAND engine_backend_prepare_test)
+set_tests_properties(engine_backend_prepare_test PROPERTIES TIMEOUT 30)
+
+add_executable(engine_backend_switch_test engine_backend_switch_test.cpp)
+target_include_directories(engine_backend_switch_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/addon ${FCITX5_INCLUDE_DIRS})
+target_link_libraries(engine_backend_switch_test PRIVATE
+    "-Wl,$<TARGET_FILE:voice-input-addon>" ${FCITX5_LIBRARIES})
+add_dependencies(engine_backend_switch_test voice-input-addon)
+foreach(scenario cloud-sync inactive-subconfig model-notify-inactive switch-fail
+                 status-readonly model-notify-active reload-fail-keeps-old
+                 destroy-while-loading rapid-local-cloud-local switch-away-status)
+    add_test(NAME engine_backend_${scenario}
+        COMMAND engine_backend_switch_test ${scenario})
+    set_tests_properties(engine_backend_${scenario} PROPERTIES TIMEOUT 10)
+endforeach()
 
 add_executable(llm_request_cancellation_test
     llm_request_cancellation_test.cpp

@@ -6,6 +6,7 @@
 
 #include <fcitx-utils/log.h>
 
+#include "utils/sherpa_model_resolver.h"
 #include "utils/sherpa_paths.h"
 
 namespace fcitx {
@@ -245,24 +246,35 @@ SherpaOnnxAsrEngine::~SherpaOnnxAsrEngine() {
 
 bool SherpaOnnxAsrEngine::Init(const Config& config) {
     config_ = config;
-    SherpaModelPaths paths = ResolveSherpaModelPaths(
-        config.modelPath,
-        {config.encoderPath, config.decoderPath, config.joinerPath,
-         config.tokensPath},
-        "voice-input:sherpa_onnx");
-    if (!paths.valid) {
-        FCITX_ERROR() << "[voice-input:sherpa_onnx] Failed to find valid model files. "
-                      << "Please check encoder, decoder, joiner, tokens.txt.";
+
+    // 每次 Init 先让旧身份失效：失败时状态镜像不能继续显示上一个模型版本。
+    {
+        std::lock_guard<std::mutex> lock(identityMutex_);
+        identity_ = {};
+    }
+
+    constexpr const char* kTag = "voice-input:sherpa_onnx";
+    // 只接受清单固定的 streaming 模型版本目录，并在进入 sherpa 前完成逐文件
+    // SHA-256 校验：错配/篡改/未安装都在这里被拒绝，不会走到 _Exit/SIGSEGV。
+    const SherpaResolvedModel model =
+        ResolveControlledSherpaModel(SherpaBackendKind::Streaming);
+    if (!model.ok()) {
+        FCITX_ERROR() << "[" << kTag << "] Local model unavailable: status="
+                      << SherpaModelStatusName(model.status)
+                      << " id=" << model.modelId << " version=" << model.version
+                      << (model.failedRelativePath.empty()
+                              ? ""
+                              : " file=" + model.failedRelativePath);
         return false;
     }
 
     SherpaOnnxOnlineRecognizerConfig c_cfg;
     std::memset(&c_cfg, 0, sizeof(c_cfg));
 
-    c_cfg.model_config.transducer.encoder = paths.encoder.c_str();
-    c_cfg.model_config.transducer.decoder = paths.decoder.c_str();
-    c_cfg.model_config.transducer.joiner  = paths.joiner.c_str();
-    c_cfg.model_config.tokens             = paths.tokens.c_str();
+    c_cfg.model_config.transducer.encoder = model.encoder.c_str();
+    c_cfg.model_config.transducer.decoder = model.decoder.c_str();
+    c_cfg.model_config.transducer.joiner  = model.joiner.c_str();
+    c_cfg.model_config.tokens             = model.tokens.c_str();
     c_cfg.model_config.modeling_unit      = "cjkchar";
     c_cfg.model_config.num_threads        = std::max(1, config.numThreads);
     c_cfg.model_config.provider           = "cpu";
@@ -276,13 +288,13 @@ bool SherpaOnnxAsrEngine::Init(const Config& config) {
 
     // 如果未显式配置热词路径，自动探测默认位置
     const std::string hotwordsPath = ResolveSherpaHotwordsFile(
-        config.hotwordsFile, "voice-input:sherpa_onnx");
+        config.hotwordsFile, kTag);
 
     if (!hotwordsPath.empty()) {
         c_cfg.hotwords_file               = hotwordsPath.c_str();
         c_cfg.hotwords_score              = config.hotwordsScore > 0 ? config.hotwordsScore : 2.0f;
         c_cfg.decoding_method             = "modified_beam_search";
-        FCITX_INFO() << "[voice-input:sherpa_onnx] Hotwords enabled: " << hotwordsPath
+        FCITX_INFO() << "[" << kTag << "] Hotwords enabled: " << hotwordsPath
                      << " score=" << c_cfg.hotwords_score;
     } else {
         c_cfg.decoding_method             = "greedy_search";
@@ -292,22 +304,27 @@ bool SherpaOnnxAsrEngine::Init(const Config& config) {
     try {
         rawRecognizer = SherpaOnnxCreateOnlineRecognizer(&c_cfg);
     } catch (const std::exception& e) {
-        FCITX_ERROR() << "[voice-input:sherpa_onnx] Exception during SherpaOnnxCreateOnlineRecognizer: "
+        FCITX_ERROR() << "[" << kTag << "] Exception during SherpaOnnxCreateOnlineRecognizer: "
                       << e.what();
         rawRecognizer = nullptr;
     } catch (...) {
-        FCITX_ERROR() << "[voice-input:sherpa_onnx] Unknown exception during SherpaOnnxCreateOnlineRecognizer";
+        FCITX_ERROR() << "[" << kTag << "] Unknown exception during SherpaOnnxCreateOnlineRecognizer";
         rawRecognizer = nullptr;
     }
 
     if (!rawRecognizer) {
-        FCITX_ERROR() << "[voice-input:sherpa_onnx] SherpaOnnxCreateOnlineRecognizer failed! Check model paths.";
+        FCITX_ERROR() << "[" << kTag << "] SherpaOnnxCreateOnlineRecognizer failed! Check model paths.";
         return false;
     }
 
     holder_ = std::make_shared<SherpaRecognizerHolder>(rawRecognizer);
-    FCITX_INFO() << "[voice-input:sherpa_onnx] Initialized successfully. encoder=" << paths.encoder
-                 << " decoder=" << paths.decoder << " joiner=" << paths.joiner
+    {
+        std::lock_guard<std::mutex> lock(identityMutex_);
+        identity_ = {true, model.modelId, model.version};
+    }
+    FCITX_INFO() << "[" << kTag << "] Initialized successfully. model="
+                 << model.modelId << " version=" << model.version
+                 << " encoder=" << model.encoder
                  << " threads=" << c_cfg.model_config.num_threads;
     return true;
 }
@@ -360,5 +377,12 @@ AsrSessionStart SherpaOnnxAsrEngine::StartSession() {
 }
 
 #endif // HAVE_SHERPA_ONNX
+
+// 定义放在条件编译之外：未编入 sherpa 时 identity_ 保持默认无效，
+// 状态镜像据此显示"无本地模型"，而不是编造版本。
+AsrModelIdentity SherpaOnnxAsrEngine::ModelIdentity() const {
+    std::lock_guard<std::mutex> lock(identityMutex_);
+    return identity_;
+}
 
 } // namespace fcitx

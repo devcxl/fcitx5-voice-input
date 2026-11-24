@@ -14,6 +14,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 option(BUILD_TESTS "Build unit tests" OFF)
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to an ONNX Runtime installation")
 option(ENABLE_SHERPA_ONNX "Enable Sherpa-ONNX local streaming ASR" ON)
+option(ENABLE_MODEL_MANAGER_GUI "Build the Fcitx model manager UI" ON)
 set(SHERPA_ONNX_ROOT "" CACHE PATH "Path to a sherpa-onnx installation")
 
 # ─── Dependencies ─────────────────────────────────────────────────────────────
@@ -61,6 +62,9 @@ endif()
 
 # Gzip compression (for Volcengine WebSocket ASR)
 find_package(ZLIB REQUIRED)
+
+# Trusted model catalogue and SHA-256 validation.
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 # Silero VAD via ONNX Runtime (the only VAD backend)
 set(ENABLE_SILERO_VAD ON)
@@ -178,10 +182,55 @@ if(ENABLE_SHERPA_ONNX)
     endif()
 endif()
 
+# 模型安装器是配置界面调用的一次性进程，不进入 addon 进程。
+if(SHERPA_ONNX_FOUND)
+    find_package(LibArchive REQUIRED)
+    add_executable(voice-input-model-installer
+        src/model_manager/main.cpp
+        src/model_manager/cli.cpp
+        src/model_manager/model_catalog.cpp
+        src/model_manager/model_paths.cpp
+        src/model_manager/sha256.cpp
+        src/model_manager/fs_safe.cpp
+        src/model_manager/safe_remove.cpp
+        src/model_manager/archive_source.cpp
+        src/model_manager/publish.cpp
+        src/model_manager/archive_download.cpp
+        src/model_manager/archive_extract.cpp
+        src/model_manager/install_lock.cpp
+        src/model_manager/install_events.cpp
+        src/model_manager/installed_model.cpp
+        src/model_manager/trial_load.cpp
+        src/model_manager/model_installer.cpp
+    )
+    target_include_directories(voice-input-model-installer PRIVATE
+        src/model_manager ${JSONCPP_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS}
+        ${SHERPA_ONNX_INCLUDE_DIRS}
+    )
+    target_compile_definitions(voice-input-model-installer PRIVATE HAVE_SHERPA_ONNX)
+    target_link_libraries(voice-input-model-installer PRIVATE
+        LibArchive::LibArchive OpenSSL::Crypto CURL::libcurl
+        ${JSONCPP_LIBRARIES} ${CMAKE_DL_LIBS}
+    )
+    if(ENABLE_MODEL_MANAGER_GUI)
+        set(VOICE_INPUT_MODEL_GUI_BUILD_TESTS ${BUILD_TESTS})
+        add_subdirectory(src/model_gui)
+        if(NOT TARGET voice-input-model-gui-qt5 AND
+           NOT TARGET voice-input-model-gui-qt6)
+            message(FATAL_ERROR
+                "Model management needs Fcitx Qt WidgetsAddons and Qt Widgets/DBus. "
+                "Install Qt 5 or Qt 6 development dependencies, or explicitly "
+                "configure -DENABLE_MODEL_MANAGER_GUI=OFF.")
+        endif()
+    endif()
+endif()
+
 # ─── Sources ──────────────────────────────────────────────────────────────────
 set(ADDON_SOURCES
     src/addon/engine.cpp
     src/addon/engine_results.cpp
+    src/addon/engine_backend.cpp
+    src/addon/engine_asr_prepare.cpp
     src/addon/vad/vad.cpp
     src/addon/vad/silero_vad.cpp
     src/addon/pipeline/pipeline.cpp
@@ -196,7 +245,12 @@ set(ADDON_SOURCES
     src/addon/asr/session_reaper.cpp
     src/addon/asr/utils/base64.cpp
     src/addon/asr/utils/sherpa_paths.cpp
+    src/addon/asr/utils/sherpa_model_verify.cpp
+    src/addon/asr/utils/sherpa_model_resolver.cpp
     src/addon/asr/utils/chat_asr_request.cpp
+    src/model_manager/model_catalog.cpp
+    src/model_manager/model_paths.cpp
+    src/model_manager/sha256.cpp
     src/addon/llm/llm_client.cpp
 )
 
@@ -208,6 +262,8 @@ list(APPEND ADDON_SOURCES src/addon/capture/pulse_audio_capture.cpp)
 
 set(ADDON_HEADERS
     src/addon/engine.h
+    src/addon/engine_backend.h
+    src/addon/engine_asr_prepare.h
     src/addon/types.h
     src/addon/config/voiceinput-config.h
     src/addon/capture/audio_capture.h
@@ -251,6 +307,7 @@ target_include_directories(voice-input-addon PRIVATE
     ${CURL_INCLUDE_DIRS}
     ${ONNXRUNTIME_INCLUDE_DIRS}
     src/addon
+    src/model_manager
 )
 if(SHERPA_ONNX_FOUND)
     target_include_directories(voice-input-addon PRIVATE ${SHERPA_ONNX_INCLUDE_DIRS})
@@ -286,6 +343,7 @@ target_link_libraries(voice-input-addon PRIVATE
     ${CMAKE_DL_LIBS}
     CURL::libcurl
     ZLIB::ZLIB
+    OpenSSL::Crypto
 )
 
 target_compile_definitions(voice-input-addon PRIVATE
@@ -293,6 +351,9 @@ target_compile_definitions(voice-input-addon PRIVATE
     FCITX_GETTEXT_DOMAIN="fcitx5-voice-input"
     VOICE_INPUT_LOCALE_DIR="${CMAKE_INSTALL_FULL_LOCALEDIR}"
 )
+if(TARGET voice-input-model-gui-qt5 OR TARGET voice-input-model-gui-qt6)
+    target_compile_definitions(voice-input-addon PRIVATE HAVE_MODEL_MANAGER_GUI)
+endif()
 if(PIPEWIRE_FOUND)
     target_compile_definitions(voice-input-addon PRIVATE HAVE_PIPEWIRE)
 endif()
@@ -347,6 +408,12 @@ install(TARGETS voice-input-addon
 if(SHERPA_ONNX_FOUND AND _sherpa_is_target)
     install(TARGETS sherpa-onnx-c-api
         LIBRARY DESTINATION ${FCITX5_ADDON_DIR}
+    )
+endif()
+
+if(TARGET voice-input-model-installer)
+    install(TARGETS voice-input-model-installer
+        RUNTIME DESTINATION ${FCITX5_ADDON_DIR}
     )
 endif()
 

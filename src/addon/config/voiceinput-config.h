@@ -9,6 +9,16 @@
 
 namespace fcitx {
 
+class ModelManagerOption : public ExternalOption {
+public:
+    using ExternalOption::ExternalOption;
+    void setHidden(bool hidden) { hidden_ = hidden; }
+    bool skipDescription() const override { return hidden_; }
+
+private:
+    bool hidden_ = false;
+};
+
 struct AsrBackendAnnotation : public EnumAnnotation {
     void dumpDescription(RawConfig &config) const {
         EnumAnnotation::dumpDescription(config);
@@ -183,8 +193,9 @@ FCITX_CONFIGURATION(VolcengineAsrConfig,
 );
 
 FCITX_CONFIGURATION(SherpaOnnxAsrConfig,
-    Option<std::string> modelDir{
-        this, "ModelDir", _("模型目录路径 (留空自动搜索默认目录)"), ""};
+    ModelManagerOption modelManager{
+        this, "ModelManager", _("管理本地模型"),
+        "fcitx://config/addon/voiceinput/model/online"};
 
     Option<int, IntConstrain> numThreads{
         this, "NumThreads", _("CPU 推理线程数"), 2,
@@ -202,8 +213,9 @@ FCITX_CONFIGURATION(SherpaOnnxAsrConfig,
 );
 
 FCITX_CONFIGURATION(SherpaOfflineAsrConfig,
-    Option<std::string> modelDir{
-        this, "ModelDir", _("模型目录路径 (留空自动搜索默认目录)"), ""};
+    ModelManagerOption modelManager{
+        this, "ModelManager", _("管理本地模型"),
+        "fcitx://config/addon/voiceinput/model/offline"};
 
     Option<int, IntConstrain> numThreads{
         this, "NumThreads", _("CPU 推理线程数"), 2,

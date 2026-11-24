@@ -83,9 +83,16 @@ public:
     bool Init(const Config& config) override;
     AsrSessionStart StartSession() override;
     const char* Name() const override { return "sherpa_onnx"; }
+    /// 已通过校验并加载的清单 id/版本；未 Init 或失败时返回无效身份。
+    AsrModelIdentity ModelIdentity() const override;
 
 private:
     Config config_;
+
+    // Init() 可能在后台线程执行，而状态镜像会在主线程读取身份；
+    // 用互斥量避免读到正在改写的 std::string。
+    mutable std::mutex identityMutex_;
+    AsrModelIdentity identity_;
 #ifdef HAVE_SHERPA_ONNX
     std::shared_ptr<SherpaRecognizerHolder> holder_;
 #endif

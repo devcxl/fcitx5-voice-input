@@ -6,6 +6,7 @@
 
 #include <fcitx-utils/log.h>
 
+#include "utils/sherpa_model_resolver.h"
 #include "utils/sherpa_paths.h"
 
 namespace fcitx {
@@ -224,14 +225,26 @@ SherpaOfflineAsrEngine::~SherpaOfflineAsrEngine() {
 
 bool SherpaOfflineAsrEngine::Init(const Config& config) {
     config_ = config;
-    SherpaModelPaths paths = ResolveSherpaModelPaths(
-        config.modelPath,
-        {config.encoderPath, config.decoderPath, config.joinerPath,
-         config.tokensPath},
-        "voice-input:sherpa_offline");
-    if (!paths.valid) {
-        FCITX_ERROR() << "[voice-input:sherpa_offline] Failed to find valid model files. "
-                      << "Please check encoder, decoder, joiner, tokens.txt.";
+
+    // 每次 Init 先让旧身份失效：失败时状态镜像不能继续显示上一个模型版本。
+    {
+        std::lock_guard<std::mutex> lock(identityMutex_);
+        identity_ = {};
+    }
+
+    constexpr const char* kTag = "voice-input:sherpa_offline";
+    // 离线后端只接受清单固定的非流式模型：在线模型的 encoder 状态张量是
+    // float32，离线后端强制 int32/int64，错配会让 sherpa 直接 _Exit(-1)。
+    // 因此在构造 recognizer 之前必须先通过逐文件 SHA-256 校验。
+    const SherpaResolvedModel model =
+        ResolveControlledSherpaModel(SherpaBackendKind::Offline);
+    if (!model.ok()) {
+        FCITX_ERROR() << "[" << kTag << "] Local model unavailable: status="
+                      << SherpaModelStatusName(model.status)
+                      << " id=" << model.modelId << " version=" << model.version
+                      << (model.failedRelativePath.empty()
+                              ? ""
+                              : " file=" + model.failedRelativePath);
         return false;
     }
 
@@ -241,17 +254,16 @@ bool SherpaOfflineAsrEngine::Init(const Config& config) {
     c_cfg.feat_config.sample_rate = 16000;
     c_cfg.feat_config.feature_dim = 80;
 
-    c_cfg.model_config.transducer.encoder = paths.encoder.c_str();
-    c_cfg.model_config.transducer.decoder = paths.decoder.c_str();
-    c_cfg.model_config.transducer.joiner = paths.joiner.c_str();
-    c_cfg.model_config.tokens = paths.tokens.c_str();
+    c_cfg.model_config.transducer.encoder = model.encoder.c_str();
+    c_cfg.model_config.transducer.decoder = model.decoder.c_str();
+    c_cfg.model_config.transducer.joiner = model.joiner.c_str();
+    c_cfg.model_config.tokens = model.tokens.c_str();
     c_cfg.model_config.num_threads = std::max(1, config.numThreads);
     c_cfg.model_config.provider = "cpu";
 
     // X-ASR 词表里汉字只有 "▁汉字" 形态（每个汉字单独成词），热词需要逐字拆分
     // 并用 bpe 编码；常规中文模型仍是 cjkchar。两种情况下都不配置 bpe.model：
     // Ssentencepiece 期望 "token score" 文本词表，传二进制 proto 会 exit(-1)。
-    constexpr const char* kTag = "voice-input:sherpa_offline";
     c_cfg.model_config.modeling_unit = "cjkchar";
     c_cfg.max_active_paths = 8;
     c_cfg.decoding_method = "greedy_search";
@@ -261,14 +273,14 @@ bool SherpaOfflineAsrEngine::Init(const Config& config) {
     const std::string hotwordsPath =
         ResolveSherpaHotwordsFile(config.hotwordsFile, kTag);
     if (!hotwordsPath.empty()) {
-        const HotwordEncoding encoding = DetectHotwordEncoding(paths.tokens);
+        const HotwordEncoding encoding = DetectHotwordEncoding(model.tokens);
         hotwordsFile = PrepareSherpaHotwordsFile(hotwordsPath, encoding, kTag);
         if (!hotwordsFile.empty()) {
             if (encoding == HotwordEncoding::CjkChar) {
                 c_cfg.model_config.modeling_unit = "cjkchar";
             } else {
                 c_cfg.model_config.modeling_unit = "bpe";
-                bpeVocab = ResolveSherpaBpeVocab(paths.tokens);
+                bpeVocab = ResolveSherpaBpeVocab(model.tokens);
                 c_cfg.model_config.bpe_vocab = bpeVocab.c_str();
             }
             c_cfg.hotwords_file = hotwordsFile.c_str();
@@ -303,9 +315,13 @@ bool SherpaOfflineAsrEngine::Init(const Config& config) {
     }
 
     holder_ = std::make_shared<SherpaOfflineRecognizerHolder>(rawRecognizer);
-    FCITX_INFO() << "[voice-input:sherpa_offline] Initialized successfully. encoder="
-                 << paths.encoder << " decoder=" << paths.decoder
-                 << " joiner=" << paths.joiner
+    {
+        std::lock_guard<std::mutex> lock(identityMutex_);
+        identity_ = {true, model.modelId, model.version};
+    }
+    FCITX_INFO() << "[" << kTag << "] Initialized successfully. model="
+                 << model.modelId << " version=" << model.version
+                 << " encoder=" << model.encoder
                  << " threads=" << c_cfg.model_config.num_threads;
     return true;
 }
@@ -359,5 +375,12 @@ AsrSessionStart SherpaOfflineAsrEngine::StartSession() {
 }
 
 #endif // HAVE_SHERPA_ONNX
+
+// 定义放在条件编译之外：未编入 sherpa 时 identity_ 保持默认无效，
+// 状态镜像据此显示"无本地模型"，而不是编造版本。
+AsrModelIdentity SherpaOfflineAsrEngine::ModelIdentity() const {
+    std::lock_guard<std::mutex> lock(identityMutex_);
+    return identity_;
+}
 
 } // namespace fcitx

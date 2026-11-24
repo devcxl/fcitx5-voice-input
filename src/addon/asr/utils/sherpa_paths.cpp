@@ -9,6 +9,8 @@
 
 #include <fcitx-utils/log.h>
 
+#include "model_paths.h"
+
 namespace fcitx {
 
 namespace {
@@ -20,153 +22,32 @@ bool IsFile(const std::string& path) {
     return fsys::is_regular_file(path, ec);
 }
 
-/// 目录内按前缀匹配 *.onnx，优先 int8 量化文件。
-std::string FindMatchingModelFile(const fsys::path& dir,
-                                  const std::string& prefix) {
-    std::string int8Candidate;
-    std::string fp32Candidate;
-
-    std::error_code ec;
-    for (const auto& entry : fsys::directory_iterator(dir, ec)) {
-        if (ec) break;
-        if (!entry.is_regular_file(ec)) continue;
-
-        const std::string filename = entry.path().filename().string();
-        if (filename.rfind(prefix, 0) != 0) continue;
-        if (filename.rfind(".onnx") == std::string::npos) continue;
-
-        if (filename.find(".int8.onnx") != std::string::npos) {
-            int8Candidate = entry.path().string();
-        } else {
-            fp32Candidate = entry.path().string();
-        }
-    }
-    return !int8Candidate.empty() ? int8Candidate : fp32Candidate;
-}
-
-/// 显式配置的文件必须存在；未配置的按目录前缀探测。
-std::string ResolveFile(const fsys::path& dir, const std::string& configured,
-                        const std::string& prefix) {
-    if (!configured.empty()) {
-        return IsFile(configured) ? configured : std::string{};
-    }
-    return FindMatchingModelFile(dir, prefix);
-}
-
-bool CheckModelDir(const fsys::path& dir,
-                   const SherpaModelPathOverrides& overrides,
-                   SherpaModelPaths* out) {
-    std::error_code ec;
-    if (!fsys::is_directory(dir, ec)) return false;
-
-    const std::string encoder =
-        ResolveFile(dir, overrides.encoder, "encoder");
-    const std::string decoder =
-        ResolveFile(dir, overrides.decoder, "decoder");
-    const std::string joiner = ResolveFile(dir, overrides.joiner, "joiner");
-    // tokens 固定为 tokens.txt，不参与前缀探测
-    std::string tokens;
-    if (!overrides.tokens.empty()) {
-        tokens = IsFile(overrides.tokens) ? overrides.tokens : std::string{};
-    } else {
-        const fsys::path candidate = dir / "tokens.txt";
-        tokens = IsFile(candidate.string()) ? candidate.string() : std::string{};
-    }
-
-    if (encoder.empty() || decoder.empty() || joiner.empty() || tokens.empty()) {
-        return false;
-    }
-
-    out->encoder = encoder;
-    out->decoder = decoder;
-    out->joiner = joiner;
-    out->tokens = tokens;
-    out->valid = true;
-    return true;
-}
-
-std::string UserDataDir() {
-    const char* xdgData = std::getenv("XDG_DATA_HOME");
-    if (xdgData && *xdgData) return xdgData;
-
-    const char* home = std::getenv("HOME");
-    if (home && *home) return std::string(home) + "/.local/share";
-    return {};
-}
-
 } // namespace
-
-SherpaModelPaths ResolveSherpaModelPaths(
-    const std::string& modelDir, const SherpaModelPathOverrides& overrides,
-    const char* logTag) {
-    SherpaModelPaths result;
-
-    if (!overrides.encoder.empty() && !overrides.decoder.empty() &&
-        !overrides.joiner.empty() && !overrides.tokens.empty()) {
-        if (IsFile(overrides.encoder) && IsFile(overrides.decoder) &&
-            IsFile(overrides.joiner) && IsFile(overrides.tokens)) {
-            result.encoder = overrides.encoder;
-            result.decoder = overrides.decoder;
-            result.joiner = overrides.joiner;
-            result.tokens = overrides.tokens;
-            result.valid = true;
-            return result;
-        }
-        FCITX_WARN() << "[" << logTag
-                     << "] 显式配置的模型文件不完整，回退到目录探测";
-    }
-
-    std::vector<fsys::path> bases;
-    if (!modelDir.empty()) bases.emplace_back(modelDir);
-
-    const std::string userShare = UserDataDir();
-    if (!userShare.empty()) {
-        bases.emplace_back(fsys::path(userShare) / "fcitx5/voice-input/models");
-    }
-    bases.emplace_back("/usr/local/share/fcitx5/voice-input/models");
-
-    for (const auto& base : bases) {
-        if (CheckModelDir(base, overrides, &result)) {
-            FCITX_INFO() << "[" << logTag << "] Found valid model directory: "
-                         << base.string();
-            return result;
-        }
-
-        std::error_code ec;
-        for (const auto& entry : fsys::directory_iterator(base, ec)) {
-            if (ec) break;
-            if (!entry.is_directory(ec)) continue;
-            if (CheckModelDir(entry.path(), overrides, &result)) {
-                FCITX_INFO() << "[" << logTag
-                             << "] Found valid model directory: "
-                             << entry.path().string();
-                return result;
-            }
-        }
-    }
-
-    return result;
-}
 
 std::string ResolveSherpaHotwordsFile(const std::string& configured,
                                       const char* logTag) {
     if (!configured.empty()) {
-        if (IsFile(configured)) return configured;
+        if (IsFile(configured) && std::ifstream(configured)) return configured;
         FCITX_WARN() << "[" << logTag
-                     << "] 配置的热词文件不存在，已忽略: " << configured;
+                     << "] 配置的热词文件不存在或不可读取，已忽略: " << configured;
         return {};
     }
 
-    const std::string userShare = UserDataDir();
+    // 与受控模型共用同一份 XDG 规则（相对 XDG_DATA_HOME 按 spec 忽略）。
+    const std::string userShare = model_manager::DataHomeDir();
     if (!userShare.empty()) {
         const fsys::path candidate =
             fsys::path(userShare) / "fcitx5/voice-input/hotwords.txt";
-        if (IsFile(candidate.string())) return candidate.string();
+        if (IsFile(candidate.string()) && std::ifstream(candidate)) {
+            return candidate.string();
+        }
     }
 
     if (const char* home = std::getenv("HOME"); home && *home) {
         const fsys::path candidate = fsys::path(home) / ".config/fcitx5/hotwords.txt";
-        if (IsFile(candidate.string())) return candidate.string();
+        if (IsFile(candidate.string()) && std::ifstream(candidate)) {
+            return candidate.string();
+        }
     }
 
     return {};
@@ -338,9 +219,7 @@ HotwordEncoding DetectHotwordEncoding(const std::string& tokensPath) {
 }
 
 std::string ResolveSherpaBpeVocab(const std::string& tokensPath) {
-    const fsys::path dir = fsys::path(tokensPath).parent_path();
-    const fsys::path candidate = dir / "bpe.vocab";
-    if (IsFile(candidate.string())) return candidate.string();
+    // 仅使用经过模型清单校验的词表，不加载目录中未经校验的 bpe.vocab。
     // tokens.txt 的 "token id" 会被当作 score 读取；逐字/整词切分仍然可用。
     return tokensPath;
 }

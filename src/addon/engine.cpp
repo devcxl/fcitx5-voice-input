@@ -26,10 +26,6 @@
 
 #include "engine.h"
 
-#include "asr/openai_asr.h"
-#include "asr/realtime_asr.h"
-#include "asr/mistral_asr.h"
-#include "asr/volcengine_asr.h"
 #include "llm/llm_client.h"
 
 namespace fcitx {
@@ -42,13 +38,18 @@ auto Milliseconds(Clock::time_point start, Clock::time_point end = Clock::now())
     return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 }
 
-// 配置文件可能含 API Key 等敏感凭据，保存后收紧为仅所有者可读写
+// 配置文件可能含 API Key 等敏感凭据，保存后收紧为仅所有者可读写。
+// 必须使用 PkgConfig 类型：readAsIni/safeSaveAsIni 默认写的就是
+// StandardPathsType::PkgConfig（$XDG_CONFIG_HOME/fcitx5），用 Config
+// 会 chmod 到 $XDG_CONFIG_HOME/conf/... 这个不存在的路径，凭据文件保持 0644。
 void RestrictConfigFilePermissions(const std::string& relativePath) {
 #ifdef VOICE_INPUT_HAS_STANDARDPATHS
-    auto configDir = StandardPaths::global().userDirectory(StandardPathsType::Config);
+    auto configDir =
+        StandardPaths::global().userDirectory(StandardPathsType::PkgConfig);
     std::string fullPath = (configDir / relativePath).string();
 #else
-    auto configDir = StandardPath::global().userDirectory(StandardPath::Type::Config);
+    auto configDir =
+        StandardPath::global().userDirectory(StandardPath::Type::PkgConfig);
     std::string fullPath = configDir + "/" + relativePath;
 #endif
     if (::chmod(fullPath.c_str(), S_IRUSR | S_IWUSR) != 0) {
@@ -57,27 +58,29 @@ void RestrictConfigFilePermissions(const std::string& relativePath) {
     }
 }
 
-// 端点走明文协议且非本机回环时，API Key 将明文传输，给出醒目警告
-bool EndpointUsesPlaintext(const std::string& endpoint) {
-    if (endpoint.empty()) return false;
-    if (endpoint.rfind("https://", 0) == 0 || endpoint.rfind("wss://", 0) == 0)
-        return false;
-    if (endpoint.rfind("http://", 0) == 0 || endpoint.rfind("ws://", 0) == 0) {
-        if (endpoint.find("localhost") != std::string::npos ||
-            endpoint.find("127.0.0.1") != std::string::npos ||
-            endpoint.find("[::1]") != std::string::npos)
-            return false;
-        return true;
-    }
-    return false;
-}
+// 端点明文警告与后端工厂见 engine_backend.cpp（需要在后台线程安全执行）。
 
 } // namespace
 
 VoiceInputEngine::VoiceInputEngine(Instance* instance)
     : instance_(instance), pipeline_(std::make_unique<Pipeline>()) {
+#ifndef HAVE_MODEL_MANAGER_GUI
+    // 不展示无法打开的入口；仅在显式禁用 GUI 或未编译 Sherpa 时隐藏。
+    sherpaOnnxConfig_.modelManager.setHidden(true);
+    sherpaOfflineConfig_.modelManager.setHidden(true);
+#endif
     fcitx::registerDomain(FCITX_GETTEXT_DOMAIN, VOICE_INPUT_LOCALE_DIR);
     eventDispatcher_.attach(&instance_->eventLoop());
+    // 完成回调只在主线程、且只在本对象存活期间被调用（定时器随本对象析构）。
+    asrPreparer_ = std::make_unique<AsrPrepareCoordinator>(
+        instance_->eventLoop(),
+        [](const AsrBackendSnapshot& snapshot) {
+            return CreateAsrEngine(snapshot);
+        },
+        [this](uint64_t generation, std::unique_ptr<AsrEngine> engine,
+               const std::string& error) {
+            ApplyPreparedAsrBackend(generation, std::move(engine), error);
+        });
     reloadConfig();
     // Core calls deactivate with the original FocusOut/SwitchInputMethod event
     // (fcitx5 5.1.22 instance.cpp), not its later notification event.
@@ -112,6 +115,9 @@ VoiceInputEngine::VoiceInputEngine(Instance* instance)
 
 VoiceInputEngine::~VoiceInputEngine() {
     eventWatchers_.clear();
+    // 不 join 后台准备线程：它只持有自己的快照与结果槽，实例销毁后仍可安全跑完
+    // 并自行析构结果（详见 engine_backend.h 的生命周期约束）。
+    asrPreparer_.reset();
     pipeline_->Abort();
     eventDispatcher_.detach();
 }
@@ -128,6 +134,7 @@ void VoiceInputEngine::reloadConfig() {
 }
 
 void VoiceInputEngine::setConfig(const RawConfig& rawConfig) {
+    const std::string previousBackend = *config_.activeBackend;
     config_.load(rawConfig, true);
     FCITX_INFO() << "[voice-input] setConfig: backend="
                  << *config_.activeBackend;
@@ -136,15 +143,23 @@ void VoiceInputEngine::setConfig(const RawConfig& rawConfig) {
     RestrictConfigFilePermissions("conf/voiceinput.conf");
     FCITX_INFO() << "[voice-input] setConfig saved=" << saved;
 
-    if (initialized_) {
-        pipeline_->SetConfig(config_);
-        ReloadActiveAsrClient();
+    if (!initialized_) return;
+    pipeline_->SetConfig(config_);
+
+    // 只在后端选择变化、或当前没有可用引擎且没有在途准备时重建：
+    // 仅调整 VAD 参数不该重新加载本地模型。
+    const bool backendChanged = (*config_.activeBackend != previousBackend);
+    const bool needsEngine =
+        installedBackend_.empty() && !asrPreparer_->IsPreparing();
+    if (backendChanged || needsEngine) {
+        ReloadAsrBackend(backendChanged ? "backend-changed" : "engine-missing");
     }
 }
 
 const Configuration* VoiceInputEngine::getSubConfig(
     const std::string& path) const {
-    FCITX_INFO() << "[voice-input] getSubConfig: path=" << path;
+    // GUI 会周期性轮询状态路径，不能刷 INFO。
+    FCITX_DEBUG() << "[voice-input] getSubConfig: path=" << path;
     if (path == "asr/openai") {
         return &openaiConfig_;
     }
@@ -160,13 +175,54 @@ const Configuration* VoiceInputEngine::getSubConfig(
     if (path == "asr/sherpa_offline") {
         return &sherpaOfflineConfig_;
     }
+    // 只读运行状态镜像（不落盘；写入被 setSubConfig 忽略），供 GUI 轮询。
+    if (path == "model/status/online") {
+        return &onlineModelStatus_;
+    }
+    if (path == "model/status/offline") {
+        return &offlineModelStatus_;
+    }
     FCITX_WARN() << "[voice-input] getSubConfig: unknown path=" << path;
     return nullptr;
 }
 
+namespace {
+
+// 子配置路径对应的后端名；空串表示该路径不影响任何后端。
+std::string BackendForSubConfigPath(const std::string& path) {
+    if (path == "asr/openai") return "openai";
+    if (path == "asr/volcengine") return "volcengine";
+    if (path == "asr/mistral") return "mistral";
+    if (path == "asr/sherpa_onnx") return "sherpa_onnx";
+    if (path == "asr/sherpa_offline") return "sherpa_offline";
+    return {};
+}
+
+} // namespace
+
 void VoiceInputEngine::setSubConfig(const std::string& path,
                                     const RawConfig& rawConfig) {
     FCITX_INFO() << "[voice-input] setSubConfig: path=" << path;
+
+    // 模型管理器的“模型已变化”通知：这些路径不是可保存配置，
+    // 只按需重载对应后端，绝不写 INI。
+    if (path == "model/online" || path == "model/offline") {
+        const std::string backend =
+            (path == "model/online") ? "sherpa_onnx" : "sherpa_offline";
+        if (initialized_ && *config_.activeBackend == backend) {
+            ReloadAsrBackend("model-notification");
+        } else {
+            FCITX_INFO() << "[voice-input] model notification ignored: path="
+                         << path << " active=" << *config_.activeBackend;
+        }
+        return;
+    }
+    // 只读状态镜像：忽略写入，不产生任何副作用。
+    if (path == "model/status/online" || path == "model/status/offline") {
+        FCITX_INFO() << "[voice-input] status config is read-only: path=" << path;
+        return;
+    }
+
     if (path == "asr/openai") {
         openaiConfig_.load(rawConfig, true);
         safeSaveAsIni(openaiConfig_, "conf/voiceinput-openai.conf");
@@ -192,10 +248,18 @@ void VoiceInputEngine::setSubConfig(const std::string& path,
         safeSaveAsIni(sherpaOfflineConfig_, "conf/voiceinput-sherpa-offline.conf");
         RestrictConfigFilePermissions("conf/voiceinput-sherpa-offline.conf");
         FCITX_INFO() << "[voice-input] Saved sherpa_offline sub-config";
+    } else {
+        FCITX_WARN() << "[voice-input] setSubConfig: unknown path=" << path;
+        return;
     }
 
-    if (initialized_) {
-        ReloadActiveAsrClient();
+    if (!initialized_) return;
+    // 非活跃后端的配置变化不重建引擎（避免为无关改动加载本地模型）。
+    if (BackendForSubConfigPath(path) == *config_.activeBackend) {
+        ReloadAsrBackend("sub-config");
+    } else {
+        FCITX_INFO() << "[voice-input] sub-config saved without reload: path="
+                     << path << " active=" << *config_.activeBackend;
     }
 }
 
@@ -226,7 +290,14 @@ void VoiceInputEngine::activate(const InputMethodEntry& entry,
                  << " ic=" << (activeIc_.get() != nullptr);
 
     statusText_.clear();
-    SetStatus(pipeline_->IsRunning() ? _("语音输入就绪") : _("语音识别失败"));
+    if (pipeline_->IsRunning()) {
+        SetStatus(_("语音输入就绪"));
+    } else if (asrPreparer_->IsPreparing()) {
+        // 本地模型仍在后台准备：此处不是失败，完成时会自动启动 pipeline。
+        SetStatus(_("本地模型加载中..."));
+    } else {
+        SetStatus(_("语音识别失败"));
+    }
     FCITX_DEBUG() << "[voice-input:timing] stage=engine.activate event=end init_ms="
                   << Milliseconds(start, initDone) << " pipeline_ms=" << Milliseconds(pipelineStart, pipelineDone)
                   << " total_ms=" << Milliseconds(start);
@@ -341,118 +412,6 @@ std::string VoiceInputEngine::subModeLabelImpl(const InputMethodEntry& entry,
     return {};
 }
 
-std::unique_ptr<AsrEngine> VoiceInputEngine::CreateAsrEngine() {
-    auto backend = *config_.activeBackend;
-    FCITX_INFO() << "[voice-input] CreateAsrEngine: backend=" << backend;
-    auto asrConfig = AsrEngine::Config{};
-    std::unique_ptr<AsrEngine> asr;
-
-    if (backend == "volcengine") {
-        asrConfig.apiEndpoint = *volcengineConfig_.endpoint;
-        if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {
-            FCITX_WARN() << "[voice-input] Volcengine endpoint is not TLS, "
-                         << "API credentials will be sent in plaintext: "
-                         << asrConfig.apiEndpoint;
-        }
-        asrConfig.apiKey = *volcengineConfig_.apiKey;
-        asrConfig.authMode = *volcengineConfig_.authMode;
-        asrConfig.appKey = *volcengineConfig_.appKey;
-        asrConfig.accessKey = *volcengineConfig_.accessKey;
-        asrConfig.resourceId = *volcengineConfig_.resourceId;
-        asrConfig.modelName = "bigmodel";
-        asrConfig.chunkMs = *volcengineConfig_.chunkMs;
-        asrConfig.enableItN = *volcengineConfig_.enableITN;
-        asrConfig.enablePunc = *volcengineConfig_.enablePunc;
-        asrConfig.enableDdc = *volcengineConfig_.enableDDC;
-        asrConfig.enableNonstream = *volcengineConfig_.enableNonstream;
-        asrConfig.endWindowMs = *volcengineConfig_.endWindowMs;
-        FCITX_INFO() << "[voice-input] Volcengine config: endpoint="
-                     << asrConfig.apiEndpoint
-                     << " apiKey=" << (asrConfig.apiKey.empty() ? "(empty)" : "***");
-        asr = std::make_unique<VolcengineAsrEngine>();
-    } else if (backend == "mistral") {
-        asrConfig.apiEndpoint = *mistralConfig_.baseUrl;
-        if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {
-            FCITX_WARN() << "[voice-input] Mistral endpoint is not TLS, "
-                         << "API credentials will be sent in plaintext: "
-                         << asrConfig.apiEndpoint;
-        }
-        asrConfig.apiKey = *mistralConfig_.apiKey;
-        asrConfig.modelName = *mistralConfig_.model;
-        asrConfig.commitIntervalMs = *mistralConfig_.commitIntervalMs;
-        asrConfig.targetStreamingDelayMs = *mistralConfig_.targetStreamingDelayMs;
-        FCITX_INFO() << "[voice-input] Mistral config: endpoint="
-                     << asrConfig.apiEndpoint
-                     << " model=" << asrConfig.modelName
-                     << " delay=" << asrConfig.targetStreamingDelayMs;
-        asr = std::make_unique<MistralAsrEngine>();
-    } else if (backend == "sherpa_onnx") {
-        asrConfig.modelPath = *sherpaOnnxConfig_.modelDir;
-        asrConfig.numThreads = *sherpaOnnxConfig_.numThreads;
-        asrConfig.hotwordsFile = *sherpaOnnxConfig_.hotwordsFile;
-        asrConfig.hotwordsScore = static_cast<float>(*sherpaOnnxConfig_.hotwordsScore);
-        FCITX_INFO() << "[voice-input] SherpaOnnx config: modelDir="
-                     << (asrConfig.modelPath.empty() ? "(auto)" : asrConfig.modelPath)
-                     << " threads=" << asrConfig.numThreads
-                     << " hotwordsScore=" << asrConfig.hotwordsScore;
-        asr = std::make_unique<SherpaOnnxAsrEngine>();
-    } else if (backend == "sherpa_offline") {
-        asrConfig.modelPath = *sherpaOfflineConfig_.modelDir;
-        asrConfig.numThreads = *sherpaOfflineConfig_.numThreads;
-        asrConfig.hotwordsFile = *sherpaOfflineConfig_.hotwordsFile;
-        asrConfig.hotwordsScore = static_cast<float>(*sherpaOfflineConfig_.hotwordsScore);
-        FCITX_INFO() << "[voice-input] SherpaOffline config: modelDir="
-                     << (asrConfig.modelPath.empty() ? "(auto)" : asrConfig.modelPath)
-                     << " threads=" << asrConfig.numThreads
-                     << " hotwordsScore=" << asrConfig.hotwordsScore;
-        asr = std::make_unique<SherpaOfflineAsrEngine>();
-    } else {
-        asrConfig.apiEndpoint = *openaiConfig_.baseUrl;
-        if (EndpointUsesPlaintext(asrConfig.apiEndpoint)) {
-            FCITX_WARN() << "[voice-input] OpenAI endpoint is not TLS, "
-                         << "API credentials will be sent in plaintext: "
-                         << asrConfig.apiEndpoint;
-        }
-        asrConfig.apiKey = *openaiConfig_.apiKey;
-        asrConfig.modelName = *openaiConfig_.model;
-        asrConfig.apiMode = *openaiConfig_.apiMode;
-        asrConfig.enableItn = *openaiConfig_.enableItn;
-        asrConfig.commitIntervalMs = *openaiConfig_.commitIntervalMs;
-        auto language = *openaiConfig_.language;
-        if (language == "auto") {
-            language.clear();
-        }
-        asrConfig.language = language;
-        FCITX_INFO() << "[voice-input] OpenAI config: endpoint="
-                     << asrConfig.apiEndpoint
-                     << " model=" << asrConfig.modelName
-                     << " apiMode=" << asrConfig.apiMode
-                     << " enableItn=" << asrConfig.enableItn;
-        if (asrConfig.apiMode == "realtime") {
-            asr = std::make_unique<RealtimeAsrEngine>();
-        } else {
-            asr = std::make_unique<OpenaiAsrEngine>();
-        }
-    }
-
-    if (asr->Init(asrConfig)) {
-        FCITX_INFO() << "[voice-input] ASR init OK: " << asr->Name();
-        return asr;
-    }
-
-    FCITX_WARN() << "[voice-input] ASR init failed: " << backend;
-    return nullptr;
-}
-
-void VoiceInputEngine::ReloadActiveAsrClient() {
-    auto asr = CreateAsrEngine();
-    if (asr) {
-        pipeline_->SetAsrEngine(std::move(asr));
-        FCITX_INFO() << "[voice-input] ASR client replaced";
-    } else {
-        FCITX_WARN() << "[voice-input] ASR client NOT replaced (init failed)";
-    }
-}
 
 void VoiceInputEngine::InitializeIfNeeded() {
     if (initialized_) return;
@@ -468,7 +427,7 @@ void VoiceInputEngine::InitializeIfNeeded() {
 
     pipeline_->Init(config_);
 
-    ReloadActiveAsrClient();
+    ReloadAsrBackend("init");
 
     // LLM post-processing
     bool llmEnabled = openaiConfig_.llmEnabled.value();
