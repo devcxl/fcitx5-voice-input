@@ -519,6 +519,23 @@ tmp_path = incomplete_path.with_name(f"{incomplete_path.stem}.{uuid.uuid4().hex[
 
 > 说明：仅读取 API 元数据，**未下载**上述 tar 包。`digest` 字段的可用性即本报告 §4.2 建议的前提。
 
+### 8.5 实施阶段的逐文件摘要来源
+
+安装后的模型文件需要独立校验，不能信任用户数据目录内自行声明的摘要。
+模型作者在 Hugging Face 的固定 revision 提供各 ONNX 文件的 Git LFS SHA-256：
+
+- 流式模型：[revision `18f31ce4644ac3bcf544eea692d7242b798d508f`](https://huggingface.co/api/models/csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/tree/18f31ce4644ac3bcf544eea692d7242b798d508f?recursive=true)。
+- 离线模型：[revision `bbc3ebbf8f134848f804967f3a3b69f981308a85`](https://huggingface.co/api/models/csukuangfj2/sherpa-onnx-x-asr-zipformer-transducer-zh-en-int8-2026-06-03/tree/bbc3ebbf8f134848f804967f3a3b69f981308a85?recursive=true)。
+
+其中 `tokens.txt` 是普通 Git 文件而非 LFS 对象，需下载对应 revision 的文本后计算
+SHA-256；不能把 Git blob 的 SHA-1 当作 SHA-256。
+
+**来源差异（实施时实测）：**离线 GitHub release 压缩包与上述 Hugging Face revision
+的 encoder、decoder 并非同一份导出，摘要不同；joiner 与 tokens 的摘要相同。离线
+清单必须以校验过压缩包摘要后实际解包得到的文件摘要为准，不能直接采用 HF 摘要。
+在线模型的 release 压缩包已实际下载并核对 SHA-256、大小和解压完整性；四个必要
+文件的摘要与上述 HF revision 及本机已有模型均一致。
+
 ---
 
 ## 9. 一句话总结

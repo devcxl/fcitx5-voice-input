@@ -4,11 +4,11 @@
 
 ## 设计目标
 
-1. **无独立进程（daemon）** — 全部逻辑跑在 Fcitx5 addon 内部，线程隔离
-2. **无 CLI 二进制** — 配置靠 fcitx5-configtool
-3. **无 Qt GUI 依赖** — 不引入 Qt，避免 50MB+ 的依赖膨胀
+1. **无常驻 daemon** — 识别逻辑跑在 Fcitx5 addon 内部；安装模型时使用一次性进程
+2. **图形配置** — 通过 fcitx5-configtool 管理本地模型；安装器是内部程序，不作为稳定 CLI
+3. **addon 不依赖 Qt** — 模型管理界面是独立的 Qt 配置插件，复用系统 Qt
 4. **默认云端 ASR，可选本地 ASR** — 默认 OpenAI 兼容 API（whisper-1）；可切换到本地 sherpa-onnx（流式 / X-ASR 离线），语音不出本机
-5. **最小依赖** — Fcitx5 + PipeWire/PulseAudio + jsoncpp + libcurl + onnxruntime
+5. **最小依赖** — addon 使用 Fcitx5、PipeWire/PulseAudio、jsoncpp、libcurl、OpenSSL 和 onnxruntime；模型安装器另用 libarchive
 
 ---
 
@@ -111,8 +111,8 @@ ASR 推理是 CPU/网络密集型操作，在**同一进程的另一个线程**�
 │  │  ├── OpenAI: BaseUrl / Key / Model / ApiMode          │   │
 │  │  ├── Volcengine: Endpoint / Auth / Key / Resource     │   │
 │  │  ├── Mistral: BaseUrl / Key / Model / CommitInterval  │   │
-│  │  ├── Sherpa-ONNX: ModelDir / Threads / Hotwords         │   │
-│  │  ├── X-ASR 离线: ModelDir / Threads / Hotwords           │   │
+│  │  ├── Sherpa-ONNX: Model Manager / Threads / Hotwords    │   │
+│  │  ├── X-ASR 离线: Model Manager / Threads / Hotwords      │   │
 │  │  ├── LLM 后处理: Model / Prompt / Stream (可选)         │   │
 │  │  └── VAD: Threshold / PreRoll / Min/Max Speech        │   │
 │  └──────────────────────────────────────────────────────┘   │
@@ -171,6 +171,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 - **失焦（`InputContextFocusOut`）→ `Pause()`**：关闭取帧门闸后停止 VAD 与 ASR 分发线程，取消当前会话与引擎全部会话，清空队列并作废 generation；麦克风流保留给音频服务管理，但不再提交新的应用帧。
 - **回焦 → `activate()` → `Start()`**：复用保留的录音流，清空旧应用缓存（结果队列 / 保序缓冲）并恢复识别。
 - **显式切换到其他输入法 / 更改输入法组 / 关闭输入法 / 退出 fcitx5 → `Stop()`**：释放录音流。由事件监听兜底（`InputContextSwitchInputMethod` 与 `InputMethodGroupAboutToChange`，`PostInputMethod`，非 `voiceinput` 或捕获中即触发）。
+- **本地模型尚未加载 → 后台准备**：`activate()` 的 `Start()` 在无引擎时直接返回，状态区显示「本地模型加载中...」；`AsrPrepareCoordinator` 在后台完成模型校验与加载后，若仍在语音输入上下文则自动 `Start()`。这段时间不打开录音、不产生主线程停顿。
 - **原输入框销毁（`InputContextDestroyed`，`PreInputMethod`）**：清空待提交文本并 `DeactivateContext(true)` 保流。
 - 析构时 `Abort()`（`Stop()`）释放；不再有 200ms 延迟停止定时器。
 
@@ -209,7 +210,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 3. **语音事件** — `ThreadSafeQueue<SpeechEvent>`（VAD → ASR 事件流）
 4. **PipeWire 回调** — Lock-free `AudioRingBuffer`（SPSC，仅 <100μs 写入）
 5. **结果回传** — `EventDispatcher::schedule()` 调度到主线程轮询
-6. **配置热更新** — `setConfig()` 只更新配置对象，不重启线程
+6. **配置热更新** — 本地模型在后台准备，按配置代次丢弃过期结果；无关子配置不触发重载
 
 ---
 
@@ -230,7 +231,7 @@ void VoiceInputEngine::DeactivateContext(bool keepCapture) {
 | PulseAudio 读取阻塞（设备挂起/服务断开） | 既有缺陷：`Stop()` 的 join 可能阻塞主线程；跟踪于 issue #14 / PR #17，不承诺可靠停止上界 |
 | ASR HTTP 请求失败 | 丢弃当前段，继续监听下一段 |
 | ASR API Key 未配置 | 对应引擎 Init 返回 false |
-| 本地模型目录不存在/文件不全 | 对应引擎 Init 返回 false（启动时日志给出缺失项），旧引擎在热切换时保留 |
+| 本地模型缺失、类型不符或文件校验失败 | 加载失败并显示状态；同一后端重载可保留旧引擎，云端切本地失败不回退云端 |
 | 本地热词文件不可读 | 告警并忽略热词，后端按 greedy_search 继续工作 |
 | 未编译 sherpa-onnx | 两个本地后端进入 stub：可选但不可用，`Init` 返回 false |
 | Volcengine 认证失败 / WS 断开 | Init 返回 false；断开则丢弃当前段继续下一段 |
@@ -263,8 +264,12 @@ fcitx5-voice-input
 ├── libcurl                     # HTTP/WebSocket 客户端（ASR 必需，>= 7.86.0）
 ├── zlib                        # Gzip 压缩（火山引擎后端必需）
 ├── onnxruntime                 # Silero VAD ONNX Runtime（v1.28.0 / 系统包双策略）
+├── OpenSSL (Crypto)            # 本地模型逐文件 SHA-256 校验
+├── libarchive                  # 模型安装器解包（仅安装器）
 └── sherpa-onnx                 # 可选：本地 ASR（git submodule，内嵌编译或系统库）
 ```
+
+> 本地模型管理界面另需 Qt 5/6 Widgets+DBus 与 Fcitx5 Qt WidgetsAddons；它是独立配置插件，addon 本体不依赖 Qt。
 
 > 录音库（libpulse-simple/libpipewire）**不链接**（无 DT_NEEDED）：各 capture 后端在 Start 时 dlopen + dlsym 函数指针表延迟加载，库缺失/soname 变更/符号不完整时优雅降级，addon 本体不受影响（详见 PR #20：Arch 构建 `-z,now` 兼容）。
 
@@ -275,13 +280,16 @@ fcitx5-voice-input
 | `BUILD_TESTS` | OFF | 构建单元/集成测试（`tests/`，`ctest` 运行；CI verify job 开启） |
 | `ONNXRUNTIME_ROOT` | "" | ONNX Runtime 自定义路径（onnxruntime 双策略：pkg-config 系统包或 download 1.28.0，CI 缓存加速） |
 | `ENABLE_SHERPA_ONNX` | ON | 本地 ASR。优先内嵌编译 `third_party/sherpa-onnx`，其次系统库；都不可用时编译为 stub（后端不可选，addon 正常加载） |
+| `ENABLE_MODEL_MANAGER_GUI` | ON | 构建 fcitx5-configtool 的本地模型管理插件；关闭后隐藏「管理本地模型」入口 |
 
 ### 构建产物
 
 ```
 build/
 ├── voice-input-addon.so        # addon 本体（无 lib 前缀）
-└── lib/libsherpa-onnx-c-api.so # 仅本地 ASR：submodule 编译时生成，安装到 addon 目录
+├── voice-input-model-installer # 一次性模型安装器（仅 sherpa 可用时构建）
+├── lib/libsherpa-onnx-c-api.so # 仅本地 ASR：submodule 编译时生成，安装到 addon 目录
+└── libvoice-input-model-gui.so # Qt5/Qt6 模型管理插件，安装到 addon 的 qt5/、qt6/
 ```
 
 ### 打包
@@ -306,44 +314,50 @@ fcitx5-voice-input/
 ├── .gitmodules
 │
 ├── src/
-│   └── addon/                      # 唯一的代码目录
-│       ├── engine.cpp/.h           # VoiceInputEngine Fcitx5 入口
-│       ├── types.h                 # AudioFrame / SpeechEvent / AsrResult 类型定义
-│       ├── voiceinput.conf.in      # Fcitx5 addon 配置模板（@PROJECT_VERSION@ 替换）
-│       ├── config/
-│       │   └── voiceinput-config.h         # FCITX_CONFIGURATION 宏定义（6 个子配置块）
-│       ├── capture/
-│       │   ├── audio_capture.h             # 捕获后端抽象接口
-│       │   ├── pulse_audio_capture.cpp/.h  # PulseAudio 优先（dlopen）
-│       │   └── pipewire_capture.cpp/.h     # PipeWire fallback（dlopen）
-│       ├── vad/
-│       │   ├── silero_vad.cpp/.h           # Silero ONNX 封装
-│       │   └── vad.cpp/.h                  # VADWorker 状态机（Idle/Speaking）
-│       ├── pipeline/
-│       │   ├── pipeline.cpp/.h             # 管道编排（2 队列 + 分发/回收线程）
-│       │   ├── result_coordinator.cpp/.h   # 结果汇聚：保序 + LLM 后处理 + generation 过滤
-│       │   └── ordered_result_buffer.h     # 并发会话结果保序缓冲
-│       ├── asr/
-│       │   ├── asr_engine.h / asr_engine.cpp   # 引擎工厂抽象
-│       │   ├── asr_session.h                    # 会话抽象（FeedAudio/End/Cancel）
-│       │   ├── session_reaper.cpp/.h            # 会话回收线程
-│       │   ├── openai_asr.cpp/.h                # OpenAI 兼容引擎（whisper/chat/realtime）
-│       │   ├── realtime_asr.cpp/.h              # OpenAI Realtime WS 会话
-│       │   ├── volcengine_asr.cpp/.h            # 火山引擎豆包引擎
-│       │   ├── mistral_asr.cpp/.h               # Mistral Realtime 引擎
-│       │   ├── sherpa_onnx_asr.cpp/.h           # Sherpa-ONNX 本地流式引擎（OnlineRecognizer）
-│       │   ├── sherpa_offline_asr.cpp/.h        # Sherpa-ONNX X-ASR 本地离线引擎（OfflineRecognizer）
-│       │   ├── utils/base64.cpp/.h              # Base64 编解码
-│       │   ├── utils/sherpa_paths.cpp/.h        # 本地模型/热词路径探测（两个本地后端共用）
-│       │   ├── utils/ws_frame_receiver.h        # WS 消息重组（跨 TCP 分片保留前缀）
-│       │   ├── utils/ws_frame_sender.h          # WS 发送（单次预算内失败）
-│       │   └── utils/ws_deadline.h              # 发送/建连截止时间与中止条件
-│       ├── llm/
-│       │   ├── llm_client.cpp/.h               # LLM 后处理客户端（流式/非流式）
-│       │   └── llm_request_cancellation.h      # generation 取消
-│       └── utils/
-│           ├── audio_buffer.h                  # Lock-free SPSC ring buffer
-│           └── thread_safe_queue.h             # mutex+cv 通用队列（有界）
+│   ├── addon/                      # Fcitx5 addon
+│   │   ├── engine.cpp/.h           # VoiceInputEngine Fcitx5 入口
+│   │   ├── engine_backend.cpp/.h   # 后端快照、工厂与热切换
+│   │   ├── engine_asr_prepare.cpp/.h # 本地模型异步准备（后台线程 + 主线程轮询）
+│   │   ├── types.h                 # AudioFrame / SpeechEvent / AsrResult 类型定义
+│   │   ├── voiceinput.conf.in      # Fcitx5 addon 配置模板（@PROJECT_VERSION@ 替换）
+│   │   ├── config/
+│   │   │   └── voiceinput-config.h         # FCITX_CONFIGURATION 宏定义（全局 + 5 个后端子配置）
+│   │   ├── capture/
+│   │   │   ├── audio_capture.h             # 捕获后端抽象接口
+│   │   │   ├── pulse_audio_capture.cpp/.h  # PulseAudio 优先（dlopen）
+│   │   │   └── pipewire_capture.cpp/.h     # PipeWire fallback（dlopen）
+│   │   ├── vad/
+│   │   │   ├── silero_vad.cpp/.h           # Silero ONNX 封装
+│   │   │   └── vad.cpp/.h                  # VADWorker 状态机（Idle/Speaking）
+│   │   ├── pipeline/
+│   │   │   ├── pipeline.cpp/.h             # 管道编排（2 队列 + 分发/回收线程）
+│   │   │   ├── result_coordinator.cpp/.h   # 结果汇聚：保序 + LLM 后处理 + generation 过滤
+│   │   │   └── ordered_result_buffer.h     # 并发会话结果保序缓冲
+│   │   ├── asr/
+│   │   │   ├── asr_engine.h / asr_engine.cpp   # 引擎工厂抽象
+│   │   │   ├── asr_session.h                    # 会话抽象（FeedAudio/End/Cancel）
+│   │   │   ├── session_reaper.cpp/.h            # 会话回收线程
+│   │   │   ├── openai_asr.cpp/.h                # OpenAI 兼容引擎（whisper/chat/realtime）
+│   │   │   ├── realtime_asr.cpp/.h              # OpenAI Realtime WS 会话
+│   │   │   ├── volcengine_asr.cpp/.h            # 火山引擎豆包引擎
+│   │   │   ├── mistral_asr.cpp/.h               # Mistral Realtime 引擎
+│   │   │   ├── sherpa_onnx_asr.cpp/.h           # Sherpa-ONNX 本地流式引擎（OnlineRecognizer）
+│   │   │   ├── sherpa_offline_asr.cpp/.h        # Sherpa-ONNX X-ASR 本地离线引擎（OfflineRecognizer）
+│   │   │   ├── utils/base64.cpp/.h              # Base64 编解码
+│   │   │   ├── utils/sherpa_paths.cpp/.h        # 热词路径与编码（cjkchar/bpe）处理
+│   │   │   ├── utils/sherpa_model_resolver.cpp/.h # 受控模型解析（清单 id/version → 路径）
+│   │   │   ├── utils/sherpa_model_verify.cpp/.h   # 逐文件 SHA-256/尺寸校验
+│   │   │   ├── utils/ws_frame_receiver.h        # WS 消息重组（跨 TCP 分片保留前缀）
+│   │   │   ├── utils/ws_frame_sender.h          # WS 发送（单次预算内失败）
+│   │   │   └── utils/ws_deadline.h              # 发送/建连截止时间与中止条件
+│   │   ├── llm/
+│   │   │   ├── llm_client.cpp/.h               # LLM 后处理客户端（流式/非流式）
+│   │   │   └── llm_request_cancellation.h      # generation 取消
+│   │   └── utils/
+│   │       ├── audio_buffer.h                  # Lock-free SPSC ring buffer
+│   │       └── thread_safe_queue.h             # mutex+cv 通用队列（有界）
+│   ├── model_manager/              # 受控模型安装核心（清单/校验/解包/试加载/原子发布）
+│   └── model_gui/                  # fcitx5-configtool 的 Qt 模型管理插件
 │
 ├── third_party/
 │   ├── silero-vad/              # git submodule，VAD ONNX 模型
@@ -354,7 +368,7 @@ fcitx5-voice-input/
 │
 ├── cmake/                       # 自定义 FindXXX.cmake
 ├── data/                        # 图标 + 输入法注册文件
-├── scripts/                     # 下载模型 / 导出热词等辅助脚本
+├── scripts/                     # 构建/安装/热词导出辅助脚本
 ├── .github/workflows/
 │   ├── ci.yml                   # PR/push：6 发行版矩阵 + 链接校验 + build-no-pipewire
 │   ├── release.yml              # tag v*：draft release（DEB/RPM 产物）
@@ -381,7 +395,7 @@ A: 主线程只负责事件分发和上屏。音频捕获（实时音频）在�
 
 ### Q: 默认用什么 ASR？本地 ASR 现在可用吗？
 
-A: 默认仍是 OpenAI 兼容 API（中文准确率与免维护是主要原因）。仓库已接入两个本地后端：`sherpa_onnx`（流式，边说边出增量）与 `sherpa_offline`（X-ASR 非流式，整句解码）。本地后端在隐私与离线场景更合适，代价是模型体积、内存与 CPU 占用；模型不随包分发，用 `scripts/download-model.sh` 获取。
+A: 默认仍是 OpenAI 兼容 API（中文准确率与免维护是主要原因）。仓库已接入两个本地后端：`sherpa_onnx`（流式，边说边出增量）与 `sherpa_offline`（X-ASR 非流式，整句解码）。模型不随包分发，在对应后端设置的「管理本地模型」中下载或导入官方压缩包。本地 ASR 不上传语音；另行启用的云端 LLM 后处理仍可能发送识别文本。
 
 ### Q: 没有高级 JSON 配置层了？
 A: 是的。`FCITX_CONFIGURATION` 宏已能满足当前所有配置需求（ASR 后端 + OpenAI/Mistral/Volcengine/Sherpa 本地子配置 + VAD 参数 + LLM 后处理）。将来场景系统需要复杂结构时可能重新引入 JSON 配置。

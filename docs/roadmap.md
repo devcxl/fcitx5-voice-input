@@ -10,7 +10,7 @@
 - [x] OpenAI 兼容 API ASR 引擎（whisper / chat / realtime）
 - [x] Volcengine Doubao 流式 ASR 引擎
 - [x] Mistral Realtime 流式 ASR 引擎（v0.5.0）
-- [x] 本地 ASR 引擎：sherpa-onnx 流式（`sherpa_onnx`）与 X-ASR 离线（`sherpa_offline`），支持热词与模型目录自动探测
+- [x] 本地 ASR 引擎：sherpa-onnx 流式（`sherpa_onnx`）与 X-ASR 离线（`sherpa_offline`），支持热词与受控模型安装/校验（固定清单版本，不扫描目录）
 - [x] v4 会话模型：AsrSession / SessionReaper / ResultCoordinator 保序交付
 - [x] LLM 后处理（流式/非流式，generation 取消）
 - [x] fcitx5-configtool 配置界面（多后端子配置）

@@ -62,9 +62,10 @@ flowchart LR
 
 1. 在 `fcitx5-configtool` 中切换到 **附加组件 (Addon)** 标签页。
 2. 找到 **VoiceInput** 插件，点击齿轮图标 ⚙ 打开配置界面。
-3. 选择您使用的 ASR 后端（默认支持 OpenAI 兼容、火山引擎豆包、Mistral Realtime）：
+3. 选择您使用的 ASR 后端（默认支持 OpenAI 兼容、火山引擎豆包、Mistral Realtime，以及本地 sherpa-onnx 流式 / X-ASR 离线）：
    - **OpenAI 兼容后端**：填入 API Key，支持 OpenAI 官方、Groq、硅基流动 (SiliconFlow)、阿里云百炼 DashScope 或小米 MiMo。
    - **火山引擎后端**：填入 API Key（或 AppKey + AccessKey）以及购买的资源 ID。
+   - **本地 sherpa 后端**：在对应后端的「管理本地模型」中下载或导入官方压缩包；模型在后台加载，状态区显示「本地模型加载中...」，完成后即可说话。
 4. 点击“应用”保存设置。
 
 > 各后端的详细配置参数与示例请参考 [配置指南](/guide/configuration)。
