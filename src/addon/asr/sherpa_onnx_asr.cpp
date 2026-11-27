@@ -290,11 +290,18 @@ bool SherpaOnnxAsrEngine::Init(const Config& config) {
     const std::string hotwordsPath = ResolveSherpaHotwordsFile(
         config.hotwordsFile, kTag);
 
-    if (!hotwordsPath.empty()) {
-        c_cfg.hotwords_file               = hotwordsPath.c_str();
+    // 流式模型的 modeling_unit 固定为 cjkchar，热词文件原样交给 sherpa；
+    // 仍走 Prepare 的同一道可读/非空校验，避免读不到时 sherpa 以
+    // SHERPA_ONNX_EXIT(-1) 终止宿主进程（issue #82）。
+    const std::string preparedHotwords = hotwordsPath.empty()
+        ? std::string{}
+        : PrepareSherpaHotwordsFile(hotwordsPath, HotwordEncoding::CjkChar, kTag);
+
+    if (!preparedHotwords.empty()) {
+        c_cfg.hotwords_file               = preparedHotwords.c_str();
         c_cfg.hotwords_score              = config.hotwordsScore > 0 ? config.hotwordsScore : 2.0f;
         c_cfg.decoding_method             = "modified_beam_search";
-        FCITX_INFO() << "[" << kTag << "] Hotwords enabled: " << hotwordsPath
+        FCITX_INFO() << "[" << kTag << "] Hotwords enabled: " << preparedHotwords
                      << " score=" << c_cfg.hotwords_score;
     } else {
         c_cfg.decoding_method             = "greedy_search";

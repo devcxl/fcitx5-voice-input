@@ -227,7 +227,16 @@ std::string ResolveSherpaBpeVocab(const std::string& tokensPath) {
 std::string PrepareSherpaHotwordsFile(const std::string& hotwordsPath,
                                       HotwordEncoding encoding,
                                       const char* logTag) {
-    if (encoding != HotwordEncoding::BpePrefixed) return hotwordsPath;
+    // 交给 sherpa 的热词路径必须是可读且非空的普通文件：sherpa 的
+    // InitHotwords() 在 OpenInputFile 失败时走 SHERPA_ONNX_EXIT(-1)，
+    // 即 _Exit 直接终止宿主 fcitx5 进程（issue #82），try/catch 拦不住。
+    // 三种编码共用同一道前置校验，失败一律返回空串让调用方退回
+    // greedy_search；不能只在 BpePrefixed 分支里检查。
+    if (!IsFile(hotwordsPath)) {
+        FCITX_WARN() << "[" << logTag << "] 热词文件不存在，已关闭热词: "
+                     << hotwordsPath;
+        return {};
+    }
 
     std::ifstream in(hotwordsPath);
     if (!in) {
@@ -235,8 +244,26 @@ std::string PrepareSherpaHotwordsFile(const std::string& hotwordsPath,
         return {};
     }
 
-    std::string normalized;
     std::string line;
+
+    if (encoding != HotwordEncoding::BpePrefixed) {
+        // 其余编码原样交给 sherpa，但仍要求文件含至少一条非空白行：空热词表
+        // 只会让 sherpa 白建一个用不上的 modified_beam_search 上下文图。
+        size_t nonEmptyLines = 0;
+        while (std::getline(in, line)) {
+            if (line.find_first_not_of(" \t\r\n") != std::string::npos) {
+                ++nonEmptyLines;
+            }
+        }
+        if (nonEmptyLines == 0) {
+            FCITX_WARN() << "[" << logTag << "] 热词文件为空，已关闭热词: "
+                         << hotwordsPath;
+            return {};
+        }
+        return hotwordsPath;
+    }
+
+    std::string normalized;
     size_t lines = 0;
     while (std::getline(in, line)) {
         const std::string one = NormalizeHotwordLine(line);

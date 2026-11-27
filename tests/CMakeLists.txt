@@ -37,6 +37,7 @@ target_link_libraries(sherpa_paths_test PRIVATE
 )
 
 add_test(NAME sherpa_paths_test COMMAND sherpa_paths_test)
+set_tests_properties(sherpa_paths_test PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(sherpa_model_verify_test
     sherpa_model_verify_test.cpp

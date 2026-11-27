@@ -18,7 +18,7 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 
 | 测试 | 覆盖范围 | 类型 |
 |------|---------|------|
-| `sherpa_paths_test` | 热词路径与编码判定（cjkchar/bpe）、逐字拆分、缺失/空文件回退 | 单元 |
+| `sherpa_paths_test` | 热词路径与编码判定（cjkchar/bpe）、逐字拆分、缺失/空文件回退、不可读文件降级（`chmod 000` 时三种编码均不把路径交给 sherpa，root 下报 77 记 SKIP） | 单元 |
 | `sherpa_model_verify_test` | 受控模型解析与逐文件 SHA-256/尺寸校验：清单固定 id/version、缺文件、篡改、符号链接、在线/离线错配 | 单元 |
 | `model_manager_config_test` | 本地后端配置中的 `ModelManager` 外部入口与隐藏行为 | 单元 |
 | `model_manager_test` / `model_manager_extract_test` / `model_manager_fs_test` / `model_manager_child_test` | 清单/路径/摘要、归档白名单解包、安装锁与原子发布、试加载子进程及状态查询 | 单元 + 子进程 |
