@@ -7,9 +7,9 @@
 ```cpp
 class VoiceInputEngine : public fcitx::InputMethodEngineV2 {
     // Fcitx5 生命周期
-    void reloadConfig() override;     // 重载配置（全局 + 3 个后端子配置）
+    void reloadConfig() override;     // 重载配置（全局 + 5 个后端子配置）
     void setConfig() override;        // 配置变更时保存并热更新 pipeline
-    void activate() override;         // 切换到语音输入 → pipeline.Start()（复用保留的录音流）
+    void activate() override;         // 切换到语音输入 → pipeline.Start()（无引擎时等待本地模型后台准备）
     void deactivate() override;       // 切出 → 按事件类型 Pause() 或 Stop()
     void keyEvent() override;         // 按键时提交待上屏文本
     string subModeLabelImpl() override; // 状态文字
@@ -22,9 +22,17 @@ class VoiceInputEngine : public fcitx::InputMethodEngineV2 {
 
     // 生命周期
     void DeactivateContext(bool keepCapture); // true=Pause 保流，false=Stop 释放
-    void InitializeIfNeeded();        // 延迟初始化 ASR 引擎
+    void InitializeIfNeeded();        // 初始化 pipeline，并按后端同步/异步准备 ASR
 
 private:
+    // 后端构造与切换（仅主线程）
+    AsrBackendSnapshot SnapshotActiveAsrBackend() const;
+    void ReloadAsrBackend(const char* reason);
+    void ApplyPreparedAsrBackend(uint64_t generation,
+                                 unique_ptr<AsrEngine> engine,
+                                 const string& error);
+    void DropAsrEngine();
+
     Instance* instance_;
     unique_ptr<Pipeline> pipeline_;
     EventDispatcher eventDispatcher_;
@@ -33,6 +41,13 @@ private:
     OpenAIAsrConfig openaiConfig_;
     VolcengineAsrConfig volcengineConfig_;
     MistralAsrConfig mistralConfig_;
+    SherpaOnnxAsrConfig sherpaOnnxConfig_;
+    SherpaOfflineAsrConfig sherpaOfflineConfig_;
+    unique_ptr<AsrPrepareCoordinator> asrPreparer_; // 本地模型后台准备
+    uint64_t asrPrepareGeneration_ = 0;             // 主线程独占：最新请求代次
+    string installedBackend_;                       // 已装入 pipeline 的后端名
+    ModelRuntimeStatusConfig onlineModelStatus_;    // 只读状态镜像
+    ModelRuntimeStatusConfig offlineModelStatus_;
     TrackableObjectReference<InputContext> activeIc_; // 仅主线程访问
     TrackableObjectReference<InputContext> captureOwnerIc_; // 失焦保留，隔离其他上下文的关闭事件
     atomic<uint64_t> activeGeneration_;   // 当前有效 generation
@@ -50,11 +65,13 @@ private:
 - `deactivate()` 在主线程同步提交/清空原输入框的待提交文本并解除引用，避免延迟 UI 回调访问已销毁输入框或把文本提交给新输入框（[ADR-0002](adr/ADR-0002-input-context-lifetime.md)）。
 - 失焦不再使用延迟定时停止：`DeactivateContext()` 按事件类型选择保流（`Pause`）或释放（`Stop`），详见 ARCHITECTURE 的「输入法激活与录音流生命周期」。
 - 保流期间只接受采集所属上下文的明确关闭事件，其他上下文即使从 Voice Input 切走也不关闭本流；输入法组变更/退出为全局释放。所属上下文销毁后，回到 Voice Input 重新取得归属；组变更或退出仍可释放。
-- `setConfig()` 保存到 `conf/voiceinput.conf`，热更新 pipeline。
+- `setConfig()` 保存到 `conf/voiceinput.conf`；仅在后端选择变化、或当前没有可用引擎且没有在途准备时调用 `ReloadAsrBackend()`，无关参数变化不重载模型。`setSubConfig("asr/*")` 只在该路径对应后端正活跃时重载。
+- 本地后端（`sherpa_onnx` / `sherpa_offline`）由 `AsrPrepareCoordinator` 在后台线程构造并 `Init()`（含模型校验与 ONNX 加载），主线程每 50ms 轮询结果并按 `asrPrepareGeneration_` 过滤。切换到本地后端且无可用旧引擎时状态区显示「本地模型加载中...」；同一后端重载只把状态镜像置为 `loading`（`Detail=reloading`）并继续使用旧引擎。完成后若仍在语音输入上下文则自动 `Start()`。工作线程只持有配置快照与结果槽，不引用本对象。
+- `getSubConfig("model/status/online|offline")` 暴露只读运行状态（`idle`/`loading`/`ready`/`failed` + 实际加载的 id/version）供 GUI 轮询；`setSubConfig("model/online|offline")` 是安装完成通知，仅在对应后端正活跃时触发重载。
 
 ## 2. 配置 (`src/addon/config/`)
 
-单层配置，全部通过 fcitx5 `FCITX_CONFIGURATION` 宏定义，由 fcitx5-configtool 可视化编辑。配置按后端分为 4 个子配置块（`fcitx://config/addon/voiceinput/asr/...` 子路径）：
+单层配置，全部通过 fcitx5 `FCITX_CONFIGURATION` 宏定义，由 fcitx5-configtool 可视化编辑。配置按后端分为 5 个子配置块（`fcitx://config/addon/voiceinput/asr/...` 子路径）；另有两个只读运行状态子配置（`model/status/...`）。
 
 ```
 src/addon/config/
@@ -65,7 +82,7 @@ src/addon/config/
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
-| `ActiveBackend` | Enum | `openai` | ASR 后端（openai / volcengine / mistral） |
+| `ActiveBackend` | Enum | `openai` | ASR 后端（openai / volcengine / mistral / sherpa_onnx / sherpa_offline） |
 | `VADThreshold` | Int 0-100 | `20` | VAD 阈值百分比 |
 | `SilenceThresholdMs` | Int | `800` | 静音超时毫秒数 |
 | `StartFrames` | Int 1-10 | `2` | 连续几帧说话触发 onset |
@@ -111,6 +128,30 @@ src/addon/config/
 | `ChunkMs` | Int 100-200 | `200` | 音频分片（毫秒） |
 | `EnableITN` / `EnablePunc` / `EnableDDC` / `EnableNonstream` | Bool | 见代码 | ITN / 标点 / 语义顺滑 / 二次识别 |
 | `EndWindowMs` | Int | `800` | 判停窗口（毫秒） |
+
+**SherpaOnnxAsrConfig（`ActiveBackend=sherpa_onnx`，本地流式）：**
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `ModelManager` | External | `fcitx://config/addon/voiceinput/model/online` | 「管理本地模型」入口；无固定模型目录/文件路径配置 |
+| `NumThreads` | Int 1-16 | `2` | CPU 推理线程数 |
+| `HotwordsFile` | String | `""` | 热词文件；为空时探测默认位置 |
+| `HotwordsScore` | Int 1-10 | `2` | 热词提权加分 |
+| `AutoCommit` | Bool | `true` | 无 LLM 时自动上屏 |
+
+**SherpaOfflineAsrConfig（`ActiveBackend=sherpa_offline`，本地 X-ASR）：**
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `ModelManager` | External | `fcitx://config/addon/voiceinput/model/offline` | 「管理本地模型」入口；无固定模型目录/文件路径配置 |
+| `NumThreads` | Int 1-16 | `2` | CPU 推理线程数 |
+| `HotwordsFile` | String | `""` | 热词文件；为空时探测默认位置 |
+| `HotwordsScore` | Int 1-10 | `2` | 热词提权加分 |
+| `AutoCommit` | Bool | `true` | 无 LLM 时自动上屏 |
+
+两个本地后端都只从编译期清单加载固定版本的模型（见 §6），配置中不提供 `ModelDir`。
+
+**模型运行状态（只读，`getSubConfig("model/status/online|offline")`）：** `State`（`idle` / `loading` / `ready` / `failed`）、`Detail`、`Model`、`Version`。写入这些路径会被忽略且不落盘；`setSubConfig("model/online|offline")` 是 GUI 的安装完成通知，仅在对应后端正活跃时触发重载。
 
 音频设备无手动配置项：插件不枚举、筛选、指定或保存物理录音设备，路由由系统音频服务与会话管理器负责（默认输入或该应用的设备偏好，见 capture 章节）。无高级 JSON 配置层。
 
@@ -261,10 +302,11 @@ class AsrSession {
 // 引擎工厂 — 全局单例，由 Pipeline 持有；weak_ptr 追踪活跃会话
 class AsrEngine {
     static constexpr size_t kMaxActiveSessions = 3;
-    virtual bool Init(const Config& config) = 0;   // 可多次调用热更新
+    virtual bool Init(const Config& config) = 0;   // 可多次调用热更新；本地后端可能运行在准备线程
     virtual AsrSessionStart StartSession() = 0;    // 容量满时返回被取消的最旧会话 ID
     virtual void CancelAllSessions() = 0;
     virtual const char* Name() const = 0;
+    virtual AsrModelIdentity ModelIdentity() const { return {}; } // 本地后端：已校验的清单 id/version
 };
 ```
 
@@ -275,7 +317,11 @@ class AsrEngine {
 | `OpenaiAsrEngine` | openai | OpenAI 兼容 API | `apiMode=whisper` 批量 multipart WAV；`chat` Chat Completions（DashScope qwen3-asr-flash、小米 MiMo mimo-v2.5-asr 等，请求体由 `asr/utils/chat_asr_request.h` 构造）；`realtime` GPT Realtime WS 流式（16k→24k 线性上采样、周期 commit 兜底） |
 | `VolcengineAsrEngine` | volcengine | 火山豆包 WS | 200ms chunk 实时发送，服务端 partial/final 回调；ITN/标点/DDC/二次识别选项 |
 | `MistralAsrEngine` | mistral | Mistral Realtime WS | 16kHz PCM 直推（无需重采样）；`transcription.text.delta` 增量 preedit；周期 flush + 断线重连（保持同一 sessionId）；`TargetStreamingDelayMs` 权衡延迟/准确性 |
+| `SherpaOnnxAsrEngine` | sherpa_onnx | 本地 OnlineRecognizer | 只加载清单固定的流式模型（`online-zipformer`）；`Init` 前逐文件 SHA-256 校验；每 200ms 解码，文本变化即 partial；热词固定 `cjkchar` |
+| `SherpaOfflineAsrEngine` | sherpa_offline | 本地 OfflineRecognizer | 只加载清单固定的非流式模型（`offline-x-asr`）；整段解码一条 final；热词按已校验词表判定 `cjkchar`/`bpe` |
 
+- 两个本地引擎的 `Init()`（模型校验 + recognizer 构造）由 `AsrPrepareCoordinator` 在后台线程执行；`ModelIdentity()` 返回已成功加载的清单 id/version，未 `Init`、失败或未编译 sherpa 时为空，状态镜像不会编造版本。
+- 本地模型路径只由 `utils/sherpa_model_resolver.h` 从编译期清单解析，`utils/sherpa_model_verify.h` 按清单 `relativePath` 逐文件比对 SHA-256 与字节数；不接受 `ModelDir`、用户文件路径或目录扫描。错配（在线模型喂离线后端）在调用 sherpa 前即被拒绝。
 - OpenAI `realtime` 与 Mistral 的流式会话在 `StartWorker()` 即建立持久 WS 连接，断线自动重连并保持 sessionId
 - Realtime 的终态判定按服务端确认的 `item_id` 追踪在途 item（`utils/realtime_commit_tracker.h`）：`error` 事件不再造成计数漂移，最终 `completed` 到达即上屏；`error` 事件的内容（message/code）进入日志与错误回调；End 等待以「距最后服务端事件 5s」的空闲超时为上界（见错误处理策略表）
 - 三个流式 WS 后端共用 `src/addon/asr/utils/ws_frame_receiver.h` 的 `WsFrameReceiver` + `ReceiveWsMessage()` 收包：跨 TCP 分片（含 WS `CURLWS_CONT`）的事件消息跨调用保留已收前缀，单条累计超过 16MB 时整条丢弃且在消息边界恢复解析（`Skipped` 不触发重连）
@@ -293,6 +339,7 @@ class AsrEngine {
 | OpenAI realtime | StartWorker 即建 WS | 重采样 24k → base64 推送 | 发 `input_audio_buffer.commit` → 收 final |
 | Volcengine | StartWorker 即建 WS | 入队 → 按 chunkMs 实时发送 | 发结束包 → 等 final → 关 WS |
 | Mistral | StartWorker 即建 WS | int16 → base64 直推 | 周期 flush / `transcription.done` |
+| Sherpa 流式 / 离线 | 引擎 `Init` 完成即就绪（无网络建连） | 流式每 200ms 解码；离线仅缓冲 | 流式 `InputFinished` + 残余解码；离线整段解码 |
 
 ## 7. 线程安全队列 (`src/addon/utils/` + `src/addon/pipeline/ordered_result_buffer.h`)
 

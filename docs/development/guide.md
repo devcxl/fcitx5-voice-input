@@ -4,7 +4,7 @@
 
 ## 项目本质
 
-Fcitx5 Addon（共享库），多线程架构（主线程 / Capture / VAD Worker / ASR Worker），无独立守护进程、无 Qt 依赖。许可证为 LGPL v3。
+Fcitx5 Addon（共享库），多线程架构（主线程 / Capture / VAD Worker / ASR Worker），无独立守护进程。addon 本体不依赖 Qt；本地模型管理界面是独立的 Qt 配置插件。许可证为 LGPL v3。
 
 ## 环境依赖
 
@@ -17,6 +17,9 @@ Fcitx5 Addon（共享库），多线程架构（主线程 / Capture / VAD Worker
 | libcurl (>= 7.86.0) | HTTP/WebSocket 客户端 |
 | zlib | 压缩 |
 | onnxruntime | Silero VAD 推理 |
+| OpenSSL Crypto | 本地模型 SHA-256 校验 |
+
+启用 Sherpa 模型管理时还需要 libarchive、Qt 5 或 Qt 6 的 Widgets/DBus 开发文件，以及对应版本的 Fcitx5 Qt WidgetsAddons。模型安装器和配置插件独立于 addon 构建。
 
 **录音后端（至少其一）：** `pipewire-0.3`（libpipewire-0.3）或 `libpulse-simple`。缺少任一只失去对应捕获后端，addon 仍可构建；两个都缺则 CMake 报错。运行期两个库均为 dlopen 延迟加载，无链接期依赖。
 
@@ -46,6 +49,8 @@ cmake --build build -j"$(nproc)"
 | 选项 | 默认 | 说明 |
 |------|------|------|
 | `BUILD_TESTS` | `OFF` | 编译 `tests/` 下的测试 |
+| `ENABLE_SHERPA_ONNX` | `ON` | 编译 Sherpa 本地后端 |
+| `ENABLE_MODEL_MANAGER_GUI` | `ON` | 编译本地模型配置插件；关闭后不显示管理入口 |
 | `HAVE_PULSEAUDIO` / `HAVE_PIPEWIRE` | 自动检测 | 音频捕获后端，仅编译进来的后端可用 |
 
 ::: warning 不要随意安装
@@ -69,15 +74,20 @@ ctest --test-dir build --output-on-failure
 ```
 src/addon/
 ├── engine.cpp/.h          # Fcitx5 InputMethodEngineV2 入口
+├── engine_backend.cpp/.h  # 后端快照、工厂与热切换
+├── engine_asr_prepare.cpp/.h # 本地模型异步准备
 ├── types.h                # AudioFrame/SpeechEvent/AsrResult 类型定义
-├── config/                # FCITX_CONFIGURATION 配置定义（4 个子配置块）
+├── config/                # FCITX_CONFIGURATION 配置定义（全局 + 5 个后端子配置）
 ├── capture/               # 音频捕获：PulseAudio（优先）/ PipeWire（fallback）
 ├── vad/                   # Silero ONNX VAD + Idle/Speaking 状态机
 ├── pipeline/              # 管道编排、结果汇聚（保序 + LLM 后处理）
 ├── asr/                   # AsrEngine/AsrSession 抽象与各后端实现
-│   └── utils/             # Base64、WS 帧收发、超时预算
+│   └── utils/             # Base64、WS 帧收发、超时预算、受控模型解析/校验
 ├── llm/                   # LLM 后处理（流式/非流式，generation 取消）
 └── utils/                 # Lock-free ring buffer、线程安全队列
+
+src/model_manager/         # 受控模型安装器（清单/校验/解包/试加载/原子发布）
+src/model_gui/             # fcitx5-configtool 的 Qt 模型管理插件
 ```
 
 数据流：`FrameQueue → VADWorker → SpeechEventQueue → AsrSession worker → ResultCoordinator → eventDispatcher → 主线程上屏`。
@@ -95,7 +105,8 @@ src/addon/
 - **音频格式统一**：16kHz mono、int16、512 samples/window（32ms）。
 - **WS 收发有界**：收包用 `WsFrameReceiver`，发送有单次/总预算（`WsDeadline`），保证 `End()` 在 SessionReaper 的 15s join 内收敛。
 - **Ring buffer**：故意不提供 `Clear()`（避免与回调 data race），清空用 `Read()` drain 模式。
-- **配置热加载**：`setConfig()` → 保存 `voiceinput.conf` + `pipeline_->SetConfig()`。
+- **配置热加载**：`setConfig()` → 保存 `voiceinput.conf` + `pipeline_->SetConfig()`；仅后端变化或当前无可用引擎时重建 ASR，子配置也只重载对应活跃后端。
+- **本地模型**：只从编译期清单解析固定 id/version，`Init` 前逐文件校验 SHA-256；不在 addon 中扫描目录或接受用户模型路径。模型加载必须在 `AsrPrepareCoordinator` 后台线程完成，主线程只轮询结果。
 
 ## CI 与发布
 

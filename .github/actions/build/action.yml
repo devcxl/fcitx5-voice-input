@@ -198,6 +198,42 @@ runs:
         fi
         echo "OK: package contents verified ($(find "${RUNNER_TEMP}/smoke" -name voice-input-addon.so))"
 
+        # GUI 冒烟：安装器可执行 + Qt ConfigUI 插件落在 qt<major>/ 子目录。
+        # FcitxQtConfigUIFactory 只扫描 <addon dir>/qt5 或 qt6（StandardPathsType::Addon），
+        # 装错目录等于静默不生效，因此这里必须断言路径。
+        GUI_QT_MAJOR="${VOICE_INPUT_GUI_QT_MAJOR:-}"
+        if [ -z "${GUI_QT_MAJOR}" ]; then
+          echo "::error::VOICE_INPUT_GUI_QT_MAJOR is not set by the distro bootstrap script"
+          exit 1
+        fi
+
+        INSTALLER=$(find "${RUNNER_TEMP}/smoke" -type f -name voice-input-model-installer)
+        if [ -z "${INSTALLER}" ]; then
+          echo "::error::package ${PACKAGE} does not contain voice-input-model-installer"
+          exit 1
+        fi
+        if [ ! -x "${INSTALLER}" ]; then
+          echo "::error::${INSTALLER} is not executable in package ${PACKAGE}"
+          exit 1
+        fi
+        echo "OK: installer packaged (${INSTALLER})"
+
+        GUI_PLUGIN=$(find "${RUNNER_TEMP}/smoke" -type f \
+          -path "*/fcitx5/qt${GUI_QT_MAJOR}/libvoice-input-model-gui.so")
+        if [ -z "${GUI_PLUGIN}" ]; then
+          echo "::error::package ${PACKAGE} is missing fcitx5/qt${GUI_QT_MAJOR}/libvoice-input-model-gui.so"
+          find "${RUNNER_TEMP}/smoke" -path "*fcitx5/qt*" -name "*.so" || true
+          exit 1
+        fi
+        # 反向断言：不应误装另一 Qt 主版本的插件（该变体在此发行版上无人加载）。
+        OTHER_QT_MAJOR=$(( GUI_QT_MAJOR == 5 ? 6 : 5 ))
+        if [ -n "$(find "${RUNNER_TEMP}/smoke" -type f \
+          -path "*/fcitx5/qt${OTHER_QT_MAJOR}/*")" ]; then
+          echo "::error::package ${PACKAGE} unexpectedly ships the Qt${OTHER_QT_MAJOR} GUI variant"
+          exit 1
+        fi
+        echo "OK: GUI plugin packaged (${GUI_PLUGIN})"
+
         echo "::group::Package info"
         case "${CPACK_GEN}" in
           DEB)
@@ -212,6 +248,21 @@ runs:
               echo "::error::DEB package is missing recommended PipeWire fallback dependency"
               exit 1
             fi
+            # GUI 运行时依赖：Fcitx Qt WidgetsAddons（包名随 Qt 主版本变化）、
+            # 模型安装器的 libarchive、addon/安装器的 OpenSSL Crypto（libssl3 / libssl3t64）。
+            # download 策略（SHLIBDEPS=OFF）靠脚本手写，system 策略靠 dpkg-shlibdeps，二者都必须命中。
+            if [[ "${DEPENDS}" != *"libfcitx5-qt"* ]]; then
+              echo "::error::DEB package is missing Fcitx Qt WidgetsAddons runtime dependency"
+              exit 1
+            fi
+            if [[ "${DEPENDS}" != *"libarchive1"* ]]; then
+              echo "::error::DEB package is missing libarchive runtime dependency (model installer)"
+              exit 1
+            fi
+            if [[ "${DEPENDS}" != *"libssl3"* ]]; then
+              echo "::error::DEB package is missing OpenSSL runtime dependency (addon/installer libcrypto)"
+              exit 1
+            fi
             ;;
           RPM)
             rpm -qpi "${PACKAGE}"
@@ -220,10 +271,29 @@ runs:
               exit 1
             fi
             REQUIRES=$(rpm -qp --requires "${PACKAGE}")
-            if ! grep -Fxq -- "${CPACK_RPM_PACKAGE_REQUIRES}" <<<"${REQUIRES}"; then
-              echo "::error::RPM package is missing required ${CPACK_RPM_PACKAGE_REQUIRES} dependency"
-              exit 1
-            fi
+            # CPACK_RPM_PACKAGE_REQUIRES 是逗号分隔列表；rpm 会把它拆成多行 Requires，
+            # 所以必须逐项做整行匹配（不能用整串 grep -Fxq）。
+            IFS=',' read -ra REQUIRED_PKGS <<< "${CPACK_RPM_PACKAGE_REQUIRES}"
+            for pkg in "${REQUIRED_PKGS[@]}"; do
+              pkg="$(echo "${pkg}" | xargs)"
+              [ -z "${pkg}" ] && continue
+              if ! grep -Fxq -- "${pkg}" <<<"${REQUIRES}"; then
+                echo "::error::RPM package is missing required ${pkg} dependency"
+                exit 1
+              fi
+            done
+            # GUI 依赖由 rpmbuild 自动推导（链接期 NEEDED），逐项断言 soname。
+            # 模型安装器只用到 EVP_*（OpenSSL Crypto），因此是 libcrypto.so.3 而非 libssl.so.3。
+            for soname in \
+              "libFcitx5Qt${GUI_QT_MAJOR}WidgetsAddons.so." \
+              "libQt${GUI_QT_MAJOR}Widgets.so." \
+              "libarchive.so." \
+              "libcrypto.so."; do
+              if ! grep -Fq -- "${soname}" <<<"${REQUIRES}"; then
+                echo "::error::RPM package is missing runtime dependency on ${soname}*"
+                exit 1
+              fi
+            done
             ;;
         esac
         echo "::endgroup::"

@@ -366,6 +366,8 @@ setConfig(rawConfig)
             asrDispatcherRunning_ = true;
 ```
 
+> 现状：配置热更新与后端切换由 `engine_backend.cpp` 的 `ReloadAsrBackend()` 实现。云端后端仍在主线程同步替换，本地模型的准备则交给 `AsrPrepareCoordinator` 的后台线程，完成后才把引擎交给 pipeline；上方流程是 v4 会话模型的设计语义，不含本地模型异步准备细节，运行时顺序见 [runtime-call-sequence.md](runtime-call-sequence.md) §3.1。
+
 ---
 
 ## 暂不实现的功能（v4.1 范围外）
@@ -375,7 +377,7 @@ setConfig(rawConfig)
 | ConnectionPool（WS 连接复用） | WS 协议的 reset 语义不统一，引入状态污染风险 | v4.2 |
 | 每句一个 WS 连接 | 简单可靠，稳定后评估复用 | v4.1 ✅ |
 | 自动重试 | 先保证基础正确，再考虑可靠性 | v4.3 |
-| 本地 ASR sherpa-onnx | 接口已预留，实现待后续 | v5 |
+| 本地 ASR sherpa-onnx | 原计划 v5；v0.6 已接入流式与 X-ASR 离线两个本地后端 | 已交付 ✅ |
 
 ---
 

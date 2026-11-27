@@ -15,6 +15,8 @@
 
 #include "config/voiceinput-config.h"
 #include "asr/asr_engine.h"
+#include "engine_asr_prepare.h"
+#include "engine_backend.h"
 #include "pipeline/pipeline.h"
 #include "types.h"
 
@@ -54,8 +56,21 @@ private:
     void ClearUI();
     void DeactivateContext(bool keepCapture);
     void SetStatus(const std::string& text);
-    std::unique_ptr<AsrEngine> CreateAsrEngine();
-    void ReloadActiveAsrClient();
+
+    // 后端构造与切换（engine_backend.cpp）。全部只在主线程调用。
+    AsrBackendSnapshot SnapshotActiveAsrBackend() const;
+    void ReloadAsrBackend(const char* reason);
+    void ApplyPreparedAsrBackend(uint64_t generation,
+                                 std::unique_ptr<AsrEngine> engine,
+                                 const std::string& error);
+    void DropAsrEngine();
+    void RotateAsrGeneration();
+    void UpdateModelStatus(const std::string& backend, const char* state,
+                           const std::string& detail);
+    void UpdateModelIdentity(const std::string& backend,
+                             const AsrModelIdentity& identity);
+    /// 不再被选中的本地后端不能继续显示 ready/loading（会误报）。
+    void ResetInactiveLocalStatuses(const std::string& activeBackend);
 
     Instance* instance_;
     std::unique_ptr<Pipeline> pipeline_;
@@ -65,6 +80,17 @@ private:
     OpenAIAsrConfig openaiConfig_;
     VolcengineAsrConfig volcengineConfig_;
     MistralAsrConfig mistralConfig_;
+    SherpaOnnxAsrConfig sherpaOnnxConfig_;
+    SherpaOfflineAsrConfig sherpaOfflineConfig_;
+
+    // 本地模型的异步准备。工作线程从不引用本对象（见 engine_backend.h）。
+    std::unique_ptr<AsrPrepareCoordinator> asrPreparer_;
+    // 主线程独占：当前请求代次 / 已装入 pipeline 的后端名（空表示无引擎）。
+    uint64_t asrPrepareGeneration_ = 0;
+    std::string installedBackend_;
+    // getSubConfig("model/status/online|offline") 的只读镜像，仅主线程写入。
+    ModelRuntimeStatusConfig onlineModelStatus_;
+    ModelRuntimeStatusConfig offlineModelStatus_;
 
     // Main-thread only: generation checks do not keep an InputContext alive.
     TrackableObjectReference<InputContext> activeIc_;

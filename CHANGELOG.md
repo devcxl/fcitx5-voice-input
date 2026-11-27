@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- 本地模型管理：新增 `voice-input-model-installer` 一次性安装进程与 fcitx5-configtool 的 Qt 模型管理页，支持下载或导入官方压缩包、进度与取消、安装校验及运行状态展示（流式 `online-zipformer` / 离线 `offline-x-asr`）
+- 受控模型加载：本地后端只从编译期清单解析固定 id/version，`Init` 前逐文件校验 SHA-256 与字节数；版本目录从 `models` 起拒绝符号链接，`install.json` 不作为信任依据
+- 本地模型异步准备：首次激活与热切换在后台线程加载模型，主线程按 generation 取回结果；加载期间显示「本地模型加载中...」，仍在语音输入上下文时完成后自动启动 pipeline
+- 模型运行状态只读镜像（`model/status/online|offline`）：`idle` / `loading` / `ready` / `failed` 与实际加载的模型 id/version，供 GUI 轮询；`setSubConfig("model/online|offline")` 作为安装完成通知触发重载
+
+### Changed
+- 本地 ASR 配置移除 `ModelDir`，改为「管理本地模型」入口；不再扫描模型目录或接受用户指定的模型文件路径
+- 云端后端保持主线程同步初始化；本地后端切换会先摘除旧引擎，同一后端重载失败保留旧引擎，云端切本地失败不回退云端
+- 仅当前后端相关的配置变化才重建引擎；无关子配置保存不再触发本地模型重载
+- 热词编码按已校验模型词表判定；`bpe_vocab` 只使用该 `tokens.txt`，不加载未纳入清单的 `bpe.vocab`
+
 ## [0.6.1] - 2026-11-06
 
 ### Added

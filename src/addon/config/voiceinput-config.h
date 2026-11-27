@@ -9,6 +9,16 @@
 
 namespace fcitx {
 
+class ModelManagerOption : public ExternalOption {
+public:
+    using ExternalOption::ExternalOption;
+    void setHidden(bool hidden) { hidden_ = hidden; }
+    bool skipDescription() const override { return hidden_; }
+
+private:
+    bool hidden_ = false;
+};
+
 struct AsrBackendAnnotation : public EnumAnnotation {
     void dumpDescription(RawConfig &config) const {
         EnumAnnotation::dumpDescription(config);
@@ -26,6 +36,16 @@ struct AsrBackendAnnotation : public EnumAnnotation {
         config.setValueByPath("EnumI18n/2", _("Mistral Realtime"));
         config.setValueByPath("SubConfigPath/2",
             "fcitx://config/addon/voiceinput/asr/mistral");
+
+        config.setValueByPath("Enum/3", "sherpa_onnx");
+        config.setValueByPath("EnumI18n/3", _("Sherpa-ONNX (Local Realtime)"));
+        config.setValueByPath("SubConfigPath/3",
+            "fcitx://config/addon/voiceinput/asr/sherpa_onnx");
+
+        config.setValueByPath("Enum/4", "sherpa_offline");
+        config.setValueByPath("EnumI18n/4", _("Sherpa-ONNX X-ASR (Local Offline)"));
+        config.setValueByPath("SubConfigPath/4",
+            "fcitx://config/addon/voiceinput/asr/sherpa_offline");
     }
 };
 
@@ -170,6 +190,46 @@ FCITX_CONFIGURATION(VolcengineAsrConfig,
     Option<int, IntConstrain> endWindowMs{
         this, "EndWindowMs", _("判停窗口 (毫秒)"), 800,
         IntConstrain(200, 3000)};
+);
+
+FCITX_CONFIGURATION(SherpaOnnxAsrConfig,
+    ModelManagerOption modelManager{
+        this, "ModelManager", _("管理本地模型"),
+        "fcitx://config/addon/voiceinput/model/online"};
+
+    Option<int, IntConstrain> numThreads{
+        this, "NumThreads", _("CPU 推理线程数"), 2,
+        IntConstrain(1, 16)};
+
+    Option<std::string> hotwordsFile{
+        this, "HotwordsFile", _("热词文件路径 (可选)"), ""};
+
+    Option<int, IntConstrain> hotwordsScore{
+        this, "HotwordsScore", _("热词提权加分 (分值 1~10)"), 2,
+        IntConstrain(1, 10)};
+
+    Option<bool> autoCommit{
+        this, "AutoCommit", _("无 LLM 时自动上屏"), true};
+);
+
+FCITX_CONFIGURATION(SherpaOfflineAsrConfig,
+    ModelManagerOption modelManager{
+        this, "ModelManager", _("管理本地模型"),
+        "fcitx://config/addon/voiceinput/model/offline"};
+
+    Option<int, IntConstrain> numThreads{
+        this, "NumThreads", _("CPU 推理线程数"), 2,
+        IntConstrain(1, 16)};
+
+    Option<std::string> hotwordsFile{
+        this, "HotwordsFile", _("热词文件路径 (可选)"), ""};
+
+    Option<int, IntConstrain> hotwordsScore{
+        this, "HotwordsScore", _("热词提权加分 (分值 1~10)"), 2,
+        IntConstrain(1, 10)};
+
+    Option<bool> autoCommit{
+        this, "AutoCommit", _("无 LLM 时自动上屏"), true};
 );
 
 FCITX_CONFIGURATION(VoiceInputConfig,

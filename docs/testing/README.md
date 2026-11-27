@@ -18,6 +18,13 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 
 | 测试 | 覆盖范围 | 类型 |
 |------|---------|------|
+| `sherpa_paths_test` | 热词路径与编码判定（cjkchar/bpe）、逐字拆分、缺失/空文件回退、不可读文件降级（`chmod 000` 时三种编码均不把路径交给 sherpa，root 下报 77 记 SKIP） | 单元 |
+| `sherpa_model_verify_test` | 受控模型解析与逐文件 SHA-256/尺寸校验：清单固定 id/version、缺文件、篡改、符号链接、在线/离线错配 | 单元 |
+| `model_manager_config_test` | 本地后端配置中的 `ModelManager` 外部入口与隐藏行为 | 单元 |
+| `model_manager_test` / `model_manager_extract_test` / `model_manager_fs_test` / `model_manager_child_test` | 清单/路径/摘要、归档白名单解包、安装锁与原子发布、试加载子进程及状态查询 | 单元 + 子进程 |
+| `model_manager_status_absent` / `model_manager_status_unknown` | `--check-model` 只读查询：未安装输出 `absent`、未知 id 失败 | 集成（真实安装器） |
+| `engine_backend_prepare_test` | 本地模型异步准备：代次过滤、单在途、取消不 join、结果引擎离主线程析构 | 单元 |
+| `engine_backend_switch_test` | 后端切换：云端同步、非活跃子配置不重载、模型通知、失败保留旧引擎/不回退云端、加载中销毁、快速本地↔云端切换、状态只读 | 集成（真实引擎） |
 | `session_worker_completion_test` | worker 完成标志的等待语义（`WaitForWorkerCompletion`） | 单元 |
 | `audio_frame_assembler_test` | 音频帧组装（16kHz/512 samples 窗口） | 单元 |
 | `llm_request_cancellation_test` | LLM 请求按 generation 取消/发布门 | 单元 |

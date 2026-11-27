@@ -16,6 +16,16 @@ struct AsrSessionStart {
     std::optional<uint64_t> cancelledSessionId;
 };
 
+/// 本地后端已加载模型的清单身份。
+///
+/// 由后端在 Init() 成功后缓存并返回；云端后端、未成功 Init 或无法确定时
+/// valid=false。调用方（状态镜像、GUI）不得为空值编造版本。
+struct AsrModelIdentity {
+    bool valid = false;
+    std::string id;       // 清单 id，例如 "online-zipformer"
+    std::string version;  // 不可变版本目录名
+};
+
 /// ASR 后端引擎，全局单例（由 Pipeline 持有）。
 /// 工厂模式：StartSession() 返回独立会话及容量取消结果。
 /// 内部用 weak_ptr 追踪活跃 Session，用于批量取消。
@@ -27,9 +37,10 @@ public:
         // Common
         std::string modelName;
 
-        // Sherpa-onnx (local)
-        std::string modelPath;
-        int numThreads = 4;
+        // Sherpa-onnx / Zipformer (local)
+        std::string hotwordsFile;
+        float hotwordsScore = 1.5f;
+        int numThreads = 2;
 
         // OpenAI-compatible (cloud)
         std::string apiEndpoint;
@@ -73,6 +84,10 @@ public:
     virtual void CancelAllSessions();
 
     virtual const char* Name() const = 0;
+
+    /// 已加载模型的身份（仅本地后端有意义）。
+    /// 未成功 Init、云端后端或无法确定时返回 valid=false；调用方不得据此编造版本。
+    virtual AsrModelIdentity ModelIdentity() const { return {}; }
 
     void SetResultCallback(AsrSession::ResultCallback cb) { resultCb_ = std::move(cb); }
     void SetErrorCallback(AsrSession::ErrorCallback cb) { errorCb_ = std::move(cb); }

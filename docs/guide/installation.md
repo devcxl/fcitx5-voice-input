@@ -101,6 +101,8 @@ sudo zypper install -y \
 :::
 
 > **说明**：音频采集库（`libpulse-simple` 与 `libpipewire-0.3`）在运行时均采用 `dlopen` 延迟加载设计，无强制硬链接。即使系统仅安装了其中一个音频库，插件也能正常编译并优雅降级。
+>
+> **本地模型**：addon 还需要 OpenSSL Crypto（模型文件 SHA-256 校验）。构建模型安装器与管理界面另需 libarchive、Qt 5/6 Widgets/DBus 与对应版本的 Fcitx5 Qt WidgetsAddons；不装 Qt 开发文件时可用 `-DENABLE_MODEL_MANAGER_GUI=OFF` 关闭管理界面。当 Sherpa 可用（`ENABLE_SHERPA_ONNX=ON` 且找到 sherpa-onnx）时，安装器仍会构建并需要 libarchive。
 
 ---
 
@@ -139,6 +141,8 @@ cmake --build build -j"$(nproc)"
 | `CMAKE_BUILD_TYPE` | `Release` | 构建类型（`Release` / `Debug` / `RelWithDebInfo`） |
 | `CMAKE_INSTALL_PREFIX` | `/usr` | 安装前缀（Fcitx5 插件通常要求安装至 `/usr`） |
 | `BUILD_TESTS` | `OFF` | 是否编译测试用例 |
+| `ENABLE_SHERPA_ONNX` | `ON` | 编译本地 Sherpa 后端；找到 sherpa-onnx 时同时构建模型安装器 |
+| `ENABLE_MODEL_MANAGER_GUI` | `ON` | 编译 Qt 模型管理插件；关闭后不显示「管理本地模型」入口 |
 | `ONNXRUNTIME_ROOT` | (系统路径) | 手动指定自定义 ONNX Runtime 安装目录 |
 
 ---

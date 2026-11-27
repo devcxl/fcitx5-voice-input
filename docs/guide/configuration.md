@@ -20,6 +20,8 @@ fcitx5-voice-input 支持通过图形化工具（`fcitx5-configtool`）或直接
 | `~/.config/fcitx5/conf/voiceinput-openai.conf` | OpenAI 兼容后端子配置（包含 API Key、模型、LLM 后处理等） |
 | `~/.config/fcitx5/conf/voiceinput-volcengine.conf` | 火山引擎豆包 ASR 子配置（鉴权密钥、资源 ID、标点规则等） |
 | `~/.config/fcitx5/conf/voiceinput-mistral.conf` | Mistral Realtime 子配置（WebSocket 实时转写参数） |
+| `~/.config/fcitx5/conf/voiceinput-sherpa-onnx.conf` | 本地流式子配置（线程数、热词、自动上屏） |
+| `~/.config/fcitx5/conf/voiceinput-sherpa-offline.conf` | 本地离线子配置（线程数、热词、自动上屏） |
 
 > **安全提示**：API Key 与认证凭证以明文形式保存在上述子配置文件中，请确保 `~/.config/fcitx5/conf/` 目录权限安全。
 
@@ -31,7 +33,7 @@ fcitx5-voice-input 支持通过图形化工具（`fcitx5-configtool`）或直接
 
 | 参数项 | 说明 | 默认值 | 推荐调节建议 |
 |---|---|---|---|
-| `ActiveBackend` | 当前生效的 ASR 识别后端 | `openai` | 可选 `openai`（OpenAI 兼容）、`volcengine`（火山引擎）、`mistral`（Mistral Realtime） |
+| `ActiveBackend` | 当前生效的 ASR 识别后端 | `openai` | 可选 `openai`（OpenAI 兼容）、`volcengine`（火山引擎）、`mistral`（Mistral Realtime）、`sherpa_onnx`（本地流式）、`sherpa_offline`（本地 X-ASR 离线）；本地模型见下文「本地模型管理」 |
 | `VADThreshold` | VAD 语音检测阈值百分比（0-100） | `20` | 值越低越灵敏；如果环境杂音较大引起误识别，可调高至 `30`~`50` |
 | `SilenceThresholdMs` | 判定说话结束的静音等待时长 (ms) | `800` | 语速较慢或思考停顿多时可调至 `1000`~`1500`；追求极速上屏可调至 `500`~`600` |
 | `StartFrames` | 连续多少帧判定为有效人声开始 | `2` | 每帧 32ms。默认 2 帧（64ms），可过滤突发的短暂杂音（如键盘敲击声） |
@@ -64,3 +66,11 @@ fcitx5-voice-input 支持通过图形化工具（`fcitx5-configtool`）或直接
 3. 补充或纠正标点符号；
 4. 仅输出最终处理后的文本，严禁包含任何解释、前缀或多余内容。
 ```
+
+## 本地模型管理
+
+在 `fcitx5-configtool` 中选择 Voice Input 的 Sherpa-ONNX 后端，点击该后端右侧的齿轮，再选择**管理本地模型**。流式后端提供中文 Zipformer（约 570 MiB），离线后端提供中英 X-ASR（约 130 MiB）。
+
+可以直接下载，或导入对应的官方模型压缩包；两种方式都会校验压缩包和模型文件，并在独立进程中试加载。安装过程中可取消。**已安装**表示文件通过安装校验，**已就绪**表示当前选中的后端已完成加载，两者不同；安装未选中的后端不会切换当前后端。
+
+模型安装在用户数据目录中，默认位于 `~/.local/share/fcitx5/voice-input/models/`。仅支持程序内置清单中的固定模型版本，不自动搜索旧目录或导入任意第三方模型。本地 ASR 不上传音频；如果另行启用云端 LLM 后处理，识别文本仍可能被发送至云端。

@@ -16,11 +16,22 @@ $RUN zypper --non-interactive remove -y busybox-gawk || true
 $RUN zypper --non-interactive install -y --allow-downgrade \
     git curl gcc-c++ cmake pkg-config \
     fcitx5-devel jsoncpp-devel libcurl-devel zlib-devel \
+    libarchive-devel libopenssl-devel \
     gettext-runtime rpm-build \
     ${CAPTURE_PKGS:-pipewire-devel libpulse-devel}
+
+# GUI（模型管理页）：Tumbleweed 的 fcitx5-configtool 为 Qt6 →
+# 装 qt6-base-devel + fcitx5-qt-devel（后者提供 Fcitx5Qt6WidgetsAddons 的 CMake config；
+# 未装 libqt5-qtbase-devel 时 CMake 只构建 Qt6 变体）。
+# dbus-1-daemon 提供 dbus-run-session（model_gui_poll_test 用），tests job 需要。
+$RUN zypper --non-interactive install -y --allow-downgrade \
+    qt6-base-devel fcitx5-qt-devel dbus-1-daemon
 
 if [ "${ONNX_STRATEGY:-download}" = "system" ]; then
     $RUN zypper --non-interactive install -y --allow-downgrade onnxruntime-devel
 fi
 
 echo "CPACK_RPM_PACKAGE_REQUIRES=libpulse0" >> "${GITHUB_ENV}"
+
+# 打包冒烟断言用：本发行版实际构建的 Qt 主版本（跟随 fcitx5-config-qt）。
+echo "VOICE_INPUT_GUI_QT_MAJOR=6" >> "${GITHUB_ENV}"
