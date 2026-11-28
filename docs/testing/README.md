@@ -16,6 +16,8 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 
 ## 测试清单
 
+表按 `tests/CMakeLists.txt` 的 `add_test` 注册项维护；`*` 通配行对应同一测试可执行文件展开的多个场景用例，新增或删除测试须同步本表。
+
 | 测试 | 覆盖范围 | 类型 |
 |------|---------|------|
 | `sherpa_paths_test` | 热词路径与编码判定（cjkchar/bpe）、逐字拆分、缺失/空文件回退、不可读文件降级（`chmod 000` 时三种编码均不把路径交给 sherpa，root 下报 77 记 SKIP） | 单元 |
@@ -27,6 +29,7 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 | `engine_backend_switch_test` | 后端切换：云端同步、非活跃子配置不重载、模型通知、失败保留旧引擎/不回退云端、加载中销毁、快速本地↔云端切换、状态只读 | 集成（真实引擎） |
 | `session_worker_completion_test` | worker 完成标志的等待语义（`WaitForWorkerCompletion`） | 单元 |
 | `audio_frame_assembler_test` | 音频帧组装（16kHz/512 samples 窗口） | 单元 |
+| `sherpa_paths_test` | 本地 ASR 模型路径探测：默认模型目录按前缀匹配 encoder/decoder/joiner 且 int8 优先、无 int8 回退 fp32，模型目录下一层子目录同样探测，显式配置的模型文件优先于目录探测；热词文件存在则采用、缺失返回空；`DetectHotwordEncoding` 三种词表形态（`▁` 前缀汉字→逐字 BPE、裸汉字→cjkchar、无汉字→BPE）；`PrepareSherpaHotwordsFile` 汉字逐字拆分、保留 `:score`、写缓存，cjkchar 保留原文件；`ResolveSherpaBpeVocab` 优先 `bpe.vocab`、否则回退 `tokens.txt` | 单元 |
 | `llm_request_cancellation_test` | LLM 请求按 generation 取消/发布门 | 单元 |
 | `result_coordinator_test` | 结果汇聚：保序、跳过、LLM 回退、终态不丢 | 单元 + 并发 |
 | `asr_ordering_test` | `OrderedResultBuffer` 保序与引擎容量取消 | 单元 |
@@ -67,7 +70,7 @@ CI 中 `ci.yml` 的 `tests` job 在具备 WS 能力的 Ubuntu 26.04 上开启 `B
 - 旧猜源、200ms 失焦停流、未接投递门闸及旧 PipeWire 缓存分别由公开边界测试确认失败后修复。
 - Release 完整构建与 38 项 ctest 通过；10 项核心生命周期测试重复 20 轮通过，无 PipeWire 可选构建与相关测试通过。复核补充的其他 Voice Input 上下文误关和空 buffer 后首帧均先失败后修复。链接卫生仍满足无录音库直接符号/DT_NEEDED。
 - 用户于 2026-10-13 在自己的 XFCE 电脑上确认双麦克风正常、可通过音频管理器切换设备，接受该环境下的基本可用性。此为用户实测反馈，不是代理硬件测试；音频服务、实际采集后端和设备型号未提供，不推定 PulseAudio 与原生 PipeWire 均已覆盖。
-- 其他桌面、未确认的采集后端，以及失焦无上传/回焦无旧音频/托盘关闭的逐项现场结果仍未验证。PulseAudio 同步 read/join 停止风险仍是独立后续任务。详见 [调研与限制](../development/research/issue-54-audio-source-routing.md)。
+- 其他桌面、未确认的采集后端，以及失焦无上传/回焦无旧音频/托盘关闭的逐项现场结果仍未验证。PulseAudio 同步 read/join 停止风险仍是独立后续任务，现由 #95 跟踪。详见 [调研与限制](../development/research/issue-54-audio-source-routing.md)。
 
 ## 平台限制（已实测）
 
